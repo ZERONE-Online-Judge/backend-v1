@@ -102,6 +102,19 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  bundle-worker:
+    build:
+      context: ..
+    command: ["python", "-m", "app.workers.bundle_worker"]
+    env_file:
+      - ./env/backend.env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   postgres-backup:
     image: postgres:16
     profiles: ["backup"]

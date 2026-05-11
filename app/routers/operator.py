@@ -320,7 +320,7 @@ def _settings_update_changes_operation(updates: dict) -> bool:
 
 
 def _schedule_bundle_warm(background_tasks: BackgroundTasks, contest_id: str, problem_id: str) -> None:
-    background_tasks.add_task(store.warm_problem_judge_bundle, contest_id, problem_id)
+    store.enqueue_bundle_warm(contest_id, problem_id)
 
 
 @router.get("/operator/contests")

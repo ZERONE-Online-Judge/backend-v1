@@ -270,6 +270,20 @@ class MailQueueItemRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
+class BundleWarmQueueItemRow(Base):
+    __tablename__ = "bundle_warm_queue"
+
+    bundle_warm_queue_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    contest_id: Mapped[str] = mapped_column(String(36), index=True)
+    problem_id: Mapped[str] = mapped_column(String(36), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class JudgeNodeRow(Base):
     __tablename__ = "judge_nodes"
 

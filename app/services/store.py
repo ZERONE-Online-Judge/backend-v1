@@ -44,6 +44,7 @@ from app.orm_models import (
     ContestQuestionRow,
     ContestRow,
     GeneralSessionRow,
+    BundleWarmQueueItemRow,
     JudgeJobRow,
     JudgeNodeRow,
     MailQueueItemRow,
@@ -2423,6 +2424,20 @@ class DbStore:
             db.refresh(row)
             return _mail(row)
 
+    def enqueue_bundle_warm(self, contest_id: str, problem_id: str) -> None:
+        with self._session() as db:
+            duplicate_pending = db.scalar(
+                select(BundleWarmQueueItemRow.bundle_warm_queue_id).where(
+                    BundleWarmQueueItemRow.contest_id == contest_id,
+                    BundleWarmQueueItemRow.problem_id == problem_id,
+                    BundleWarmQueueItemRow.status.in_(["pending", "running"]),
+                )
+            )
+            if duplicate_pending:
+                return
+            db.add(BundleWarmQueueItemRow(contest_id=contest_id, problem_id=problem_id))
+            db.commit()
+
     def create_otp(self, contest_id: str, email: str) -> str:
         team = self.get_team_by_email(contest_id, email)
         if not team:
@@ -2719,6 +2734,45 @@ class DbStore:
                 .order_by(ProblemAssetRow.created_at)
             ).all()
             return self._ensure_problem_judge_bundle(contest_id, problem, active_set, testcase_rows, package_assets)
+
+    def claim_bundle_warm_jobs(self, limit: int = 10) -> list[tuple[str, str, str, int]]:
+        with self._session() as db:
+            rows = db.scalars(
+                select(BundleWarmQueueItemRow)
+                .where(BundleWarmQueueItemRow.status == "pending")
+                .order_by(BundleWarmQueueItemRow.created_at)
+                .limit(limit)
+            ).all()
+            claimed: list[tuple[str, str, str, int]] = []
+            for row in rows:
+                row.status = "running"
+                row.started_at = now_utc()
+                row.attempts = (row.attempts or 0) + 1
+                row.last_error = None
+                claimed.append((row.bundle_warm_queue_id, row.contest_id, row.problem_id, row.attempts))
+            db.commit()
+            return claimed
+
+    def complete_bundle_warm_job(self, job_id: str) -> None:
+        with self._session() as db:
+            row = db.get(BundleWarmQueueItemRow, job_id)
+            if not row:
+                return
+            row.status = "succeeded"
+            row.completed_at = now_utc()
+            row.last_error = None
+            db.commit()
+
+    def fail_bundle_warm_job(self, job_id: str, error_text: str, *, requeue: bool) -> None:
+        with self._session() as db:
+            row = db.get(BundleWarmQueueItemRow, job_id)
+            if not row:
+                return
+            row.status = "pending" if requeue else "failed"
+            row.last_error = (error_text or "")[:1000]
+            if not requeue:
+                row.completed_at = now_utc()
+            db.commit()
 
     def _recover_expired_judge_leases(self, db: Session) -> None:
         expired_before = now_utc() - timedelta(seconds=settings.judge_lease_timeout_seconds)
