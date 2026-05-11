@@ -56,7 +56,7 @@ async def register_node(payload: RegisterNodeRequest, request: Request):
         node = store.register_node(payload.node_name, payload.node_secret, payload.total_slots)
     except ValueError:
         raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
-    return ok(request, {"judge_node_id": node.judge_node_id, "heartbeat_interval_seconds": 5})
+    return ok(request, {"judge_node_id": node.judge_node_id, "heartbeat_interval_seconds": 2})
 
 
 @router.post("/internal/judge/nodes/{node_id}/heartbeat")
