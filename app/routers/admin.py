@@ -1,15 +1,25 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, EmailStr
 
-from app.models import ContestStatus
+from app.models import ContestStatus, JudgeNode, now_utc
+from app.settings import settings
 from app.services.authz import require_service_master
 from app.services.errors import AppError
 from app.services.responses import ok, page
 from app.services.store import store
 
 router = APIRouter(tags=["admin"])
+
+
+def _node_with_activity(node: JudgeNode) -> dict:
+    active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
+    heartbeat_age = max(0, int((now_utc() - node.last_heartbeat_at).total_seconds()))
+    payload = node.model_dump(mode="json")
+    payload["is_active"] = node.last_heartbeat_at >= active_since
+    payload["heartbeat_age_seconds"] = heartbeat_age
+    return payload
 
 
 class ContestCreateRequest(BaseModel):
@@ -52,13 +62,15 @@ class ServiceNoticeUpdateRequest(BaseModel):
 @router.get("/admin/dashboard")
 async def dashboard(request: Request):
     require_service_master(request)
+    node_payloads = [_node_with_activity(node) for node in store.judge_nodes.values()]
     return ok(
         request,
         {
             "contest_count": len(store.contests),
             "pending_jobs": len([job for job in store.judge_jobs.values() if job.status == "pending"]),
             "mail_queue_pending": len([mail for mail in store.mail_queue.values() if mail.status == "pending"]),
-            "judge_node_count": len(store.judge_nodes),
+            "judge_node_count": len(node_payloads),
+            "active_judge_node_count": len([node for node in node_payloads if node["is_active"]]),
         },
     )
 
@@ -178,10 +190,11 @@ async def update_service_notice(notice_id: str, payload: ServiceNoticeUpdateRequ
 @router.get("/admin/judge/dashboard")
 async def judge_dashboard(request: Request):
     require_service_master(request)
+    node_payloads = [_node_with_activity(node) for node in store.judge_nodes.values()]
     return ok(
         request,
         {
-            "nodes": [node.model_dump(mode="json") for node in store.judge_nodes.values()],
+            "nodes": node_payloads,
             "queue": [job.model_dump(mode="json") for job in store.judge_jobs.values()],
         },
     )

@@ -1,8 +1,8 @@
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[3]
-ENV_DIR = ROOT / "deploy" / "env"
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+ENV_DIR = BACKEND_ROOT / "deploy" / "env"
 
 FILES = {
     "backend.env.example": """APP_ENV=production
@@ -47,17 +47,6 @@ POSTGRES_PASSWORD=change-me
 """,
     "minio.env.example": """MINIO_ROOT_USER=zerone-minio
 MINIO_ROOT_PASSWORD=change-me
-""",
-    "judge-agent.env.example": """APP_ENV=production
-INTERNAL_API_BASE_URL=http://backend-vm-internal-ip:8000/api
-JUDGE_NODE_NAME=judge-1
-JUDGE_NODE_SECRET=change-me-per-node
-JUDGE_TOTAL_SLOTS=10
-JUDGE_WORK_ROOT=/var/lib/zerone-judge
-JUDGE_AGENT_VERSION=0.1.0
-JUDGE_POLL_INTERVAL_SECONDS=1
-JUDGE_DEFAULT_TIME_LIMIT_SECONDS=3
-JUDGE_RUN_ONCE=false
 """,
 }
 

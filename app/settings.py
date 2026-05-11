@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     judge_claim_poll_interval_seconds: float = 0.5
     judge_claim_max_wait_seconds: float = 25.0
     judge_lease_timeout_seconds: int = 120
+    judge_node_active_window_seconds: int = 30
 
 
 settings = Settings()

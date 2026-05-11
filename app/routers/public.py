@@ -1,5 +1,9 @@
+from datetime import timedelta
+
 from fastapi import APIRouter, Request
 
+from app.models import now_utc
+from app.settings import settings
 from app.services.errors import not_found
 from app.services.responses import ok, page
 from app.services.store import store
@@ -60,11 +64,14 @@ async def service_notice_detail(notice_id: str, request: Request):
 
 @router.get("/public/judge-status")
 async def judge_status(request: Request):
-    running_jobs = sum(node.running_job_count for node in store.judge_nodes.values())
+    nodes = list(store.judge_nodes.values())
+    active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
+    active_nodes = [node for node in nodes if node.last_heartbeat_at >= active_since]
+    running_jobs = sum(node.running_job_count for node in active_nodes)
     return ok(
         request,
         {
-            "active_node_count": len(store.judge_nodes),
+            "active_node_count": len(active_nodes),
             "total_running_jobs": running_jobs,
             "total_queue_depth": len([job for job in store.judge_jobs.values() if job.status == "pending"]),
             "allocation_policy": "internal claim FIFO",
