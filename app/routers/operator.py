@@ -7,7 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr
 
 from app.models import ContestStatus, TeamMemberRole, now_utc
@@ -317,6 +317,10 @@ def _settings_update_changes_operation(updates: dict) -> bool:
             "submission_public_after_end",
         }
     )
+
+
+def _schedule_bundle_warm(background_tasks: BackgroundTasks, contest_id: str, problem_id: str) -> None:
+    background_tasks.add_task(store.warm_problem_judge_bundle, contest_id, problem_id)
 
 
 @router.get("/operator/contests")
@@ -922,7 +926,7 @@ async def problem_assets(contest_id: str, problem_id: str, request: Request):
 
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/assets")
-async def create_problem_asset(contest_id: str, problem_id: str, payload: ProblemAssetCreateRequest, request: Request):
+async def create_problem_asset(contest_id: str, problem_id: str, payload: ProblemAssetCreateRequest, request: Request, background_tasks: BackgroundTasks):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     try:
@@ -937,16 +941,18 @@ async def create_problem_asset(contest_id: str, problem_id: str, payload: Proble
         )
     except ValueError:
         raise not_found()
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, asset.model_dump(mode="json"))
 
 
 @router.delete("/operator/contests/{contest_id}/problems/{problem_id}/assets/{asset_id}")
-async def delete_problem_asset(contest_id: str, problem_id: str, asset_id: str, request: Request):
+async def delete_problem_asset(contest_id: str, problem_id: str, asset_id: str, request: Request, background_tasks: BackgroundTasks):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     item = store.delete_problem_asset(contest_id, problem_id, asset_id)
     if not item:
         raise not_found()
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, item.model_dump(mode="json"))
 
 
@@ -970,28 +976,44 @@ async def package_status(contest_id: str, problem_id: str, request: Request):
 
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/testcase-sets")
-async def create_testcase_set(contest_id: str, problem_id: str, payload: TestcaseSetCreateRequest, request: Request):
+async def create_testcase_set(contest_id: str, problem_id: str, payload: TestcaseSetCreateRequest, request: Request, background_tasks: BackgroundTasks):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     try:
         item = store.create_testcase_set(contest_id, problem_id, payload.is_active)
     except ValueError:
         raise not_found()
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, item.model_dump(mode="json"))
 
 
 @router.patch("/operator/contests/{contest_id}/problems/{problem_id}/testcase-sets/{testcase_set_id}")
-async def update_testcase_set(contest_id: str, problem_id: str, testcase_set_id: str, payload: TestcaseSetUpdateRequest, request: Request):
+async def update_testcase_set(
+    contest_id: str,
+    problem_id: str,
+    testcase_set_id: str,
+    payload: TestcaseSetUpdateRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     item = store.update_testcase_set(contest_id, problem_id, testcase_set_id, **payload.model_dump(exclude_unset=True))
     if not item:
         raise not_found()
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, item.model_dump(mode="json"))
 
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/testcase-sets/{testcase_set_id}/testcases")
-async def create_testcase(contest_id: str, problem_id: str, testcase_set_id: str, payload: TestcaseCreateRequest, request: Request):
+async def create_testcase(
+    contest_id: str,
+    problem_id: str,
+    testcase_set_id: str,
+    payload: TestcaseCreateRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     try:
@@ -1009,31 +1031,53 @@ async def create_testcase(contest_id: str, problem_id: str, testcase_set_id: str
         )
     except ValueError:
         raise not_found()
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, item.model_dump(mode="json"))
 
 
 @router.delete("/operator/contests/{contest_id}/problems/{problem_id}/testcase-sets/{testcase_set_id}")
-async def delete_testcase_set(contest_id: str, problem_id: str, testcase_set_id: str, request: Request):
+async def delete_testcase_set(
+    contest_id: str,
+    problem_id: str,
+    testcase_set_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     item = store.delete_testcase_set(contest_id, problem_id, testcase_set_id)
     if not item:
         raise not_found()
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, item.model_dump(mode="json"))
 
 
 @router.delete("/operator/contests/{contest_id}/problems/{problem_id}/testcase-sets/{testcase_set_id}/testcases/{testcase_id}")
-async def delete_testcase(contest_id: str, problem_id: str, testcase_set_id: str, testcase_id: str, request: Request):
+async def delete_testcase(
+    contest_id: str,
+    problem_id: str,
+    testcase_set_id: str,
+    testcase_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     item = store.delete_testcase(contest_id, problem_id, testcase_set_id, testcase_id)
     if not item:
         raise not_found()
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, item.model_dump(mode="json"))
 
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/verified-testcase-sets:zip")
-async def create_verified_testcase_set_from_zip(contest_id: str, problem_id: str, request: Request, file: UploadFile = File(...)):
+async def create_verified_testcase_set_from_zip(
+    contest_id: str,
+    problem_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     archive = await file.read()
@@ -1063,11 +1107,18 @@ async def create_verified_testcase_set_from_zip(contest_id: str, problem_id: str
     except ValueError:
         raise not_found()
     result["imported_archive"] = {"filename": file.filename, "case_count": len(cases), "format": "paired .in/.out by same path stem"}
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, result)
 
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/verified-testcase-sets")
-async def create_verified_testcase_set(contest_id: str, problem_id: str, payload: VerifiedTestcaseSetCreateRequest, request: Request):
+async def create_verified_testcase_set(
+    contest_id: str,
+    problem_id: str,
+    payload: VerifiedTestcaseSetCreateRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     try:
@@ -1091,11 +1142,18 @@ async def create_verified_testcase_set(contest_id: str, problem_id: str, payload
         raise not_found()
     except Exception as error:
         raise AppError(422, "testcase_verification_failed", f"unexpected verifier error: {error}")
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, result)
 
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/package-builds")
-async def build_package(contest_id: str, problem_id: str, payload: PackageBuildRequest, request: Request):
+async def build_package(
+    contest_id: str,
+    problem_id: str,
+    payload: PackageBuildRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     try:
@@ -1104,4 +1162,5 @@ async def build_package(contest_id: str, problem_id: str, payload: PackageBuildR
         raise AppError(422, "package_build_failed", str(error))
     except ValueError:
         raise not_found()
+    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, result)

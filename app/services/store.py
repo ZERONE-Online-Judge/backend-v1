@@ -1,4 +1,7 @@
 from datetime import datetime, timedelta, timezone
+import base64
+import gzip
+import hashlib
 import json
 import math
 import secrets
@@ -2536,30 +2539,20 @@ class DbStore:
                         select(TestcaseSetRow).where(TestcaseSetRow.problem_id == submission.problem_id, TestcaseSetRow.is_active.is_(True))
                     )
                     testcases = []
+                    testcase_rows: list[TestcaseRow] = []
                     if active_set:
-                        rows = db.scalars(
+                        testcase_rows = db.scalars(
                             select(TestcaseRow)
                             .where(TestcaseRow.testcase_set_id == active_set.testcase_set_id)
                             .order_by(TestcaseRow.display_order)
                         ).all()
                         testcases = []
-                        inline_limit = 256 * 1024
-                        for case in rows:
+                        for case in testcase_rows:
                             item = {
                                 **_testcase(case).model_dump(mode="json"),
                                 "input_url": object_storage.presigned_get_url(case.input_storage_key),
                                 "output_url": object_storage.presigned_get_url(case.output_storage_key),
                             }
-                            # Reduce judge-agent per-testcase HTTP fetch overhead by inlining
-                            # small testcase contents directly in claim payload.
-                            try:
-                                input_bytes = object_storage.read_bytes(case.input_storage_key)
-                                output_bytes = object_storage.read_bytes(case.output_storage_key)
-                                if len(input_bytes) <= inline_limit and len(output_bytes) <= inline_limit:
-                                    item["input_text"] = input_bytes.decode("utf-8-sig")
-                                    item["output_text"] = output_bytes.decode("utf-8-sig")
-                            except Exception:
-                                pass
                             testcases.append(item)
                     submission.status = SubmissionStatus.PREPARING.value
                     submission.status_updated_at = now_utc()
@@ -2569,13 +2562,14 @@ class DbStore:
                     submission.progress_current = 0 if testcases else None
                     submission.progress_total = len(testcases) if testcases else None
                     package_files = []
+                    package_assets: list[ProblemAssetRow] = []
                     if problem:
-                        assets = db.scalars(
+                        package_assets = db.scalars(
                             select(ProblemAssetRow)
                             .where(ProblemAssetRow.problem_id == problem.problem_id, ProblemAssetRow.storage_key.contains("/package-files/"))
                             .order_by(ProblemAssetRow.created_at)
                         ).all()
-                        for asset in assets:
+                        for asset in package_assets:
                             role = None
                             for candidate in ("package-resource", "checker", "validator"):
                                 if f"/package-files/{candidate}/" in asset.storage_key:
@@ -2589,6 +2583,19 @@ class DbStore:
                                         "url": object_storage.presigned_get_url(asset.storage_key),
                                     }
                                 )
+                    bundle_url = None
+                    if problem and active_set:
+                        try:
+                            bundle_key = self._ensure_problem_judge_bundle(
+                                submission.contest_id,
+                                problem,
+                                active_set,
+                                testcase_rows,
+                                package_assets,
+                            )
+                            bundle_url = object_storage.presigned_get_url(bundle_key)
+                        except Exception:
+                            bundle_url = None
                     jobs.append(
                         {
                             **_job(row).model_dump(mode="json"),
@@ -2598,10 +2605,120 @@ class DbStore:
                             "testcase_set": _testcase_set(active_set).model_dump(mode="json") if active_set else None,
                             "testcases": testcases,
                             "package_files": package_files,
+                            "bundle_url": bundle_url,
                         }
                     )
             db.commit()
             return jobs
+
+    def _ensure_problem_judge_bundle(
+        self,
+        contest_id: str,
+        problem: ProblemRow,
+        testcase_set: TestcaseSetRow,
+        testcase_rows: list[TestcaseRow],
+        package_assets: list[ProblemAssetRow],
+    ) -> str:
+        role_assets: list[tuple[str, ProblemAssetRow]] = []
+        for asset in package_assets:
+            for role in ("package-resource", "checker", "validator"):
+                if f"/package-files/{role}/" in asset.storage_key:
+                    role_assets.append((role, asset))
+                    break
+
+        digest = hashlib.sha256()
+        digest.update(problem.problem_id.encode("utf-8"))
+        digest.update(testcase_set.testcase_set_id.encode("utf-8"))
+        for case in testcase_rows:
+            digest.update(case.testcase_id.encode("utf-8"))
+            digest.update(case.input_sha256.encode("utf-8"))
+            digest.update(case.output_sha256.encode("utf-8"))
+        for role, asset in sorted(role_assets, key=lambda item: (item[0], item[1].asset_id)):
+            digest.update(role.encode("utf-8"))
+            digest.update(asset.asset_id.encode("utf-8"))
+            digest.update(asset.sha256.encode("utf-8"))
+        version_hash = digest.hexdigest()
+        bundle_key = f"contests/{contest_id}/problems/{problem.problem_id}/judge-bundles/{testcase_set.testcase_set_id}-{version_hash}.json.gz"
+
+        try:
+            object_storage.read_bytes(bundle_key)
+            return bundle_key
+        except Exception:
+            pass
+
+        bundle = {
+            "version_hash": version_hash,
+            "problem": {
+                "problem_id": problem.problem_id,
+                "time_limit_ms": problem.time_limit_ms,
+                "memory_limit_mb": problem.memory_limit_mb,
+                "max_score": problem.max_score,
+            },
+            "testcase_set": {
+                "testcase_set_id": testcase_set.testcase_set_id,
+                "version": testcase_set.version,
+            },
+            "testcases": [],
+            "package_files": [],
+        }
+
+        for case in testcase_rows:
+            input_bytes = object_storage.read_bytes(case.input_storage_key)
+            output_bytes = object_storage.read_bytes(case.output_storage_key)
+            bundle["testcases"].append(
+                {
+                    "testcase_id": case.testcase_id,
+                    "display_order": case.display_order,
+                    "time_limit_ms_override": case.time_limit_ms_override,
+                    "memory_limit_mb_override": case.memory_limit_mb_override,
+                    "input_storage_key": case.input_storage_key,
+                    "output_storage_key": case.output_storage_key,
+                    "input_text": input_bytes.decode("utf-8-sig"),
+                    "output_text": output_bytes.decode("utf-8-sig"),
+                }
+            )
+
+        for role, asset in role_assets:
+            blob = object_storage.read_bytes(asset.storage_key)
+            bundle["package_files"].append(
+                {
+                    "role": role,
+                    "asset_id": asset.asset_id,
+                    "storage_key": asset.storage_key,
+                    "original_filename": asset.original_filename,
+                    "sha256": asset.sha256,
+                    "inline_bytes_b64": base64.b64encode(blob).decode("ascii"),
+                }
+            )
+
+        compressed = gzip.compress(json.dumps(bundle, ensure_ascii=False).encode("utf-8"))
+        object_storage.write_bytes(bundle_key, compressed, "application/gzip")
+        return bundle_key
+
+    def warm_problem_judge_bundle(self, contest_id: str, problem_id: str) -> str | None:
+        with self._session() as db:
+            problem = db.get(ProblemRow, problem_id)
+            if not problem or problem.contest_id != contest_id:
+                return None
+            active_set = db.scalar(
+                select(TestcaseSetRow).where(
+                    TestcaseSetRow.problem_id == problem_id,
+                    TestcaseSetRow.is_active.is_(True),
+                )
+            )
+            if not active_set:
+                return None
+            testcase_rows = db.scalars(
+                select(TestcaseRow)
+                .where(TestcaseRow.testcase_set_id == active_set.testcase_set_id)
+                .order_by(TestcaseRow.display_order)
+            ).all()
+            package_assets = db.scalars(
+                select(ProblemAssetRow)
+                .where(ProblemAssetRow.problem_id == problem.problem_id, ProblemAssetRow.storage_key.contains("/package-files/"))
+                .order_by(ProblemAssetRow.created_at)
+            ).all()
+            return self._ensure_problem_judge_bundle(contest_id, problem, active_set, testcase_rows, package_assets)
 
     def _recover_expired_judge_leases(self, db: Session) -> None:
         expired_before = now_utc() - timedelta(seconds=settings.judge_lease_timeout_seconds)
