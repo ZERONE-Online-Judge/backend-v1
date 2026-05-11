@@ -2,7 +2,7 @@ import asyncio
 import re
 import hashlib
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -401,13 +401,40 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
     updates = payload.model_dump(exclude_unset=True)
     if _settings_update_changes_operation(updates):
         _require_contest_mutation_open(contest_id)
+
+    explicit_start = "start_at" in updates
+    explicit_end = "end_at" in updates
+    explicit_freeze = "freeze_at" in updates
+
     start_at = updates.get("start_at", contest.start_at)
     end_at = updates.get("end_at", contest.end_at)
     freeze_at = updates.get("freeze_at", contest.freeze_at)
+
+    # Allow practical schedule edits while contest is running/ended.
+    # If only one side of time range is edited and range becomes invalid,
+    # keep existing duration when possible instead of hard-failing.
     if start_at >= end_at:
-        raise AppError(422, "validation_error", "start_at must be before end_at.")
+        current_duration = max(contest.end_at - contest.start_at, timedelta(hours=1))
+        if explicit_start and not explicit_end:
+            end_at = start_at + current_duration
+            updates["end_at"] = end_at
+        elif explicit_end and not explicit_start:
+            start_at = end_at - current_duration
+            updates["start_at"] = start_at
+        else:
+            raise AppError(422, "validation_error", "start_at must be before end_at.")
+
     if not (start_at <= freeze_at <= end_at):
-        raise AppError(422, "validation_error", "freeze_at must be between start_at and end_at.")
+        if explicit_freeze:
+            raise AppError(422, "validation_error", "freeze_at must be between start_at and end_at.")
+        # If freeze wasn't explicitly edited, auto-clamp to a sane point.
+        default_freeze = end_at - timedelta(hours=1)
+        if default_freeze < start_at:
+            default_freeze = start_at
+        if default_freeze > end_at:
+            default_freeze = end_at
+        freeze_at = default_freeze
+        updates["freeze_at"] = freeze_at
     time_fields = {"start_at", "end_at", "freeze_at"}
     time_changed = any(key in updates and getattr(contest, key) != updates[key] for key in time_fields)
     if time_changed:

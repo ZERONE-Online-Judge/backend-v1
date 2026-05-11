@@ -1149,6 +1149,33 @@ def test_contest_status_is_normalized_from_schedule_updates():
     assert running.json()["data"]["status"] == "running"
 
 
+def test_operator_schedule_update_auto_adjusts_end_and_freeze_when_only_start_is_changed():
+    contest_id = first_contest_id()
+    set_contest_mutable(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    baseline = client.get(f"/api/operator/contests/{contest_id}/dashboard", headers=auth_headers(operator["access_token"]))
+    assert baseline.status_code == 200
+    before = baseline.json()["data"]["contest"]
+    old_start = datetime.fromisoformat(before["start_at"].replace("Z", "+00:00"))
+    old_end = datetime.fromisoformat(before["end_at"].replace("Z", "+00:00"))
+    duration = old_end - old_start
+
+    moved_start = old_end + timedelta(hours=2)
+    updated = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "start_at": moved_start.isoformat(),
+        },
+    )
+    assert updated.status_code == 200
+    data = updated.json()["data"]
+    assert datetime.fromisoformat(data["start_at"].replace("Z", "+00:00")) == moved_start
+    expected_end = moved_start + duration
+    assert datetime.fromisoformat(data["end_at"].replace("Z", "+00:00")) == expected_end
+    freeze = datetime.fromisoformat(data["freeze_at"].replace("Z", "+00:00"))
+    assert moved_start <= freeze <= expected_end
+
 def test_operator_updates_participant_team_status_and_division():
     contest_id = first_contest_id()
     set_contest_mutable(contest_id)
