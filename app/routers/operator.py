@@ -798,6 +798,21 @@ async def operator_submissions(contest_id: str, request: Request, limit: int = 1
     )
 
 
+@router.get("/operator/contests/{contest_id}/submissions/{submission_id}")
+async def operator_submission_detail(contest_id: str, submission_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    submission = store.submissions.get(submission_id)
+    if not submission or submission.contest_id != contest_id:
+        raise not_found()
+    team = store.teams.get(submission.participant_team_id)
+    member = next((item for item in (team.members if team else []) if item.team_member_id == submission.team_member_id), None)
+    payload = submission.model_dump(mode="json")
+    payload["team_name"] = team.team_name if team else None
+    payload["member_name"] = member.name if member else None
+    payload["member_email"] = str(member.email) if member else None
+    return ok(request, payload)
+
+
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/test-submissions")
 async def create_operator_test_submission(contest_id: str, problem_id: str, payload: OperatorTestSubmissionRequest, request: Request):
     require_contest_staff(request, contest_id)

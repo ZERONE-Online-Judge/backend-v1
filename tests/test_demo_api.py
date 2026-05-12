@@ -1558,6 +1558,70 @@ def test_submission_progress_is_updated_during_judging():
     assert waited.json()["data"]["progress_total"] == 5
 
 
+def test_operator_and_admin_submission_detail_include_source_without_list_payload_bloat():
+    contest_id, login = participant_login()
+    set_contest_running(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    master = staff_tokens()
+    division_id = login["division"]["division_id"]
+    problem = operator_problem(contest_id, division_id)
+    source_code = f"print({uuid4().hex[:6]!r})"
+
+    created = client.post(
+        f"/api/contests/{contest_id}/problems/{problem['problem_id']}/submissions",
+        headers=auth_headers(login["access_token"]),
+        json={"language": "python313", "source_code": source_code},
+    )
+    assert created.status_code == 200
+    submission_id = created.json()["data"]["submission_id"]
+
+    operator_list = client.get(
+        f"/api/operator/contests/{contest_id}/submissions",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert operator_list.status_code == 200
+    listed = next(item for item in operator_list.json()["data"] if item["submission_id"] == submission_id)
+    assert listed["source_code"] is None
+
+    operator_detail = client.get(
+        f"/api/operator/contests/{contest_id}/submissions/{submission_id}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert operator_detail.status_code == 200
+    assert operator_detail.json()["data"]["source_code"] == source_code
+
+    admin_list = client.get("/api/admin/judge/submissions", headers=auth_headers(master["access_token"]))
+    assert admin_list.status_code == 200
+    admin_listed = next(item for item in admin_list.json()["data"] if item["submission"]["submission_id"] == submission_id)
+    assert admin_listed["submission"]["source_code"] is None
+
+    admin_detail = client.get(f"/api/admin/judge/submissions/{submission_id}", headers=auth_headers(master["access_token"]))
+    assert admin_detail.status_code == 200
+    assert admin_detail.json()["data"]["submission"]["source_code"] == source_code
+
+    node_secret = f"detail-secret-{uuid4().hex[:6]}"
+    node = client.post(
+        "/api/internal/judge/nodes/register",
+        json={"node_name": f"detail-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
+    )
+    node_id = node.json()["data"]["judge_node_id"]
+    claim = client.post(
+        f"/api/internal/judge/nodes/{node_id}/assignments:claim",
+        json={"node_secret": node_secret, "max_count": 100},
+    )
+    claimed = next(job for job in claim.json()["data"]["jobs"] if job["submission"]["submission_id"] == submission_id)
+    completed = client.post(
+        f"/api/internal/judge/jobs/{claimed['judge_job_id']}/result",
+        json={
+            "node_secret": node_secret,
+            "lease_token": claimed["lease_token"],
+            "final_status": "accepted",
+            "awarded_score": 100,
+        },
+    )
+    assert completed.status_code == 200
+
+
 def test_scoreboard_uses_best_non_compile_score_per_problem():
     contest_id, login = participant_login()
     set_contest_mutable(contest_id)

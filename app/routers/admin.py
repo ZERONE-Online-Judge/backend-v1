@@ -6,7 +6,7 @@ from pydantic import BaseModel, EmailStr
 from app.models import ContestStatus, JudgeNode, now_utc
 from app.settings import settings
 from app.services.authz import require_service_master
-from app.services.errors import AppError
+from app.services.errors import AppError, not_found
 from app.services.responses import ok, page
 from app.services.store import store
 
@@ -305,6 +305,58 @@ async def judge_submissions(request: Request, limit: int = 100, cursor: str | No
         limit=max(1, min(limit, 300)),
         total_count=len(latest_all),
         current_cursor=cursor,
+    )
+
+
+@router.get("/admin/judge/submissions/{submission_id}")
+async def judge_submission_detail(submission_id: str, request: Request):
+    require_service_master(request)
+    submission = store.submissions.get(submission_id)
+    if not submission:
+        raise not_found()
+    contests = store.contests
+    problems = store.problems
+    divisions = store.divisions
+    teams = store.teams
+    jobs = store.judge_jobs
+    nodes = store.judge_nodes
+    testcase_sets = store.testcase_sets
+    testcases = store.testcases
+
+    testcase_by_set: dict[str, list] = {}
+    for testcase in testcases.values():
+        testcase_by_set.setdefault(testcase.testcase_set_id, []).append(testcase)
+
+    problem = problems.get(submission.problem_id)
+    contest = contests.get(submission.contest_id)
+    division = divisions.get(submission.division_id)
+    team = teams.get(submission.participant_team_id)
+    member = next((item for item in (team.members if team else []) if item.team_member_id == submission.team_member_id), None)
+    job = next((item for item in jobs.values() if item.submission_id == submission.submission_id), None)
+    node = nodes.get(job.assigned_node_id) if job and job.assigned_node_id else None
+    active_set = next((item for item in testcase_sets.values() if item.problem_id == submission.problem_id and item.is_active), None)
+    case_count = len(testcase_by_set.get(active_set.testcase_set_id, [])) if active_set else 0
+    return ok(
+        request,
+        {
+            "submission": submission.model_dump(mode="json"),
+            "contest": {"contest_id": contest.contest_id, "title": contest.title} if contest else None,
+            "division": {"division_id": division.division_id, "name": division.name} if division else None,
+            "problem": {
+                "problem_id": problem.problem_id,
+                "problem_code": problem.problem_code,
+                "title": problem.title,
+                "time_limit_ms": problem.time_limit_ms,
+                "memory_limit_mb": problem.memory_limit_mb,
+                "max_score": problem.max_score,
+            } if problem else None,
+            "team": {"participant_team_id": team.participant_team_id, "team_name": team.team_name} if team else None,
+            "member": {"team_member_id": member.team_member_id, "name": member.name, "email": member.email} if member else None,
+            "judge_job": job.model_dump(mode="json") if job else None,
+            "judge_node": node.model_dump(mode="json") if node else None,
+            "active_testcase_count": case_count,
+            "queue_position": job.queue_position if job else None,
+        },
     )
 
 
