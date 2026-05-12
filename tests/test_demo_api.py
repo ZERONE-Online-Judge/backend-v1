@@ -70,6 +70,39 @@ def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def claim_jobs_until(node_id: str, node_secret: str, submission_ids: list[str]) -> dict[str, dict]:
+    remaining = set(submission_ids)
+    found: dict[str, dict] = {}
+    for _ in range(20):
+        claim = client.post(
+            f"/api/internal/judge/nodes/{node_id}/assignments:claim",
+            json={"node_secret": node_secret, "max_count": 100},
+        )
+        assert claim.status_code == 200
+        jobs = claim.json()["data"]["jobs"]
+        for job in jobs:
+            submission_id = job["submission"]["submission_id"]
+            if submission_id in remaining:
+                found[submission_id] = job
+                remaining.remove(submission_id)
+            else:
+                client.post(
+                    f"/api/internal/judge/jobs/{job['judge_job_id']}/result",
+                    json={
+                        "node_secret": node_secret,
+                        "lease_token": job["lease_token"],
+                        "final_status": "system_error",
+                        "awarded_score": 0,
+                    },
+                )
+        if not remaining:
+            return found
+        if not jobs:
+            break
+    missing = ", ".join(sorted(remaining))
+    raise AssertionError(f"target judge jobs were not claimed: {missing}")
+
+
 def jwt_payload(token: str) -> dict:
     parts = token.split(".")
     assert len(parts) == 3
@@ -1520,12 +1553,7 @@ def test_submission_progress_is_updated_during_judging():
         json={"node_name": f"progress-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 1},
     )
     node_id = node.json()["data"]["judge_node_id"]
-    claim = client.post(
-        f"/api/internal/judge/nodes/{node_id}/assignments:claim",
-        json={"node_secret": node_secret, "max_count": 100},
-    )
-    assert claim.status_code == 200
-    job = next(job for job in claim.json()["data"]["jobs"] if job["submission"]["submission_id"] == submission_id)
+    job = claim_jobs_until(node_id, node_secret, [submission_id])[submission_id]
 
     detail = client.get(
         f"/api/contests/{contest_id}/submissions/{submission_id}",
@@ -1590,6 +1618,13 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     assert operator_detail.status_code == 200
     assert operator_detail.json()["data"]["source_code"] == source_code
 
+    operator_wait = client.get(
+        f"/api/operator/contests/{contest_id}/submissions/{submission_id}/status:wait?wait_seconds=0",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert operator_wait.status_code == 200
+    assert operator_wait.json()["data"]["source_code"] is None
+
     admin_list = client.get("/api/admin/judge/submissions", headers=auth_headers(master["access_token"]))
     assert admin_list.status_code == 200
     admin_listed = next(item for item in admin_list.json()["data"] if item["submission"]["submission_id"] == submission_id)
@@ -1599,17 +1634,20 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     assert admin_detail.status_code == 200
     assert admin_detail.json()["data"]["submission"]["source_code"] == source_code
 
+    admin_wait = client.get(
+        f"/api/admin/judge/submissions/{submission_id}/status:wait?wait_seconds=0",
+        headers=auth_headers(master["access_token"]),
+    )
+    assert admin_wait.status_code == 200
+    assert admin_wait.json()["data"]["source_code"] is None
+
     node_secret = f"detail-secret-{uuid4().hex[:6]}"
     node = client.post(
         "/api/internal/judge/nodes/register",
         json={"node_name": f"detail-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
     )
     node_id = node.json()["data"]["judge_node_id"]
-    claim = client.post(
-        f"/api/internal/judge/nodes/{node_id}/assignments:claim",
-        json={"node_secret": node_secret, "max_count": 100},
-    )
-    claimed = next(job for job in claim.json()["data"]["jobs"] if job["submission"]["submission_id"] == submission_id)
+    claimed = claim_jobs_until(node_id, node_secret, [submission_id])[submission_id]
     completed = client.post(
         f"/api/internal/judge/jobs/{claimed['judge_job_id']}/result",
         json={
@@ -1660,11 +1698,7 @@ def test_scoreboard_uses_best_non_compile_score_per_problem():
         json={"node_name": f"score-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
     )
     node_id = node.json()["data"]["judge_node_id"]
-    claim = client.post(
-        f"/api/internal/judge/nodes/{node_id}/assignments:claim",
-        json={"node_secret": node_secret, "max_count": 100},
-    )
-    jobs_by_submission = {job["submission"]["submission_id"]: job for job in claim.json()["data"]["jobs"]}
+    jobs_by_submission = claim_jobs_until(node_id, node_secret, [submission["submission_id"] for submission in submissions])
 
     results = [
         (submissions[0]["submission_id"], "wrong_answer", 30),

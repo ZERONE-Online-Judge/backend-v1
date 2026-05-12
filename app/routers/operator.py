@@ -813,6 +813,38 @@ async def operator_submission_detail(contest_id: str, submission_id: str, reques
     return ok(request, payload)
 
 
+@router.get("/operator/contests/{contest_id}/submissions/{submission_id}/status:wait")
+async def operator_wait_submission_status(
+    contest_id: str,
+    submission_id: str,
+    request: Request,
+    wait_seconds: float = 2.0,
+    poll_interval_seconds: float = 0.25,
+):
+    require_contest_staff(request, contest_id)
+    submission = store.submissions.get(submission_id)
+    if not submission or submission.contest_id != contest_id:
+        raise not_found()
+    wait_budget = max(0.0, min(wait_seconds, 10.0))
+    poll = max(0.1, min(poll_interval_seconds, 1.0))
+    loops = max(1, int(wait_budget / poll))
+    for _ in range(loops):
+        updated = store.submissions.get(submission_id)
+        if not updated:
+            raise not_found()
+        if updated.status not in {"waiting", "preparing", "judging"}:
+            payload = updated.model_dump(mode="json")
+            payload["source_code"] = None
+            return ok(request, payload)
+        await asyncio.sleep(poll)
+    latest = store.submissions.get(submission_id)
+    if not latest:
+        raise not_found()
+    payload = latest.model_dump(mode="json")
+    payload["source_code"] = None
+    return ok(request, payload)
+
+
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/test-submissions")
 async def create_operator_test_submission(contest_id: str, problem_id: str, payload: OperatorTestSubmissionRequest, request: Request):
     require_contest_staff(request, contest_id)

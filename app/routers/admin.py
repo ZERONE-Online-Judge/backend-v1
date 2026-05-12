@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request
@@ -358,6 +359,37 @@ async def judge_submission_detail(submission_id: str, request: Request):
             "queue_position": job.queue_position if job else None,
         },
     )
+
+
+@router.get("/admin/judge/submissions/{submission_id}/status:wait")
+async def judge_submission_status_wait(
+    submission_id: str,
+    request: Request,
+    wait_seconds: float = 2.0,
+    poll_interval_seconds: float = 0.25,
+):
+    require_service_master(request)
+    submission = store.submissions.get(submission_id)
+    if not submission:
+        raise not_found()
+    wait_budget = max(0.0, min(wait_seconds, 10.0))
+    poll = max(0.1, min(poll_interval_seconds, 1.0))
+    loops = max(1, int(wait_budget / poll))
+    for _ in range(loops):
+        updated = store.submissions.get(submission_id)
+        if not updated:
+            raise not_found()
+        if updated.status not in {"waiting", "preparing", "judging"}:
+            payload = updated.model_dump(mode="json")
+            payload["source_code"] = None
+            return ok(request, payload)
+        await asyncio.sleep(poll)
+    latest = store.submissions.get(submission_id)
+    if not latest:
+        raise not_found()
+    payload = latest.model_dump(mode="json")
+    payload["source_code"] = None
+    return ok(request, payload)
 
 
 @router.get("/admin/mail-queue")
