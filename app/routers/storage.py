@@ -11,7 +11,7 @@ router = APIRouter(tags=["storage"])
 
 
 @router.get("/storage/objects/{storage_key:path}")
-async def get_storage_object(storage_key: str):
+def get_storage_object(storage_key: str):
     media_type = mimetypes.guess_type(storage_key)[0] or "application/octet-stream"
     return StreamingResponse(BytesIO(object_storage.read_bytes(storage_key)), media_type=media_type)
 

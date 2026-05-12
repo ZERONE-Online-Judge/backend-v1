@@ -53,7 +53,7 @@ class ProgressRequest(BaseModel):
 @router.post("/internal/judge/nodes/register")
 async def register_node(payload: RegisterNodeRequest, request: Request):
     try:
-        node = store.register_node(payload.node_name, payload.node_secret, payload.total_slots)
+        node = await asyncio.to_thread(store.register_node, payload.node_name, payload.node_secret, payload.total_slots)
     except ValueError:
         raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
     return ok(request, {"judge_node_id": node.judge_node_id, "heartbeat_interval_seconds": 2})
@@ -62,7 +62,14 @@ async def register_node(payload: RegisterNodeRequest, request: Request):
 @router.post("/internal/judge/nodes/{node_id}/heartbeat")
 async def heartbeat(node_id: str, payload: HeartbeatRequest, request: Request):
     try:
-        node = store.update_node_heartbeat(node_id, payload.node_secret, payload.total_slots, payload.free_slots, payload.running_job_count)
+        node = await asyncio.to_thread(
+            store.update_node_heartbeat,
+            node_id,
+            payload.node_secret,
+            payload.total_slots,
+            payload.free_slots,
+            payload.running_job_count,
+        )
     except ValueError:
         raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
     if not node:
@@ -76,7 +83,7 @@ async def claim(node_id: str, payload: ClaimRequest, request: Request):
     started = asyncio.get_running_loop().time()
     while True:
         try:
-            jobs = store.claim_jobs(node_id, payload.node_secret, payload.max_count)
+            jobs = await asyncio.to_thread(store.claim_jobs, node_id, payload.node_secret, payload.max_count)
         except ValueError:
             raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
         if jobs is None:
@@ -95,7 +102,8 @@ async def claim(node_id: str, payload: ClaimRequest, request: Request):
 @router.post("/internal/judge/jobs/{job_id}/result")
 async def report_result(job_id: str, payload: ResultRequest, request: Request):
     try:
-        result = store.report_judge_result(
+        result = await asyncio.to_thread(
+            store.report_judge_result,
             job_id,
             payload.node_secret,
             payload.lease_token,
@@ -118,7 +126,8 @@ async def report_result(job_id: str, payload: ResultRequest, request: Request):
 @router.post("/internal/judge/jobs/{job_id}/progress")
 async def report_progress(job_id: str, payload: ProgressRequest, request: Request):
     try:
-        result = store.update_judge_progress(
+        result = await asyncio.to_thread(
+            store.update_judge_progress,
             job_id,
             payload.node_secret,
             payload.lease_token,

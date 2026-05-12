@@ -2537,11 +2537,13 @@ class DbStore:
             self._recover_expired_judge_leases(db)
             db.flush()
             jobs = []
+            safe_max_count = max(1, min(max_count, settings.judge_claim_max_batch_size))
             rows = db.scalars(
                 select(JudgeJobRow)
                 .where(JudgeJobRow.status == JudgeJobStatus.PENDING.value)
                 .order_by(JudgeJobRow.queue_position)
-                .limit(max_count)
+                .limit(safe_max_count)
+                .with_for_update(skip_locked=True)
             ).all()
             for row in rows:
                 row.status = JudgeJobStatus.RUNNING.value
