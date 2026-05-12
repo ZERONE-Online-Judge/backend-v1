@@ -48,6 +48,8 @@ class QuestionCreateRequest(BaseModel):
 
 
 def _is_ended(contest) -> bool:
+    if contest.status == ContestStatus.SCHEDULE_TBD:
+        return False
     return contest.status in {ContestStatus.ENDED, ContestStatus.ARCHIVED} or now_utc() >= contest.end_at
 
 

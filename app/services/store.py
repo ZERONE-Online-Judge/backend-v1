@@ -76,7 +76,7 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 def _schedule_status(status: str, start_at: datetime, end_at: datetime, now: datetime) -> str:
-    if status in {ContestStatus.DRAFT.value, ContestStatus.FINALIZED.value, ContestStatus.ARCHIVED.value}:
+    if status in {ContestStatus.DRAFT.value, ContestStatus.SCHEDULE_TBD.value, ContestStatus.FINALIZED.value, ContestStatus.ARCHIVED.value}:
         return status
     start = _aware(start_at)
     end = _aware(end_at)
@@ -745,6 +745,18 @@ class DbStore:
         ).all()
         return sorted({item.lower() for item in existing})
 
+    def _contest_participant_email_conflicts(self, db: Session, contest_id: str, emails: list[str]) -> list[str]:
+        normalized = sorted({email.strip().lower() for email in emails if email.strip()})
+        if not normalized:
+            return []
+        existing = db.scalars(
+            select(TeamMemberRow.email).where(
+                TeamMemberRow.contest_id == contest_id,
+                func.lower(TeamMemberRow.email).in_(normalized),
+            )
+        ).all()
+        return sorted({item.lower() for item in existing})
+
     def _staff_email_conflicts(self, db: Session, emails: list[str]) -> list[str]:
         normalized = sorted({email.strip().lower() for email in emails if email.strip()})
         if not normalized:
@@ -753,6 +765,28 @@ class DbStore:
             select(StaffAccountRow.email).where(func.lower(StaffAccountRow.email).in_(normalized))
         ).all()
         return sorted({item.lower() for item in existing})
+
+    def _contest_staff_email_conflicts(self, db: Session, contest_id: str, emails: list[str]) -> list[str]:
+        normalized = sorted({email.strip().lower() for email in emails if email.strip()})
+        if not normalized:
+            return []
+        rows = db.scalars(
+            select(StaffAccountRow).where(
+                or_(
+                    StaffAccountRow.is_service_master.is_(True),
+                    func.lower(StaffAccountRow.email).in_(normalized),
+                )
+            )
+        ).all()
+        conflicts = []
+        for row in rows:
+            email = row.email.lower()
+            if email not in normalized:
+                continue
+            scopes = json.loads(row.contest_scopes or "{}")
+            if row.is_service_master or "contest.*" in scopes.get(contest_id, []):
+                conflicts.append(email)
+        return sorted(set(conflicts))
 
     def _is_password_login_account(self, account: StaffAccountRow | None) -> bool:
         if not account:
@@ -1337,7 +1371,7 @@ class DbStore:
             if not contest:
                 raise ValueError("contest not found")
             normalized_email = email.strip().lower()
-            participant_conflicts = self._participant_email_conflicts(db, [normalized_email])
+            participant_conflicts = self._contest_participant_email_conflicts(db, contest_id, [normalized_email])
             if participant_conflicts:
                 raise ValueError(f"operator email cannot be participant email: {participant_conflicts[0]}")
             account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
@@ -1709,7 +1743,7 @@ class DbStore:
             if existing_emails:
                 conflicts = sorted({email.lower() for email in existing_emails})
                 raise ValueError(f"participant email already registered: {', '.join(conflicts)}")
-            staff_conflicts = self._staff_email_conflicts(db, normalized)
+            staff_conflicts = self._contest_staff_email_conflicts(db, contest_id, normalized)
             if staff_conflicts:
                 raise ValueError(f"participant email cannot be operator/staff account: {', '.join(staff_conflicts)}")
             team = ParticipantTeamRow(contest_id=contest_id, division_id=division_id, team_name=team_name, status="invited")
@@ -1819,7 +1853,7 @@ class DbStore:
                 return None
             if db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, func.lower(TeamMemberRow.email) == email.lower())):
                 raise ValueError(f"participant email already registered: {email.lower()}")
-            staff_conflicts = self._staff_email_conflicts(db, [email.lower()])
+            staff_conflicts = self._contest_staff_email_conflicts(db, contest_id, [email.lower()])
             if staff_conflicts:
                 raise ValueError(f"participant email cannot be operator/staff account: {staff_conflicts[0]}")
             row = TeamMemberRow(
@@ -1863,7 +1897,7 @@ class DbStore:
                 exists = db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, func.lower(TeamMemberRow.email) == email.lower()))
                 if exists:
                     raise ValueError(f"participant email already registered: {email.lower()}")
-                staff_conflicts = self._staff_email_conflicts(db, [email.lower()])
+                staff_conflicts = self._contest_staff_email_conflicts(db, contest_id, [email.lower()])
                 if staff_conflicts:
                     raise ValueError(f"participant email cannot be operator/staff account: {staff_conflicts[0]}")
                 row.email = email

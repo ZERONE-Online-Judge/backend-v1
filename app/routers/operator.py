@@ -307,7 +307,7 @@ def _require_contest_mutation_open(contest_id: str):
     if not contest:
         raise not_found()
     now = now_utc()
-    in_time_window = contest.start_at <= now < contest.end_at and contest.status not in {
+    in_time_window = contest.status != ContestStatus.SCHEDULE_TBD and contest.start_at <= now < contest.end_at and contest.status not in {
         ContestStatus.ENDED,
         ContestStatus.FINALIZED,
         ContestStatus.ARCHIVED,
@@ -687,6 +687,7 @@ async def bulk_create_participants(contest_id: str, payload: ParticipantBulkCrea
 @router.patch("/operator/contests/{contest_id}/participants/{participant_team_id}")
 async def update_participant(contest_id: str, participant_team_id: str, payload: ParticipantTeamUpdateRequest, request: Request):
     require_contest_staff(request, contest_id)
+    _require_contest_mutation_open(contest_id)
     if payload.status is not None and payload.status not in {"invited", "active", "disabled", "disqualified"}:
         raise AppError(422, "validation_error", "Unsupported participant team status.")
     try:

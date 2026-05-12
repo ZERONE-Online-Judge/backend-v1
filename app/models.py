@@ -16,6 +16,7 @@ def new_id() -> str:
 
 class ContestStatus(StrEnum):
     DRAFT = "draft"
+    SCHEDULE_TBD = "schedule_tbd"
     SCHEDULED = "scheduled"
     OPEN = "open"
     RUNNING = "running"

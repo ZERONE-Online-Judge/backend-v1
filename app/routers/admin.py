@@ -39,7 +39,7 @@ class ContestCreateRequest(BaseModel):
     title: str | None = None
     organization_name: str
     overview: str | None = None
-    status: ContestStatus = ContestStatus.SCHEDULED
+    status: ContestStatus = ContestStatus.SCHEDULE_TBD
     start_at: datetime | None = None
     end_at: datetime | None = None
     freeze_at: datetime | None = None

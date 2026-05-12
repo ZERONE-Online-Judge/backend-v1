@@ -23,7 +23,13 @@ client = TestClient(app)
 
 
 def first_contest_id() -> str:
-    return client.get("/api/public/contests").json()["data"][0]["contest_id"]
+    public_ids = [contest["contest_id"] for contest in client.get("/api/public/contests").json()["data"]]
+    return next(
+        contest_id
+        for contest_id in public_ids
+        if any(team.contest_id == contest_id for team in store.teams.values())
+        and any(problem.contest_id == contest_id for problem in store.problems.values())
+    )
 
 
 def set_contest_running(contest_id: str) -> None:
@@ -429,6 +435,26 @@ def test_admin_can_create_contest_with_operator_email_only():
     mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
     queued = [item for item in mail_queue.json()["data"] if item["recipient_email"] == "email-only-operator@zoj.com"]
     assert any(item["mail_type"] == "contest_operator_assigned" for item in queued)
+
+
+def test_admin_created_contest_defaults_to_schedule_tbd_and_is_publicly_visible():
+    master = staff_tokens()
+    created = client.post(
+        "/api/admin/contests",
+        headers=auth_headers(master["access_token"]),
+        json={
+            "title": "Schedule TBD Contest",
+            "organization_name": "Zerone",
+            "operator_email": "schedule-tbd-operator@zoj.com",
+        },
+    )
+    assert created.status_code == 200
+    contest = created.json()["data"]
+    assert contest["status"] == ContestStatus.SCHEDULE_TBD.value
+
+    public_detail = client.get(f"/api/public/contests/{contest['contest_id']}")
+    assert public_detail.status_code == 200
+    assert public_detail.json()["data"]["contest"]["status"] == ContestStatus.SCHEDULE_TBD.value
 
 
 def test_operator_contest_list_includes_scheduled_assigned_contest():
@@ -1254,6 +1280,52 @@ def test_operator_bulk_creates_participant_teams():
     assert duplicate.status_code == 200
     assert duplicate.json()["data"]["created"] == []
     assert duplicate.json()["data"]["errors"][0]["message"] == "participant email already registered"
+
+
+def test_participant_email_conflict_with_staff_is_scoped_to_same_contest():
+    contest_id = first_contest_id()
+    set_contest_mutable(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    divisions = client.get(f"/api/operator/contests/{contest_id}/divisions", headers=auth_headers(operator["access_token"]))
+    division_id = next(item for item in divisions.json()["data"] if item["code"] == "advanced")["division_id"]
+    suffix = uuid4().hex[:8]
+
+    master = staff_tokens()
+    other_operator_email = f"other-operator-{suffix}@zoj.com"
+    other_contest = client.post(
+        "/api/admin/contests",
+        headers=auth_headers(master["access_token"]),
+        json={
+            "organization_name": f"Other Org {suffix}",
+            "operator_email": other_operator_email,
+        },
+    )
+    assert other_contest.status_code == 200
+
+    allowed = client.post(
+        f"/api/operator/contests/{contest_id}/participants",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "team_name": f"Scoped Staff Team {suffix}",
+            "division_id": division_id,
+            "leader": {"name": "Scoped Leader", "email": other_operator_email},
+            "members": [],
+        },
+    )
+    assert allowed.status_code == 200
+
+    denied = client.post(
+        f"/api/operator/contests/{contest_id}/participants",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "team_name": f"Same Contest Staff Team {suffix}",
+            "division_id": division_id,
+            "leader": {"name": "Same Contest Staff", "email": "test4@zoj.com"},
+            "members": [],
+        },
+    )
+    assert denied.status_code == 422
+    assert "participant email cannot be operator/staff account" in denied.json()["error"]["message"]
 
 
 def test_operator_deletes_participant_team_without_history():
