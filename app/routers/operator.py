@@ -22,6 +22,19 @@ from app.services.testcase_verifier import UploadedTestcase, build_verified_test
 router = APIRouter(tags=["operator"])
 
 
+def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str | None]:
+    safe_limit = max(1, min(limit, 300))
+    start = 0
+    if cursor:
+        try:
+            start = max(0, int(cursor))
+        except ValueError:
+            start = 0
+    end = start + safe_limit
+    next_cursor = str(end) if end < len(items) else None
+    return items[start:end], next_cursor
+
+
 class TeamMemberPayload(BaseModel):
     name: str
     email: EmailStr
@@ -751,7 +764,7 @@ async def revoke_participant_member_sessions(contest_id: str, participant_team_i
 
 
 @router.get("/operator/contests/{contest_id}/submissions")
-async def operator_submissions(contest_id: str, request: Request):
+async def operator_submissions(contest_id: str, request: Request, limit: int = 100, cursor: str | None = None, include_source: bool = False):
     require_contest_staff(request, contest_id)
     teams = {team.participant_team_id: team for team in store.teams.values() if team.contest_id == contest_id}
     members = {
@@ -769,9 +782,12 @@ async def operator_submissions(contest_id: str, request: Request):
         payload["team_name"] = team.team_name if team else None
         payload["member_name"] = member.name if member else None
         payload["member_email"] = str(member.email) if member else None
+        if not include_source:
+            payload["source_code"] = None
         items.append(payload)
     items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
-    return page(request, items)
+    sliced, next_cursor = _page_slice(items, limit, cursor)
+    return page(request, sliced, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
 
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/test-submissions")
@@ -826,11 +842,12 @@ async def operator_wait_test_submission_status(
 
 
 @router.get("/operator/contests/{contest_id}/judge-history")
-async def judge_history(contest_id: str, request: Request):
+async def judge_history(contest_id: str, request: Request, limit: int = 100, cursor: str | None = None):
     require_contest_staff(request, contest_id)
     jobs = [job.model_dump(mode="json") for job in store.judge_jobs.values() if job.contest_id == contest_id]
     jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-    return page(request, jobs)
+    sliced, next_cursor = _page_slice(jobs, limit, cursor)
+    return page(request, sliced, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
 
 
 @router.get("/operator/contests/{contest_id}/scoreboard/internal")

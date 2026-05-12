@@ -2518,6 +2518,7 @@ class DbStore:
                 return None
             if not verify_password(node_secret, row.node_secret_hash):
                 raise ValueError("node secret mismatch")
+            self._recover_expired_judge_leases(db)
             row.total_slots = total_slots
             row.free_slots = free_slots
             row.running_job_count = running_job_count
@@ -2600,17 +2601,14 @@ class DbStore:
                                 )
                     bundle_url = None
                     if problem and active_set:
-                        try:
-                            bundle_key = self._ensure_problem_judge_bundle(
-                                submission.contest_id,
-                                problem,
-                                active_set,
-                                testcase_rows,
-                                package_assets,
-                            )
-                            bundle_url = object_storage.presigned_get_url(bundle_key)
-                        except Exception:
-                            bundle_url = None
+                        bundle_key = self._judge_bundle_key(
+                            submission.contest_id,
+                            problem.problem_id,
+                            active_set.testcase_set_id,
+                            testcase_rows,
+                            package_assets,
+                        )
+                        bundle_url = object_storage.presigned_get_url(bundle_key)
                     jobs.append(
                         {
                             **_job(row).model_dump(mode="json"),
@@ -2626,6 +2624,34 @@ class DbStore:
             db.commit()
             return jobs
 
+    def _judge_bundle_key(
+        self,
+        contest_id: str,
+        problem_id: str,
+        testcase_set_id: str,
+        testcase_rows: list[TestcaseRow],
+        package_assets: list[ProblemAssetRow],
+    ) -> str:
+        role_assets: list[tuple[str, ProblemAssetRow]] = []
+        for asset in package_assets:
+            for role in ("package-resource", "checker", "validator"):
+                if f"/package-files/{role}/" in asset.storage_key:
+                    role_assets.append((role, asset))
+                    break
+        digest = hashlib.sha256()
+        digest.update(problem_id.encode("utf-8"))
+        digest.update(testcase_set_id.encode("utf-8"))
+        for case in testcase_rows:
+            digest.update(case.testcase_id.encode("utf-8"))
+            digest.update(case.input_sha256.encode("utf-8"))
+            digest.update(case.output_sha256.encode("utf-8"))
+        for role, asset in sorted(role_assets, key=lambda item: (item[0], item[1].asset_id)):
+            digest.update(role.encode("utf-8"))
+            digest.update(asset.asset_id.encode("utf-8"))
+            digest.update(asset.sha256.encode("utf-8"))
+        version_hash = digest.hexdigest()
+        return f"contests/{contest_id}/problems/{problem_id}/judge-bundles/{testcase_set_id}-{version_hash}.json.gz"
+
     def _ensure_problem_judge_bundle(
         self,
         contest_id: str,
@@ -2640,20 +2666,8 @@ class DbStore:
                 if f"/package-files/{role}/" in asset.storage_key:
                     role_assets.append((role, asset))
                     break
-
-        digest = hashlib.sha256()
-        digest.update(problem.problem_id.encode("utf-8"))
-        digest.update(testcase_set.testcase_set_id.encode("utf-8"))
-        for case in testcase_rows:
-            digest.update(case.testcase_id.encode("utf-8"))
-            digest.update(case.input_sha256.encode("utf-8"))
-            digest.update(case.output_sha256.encode("utf-8"))
-        for role, asset in sorted(role_assets, key=lambda item: (item[0], item[1].asset_id)):
-            digest.update(role.encode("utf-8"))
-            digest.update(asset.asset_id.encode("utf-8"))
-            digest.update(asset.sha256.encode("utf-8"))
-        version_hash = digest.hexdigest()
-        bundle_key = f"contests/{contest_id}/problems/{problem.problem_id}/judge-bundles/{testcase_set.testcase_set_id}-{version_hash}.json.gz"
+        bundle_key = self._judge_bundle_key(contest_id, problem.problem_id, testcase_set.testcase_set_id, testcase_rows, package_assets)
+        version_hash = bundle_key.rsplit("-", 1)[-1].replace(".json.gz", "")
 
         try:
             object_storage.read_bytes(bundle_key)

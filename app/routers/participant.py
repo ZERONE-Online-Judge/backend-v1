@@ -14,6 +14,19 @@ from app.settings import settings
 router = APIRouter(tags=["participant"])
 
 
+def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str | None]:
+    safe_limit = max(1, min(limit, 300))
+    start = 0
+    if cursor:
+        try:
+            start = max(0, int(cursor))
+        except ValueError:
+            start = 0
+    end = start + safe_limit
+    next_cursor = str(end) if end < len(items) else None
+    return items[start:end], next_cursor
+
+
 class OtpRequest(BaseModel):
     email: EmailStr
 
@@ -317,7 +330,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
 
 
 @router.get("/contests/{contest_id}/submissions")
-async def submissions(contest_id: str, request: Request):
+async def submissions(contest_id: str, request: Request, limit: int = 100, cursor: str | None = None):
     participant, _ = _allow_submission_list_view(request, contest_id)
     if not participant:
         items = []
@@ -325,14 +338,16 @@ async def submissions(contest_id: str, request: Request):
             if submission.contest_id == contest_id:
                 items.append(_participant_submission_payload(submission, include_source=False))
         items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
-        return page(request, items)
+        sliced, next_cursor = _page_slice(items, limit, cursor)
+        return page(request, sliced, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
     items = [
         _participant_submission_payload(s, include_source=True)
         for s in store.submissions.values()
         if s.contest_id == contest_id and s.participant_team_id == participant["team"].participant_team_id
     ]
     items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
-    return page(request, items)
+    sliced, next_cursor = _page_slice(items, limit, cursor)
+    return page(request, sliced, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
 
 
 @router.get("/contests/{contest_id}/submissions/{submission_id}")

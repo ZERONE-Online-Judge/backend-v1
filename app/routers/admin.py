@@ -13,6 +13,19 @@ from app.services.store import store
 router = APIRouter(tags=["admin"])
 
 
+def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str | None]:
+    safe_limit = max(1, min(limit, 300))
+    start = 0
+    if cursor:
+        try:
+            start = max(0, int(cursor))
+        except ValueError:
+            start = 0
+    end = start + safe_limit
+    next_cursor = str(end) if end < len(items) else None
+    return items[start:end], next_cursor
+
+
 def _node_with_activity(node: JudgeNode) -> dict:
     active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
     heartbeat_age = max(0, int((now_utc() - node.last_heartbeat_at).total_seconds()))
@@ -188,22 +201,45 @@ async def update_service_notice(notice_id: str, payload: ServiceNoticeUpdateRequ
 
 
 @router.get("/admin/judge/dashboard")
-async def judge_dashboard(request: Request):
+async def judge_dashboard(
+    request: Request,
+    include_queue: bool = False,
+    status_filter: str = "pending,running",
+    limit: int = 50,
+    cursor: str | None = None,
+):
     require_service_master(request)
     node_payloads = [_node_with_activity(node) for node in store.judge_nodes.values()]
+    jobs = list(store.judge_jobs.values())
+    queue_payload: list[dict] = []
+    queue_page = {"limit": max(1, min(limit, 300)), "next_cursor": None}
+    if include_queue:
+        allowed = {token.strip() for token in status_filter.split(",") if token.strip()}
+        if not allowed:
+            allowed = {"pending", "running"}
+        filtered = [job for job in jobs if job.status in allowed]
+        filtered.sort(key=lambda item: item.created_at, reverse=True)
+        queue_slice, next_cursor = _page_slice(filtered, limit, cursor)
+        queue_payload = [job.model_dump(mode="json") for job in queue_slice]
+        queue_page["next_cursor"] = next_cursor
     return ok(
         request,
         {
             "nodes": node_payloads,
-            "queue": [job.model_dump(mode="json") for job in store.judge_jobs.values()],
+            "queue": queue_payload,
+            "queue_page": queue_page,
+            "queue_stats": {
+                "pending_count": len([job for job in jobs if job.status == "pending"]),
+                "running_count": len([job for job in jobs if job.status == "running"]),
+                "succeeded_count": len([job for job in jobs if job.status == "succeeded"]),
+            },
         },
     )
 
 
 @router.get("/admin/judge/submissions")
-async def judge_submissions(request: Request, limit: int = 100):
+async def judge_submissions(request: Request, limit: int = 100, cursor: str | None = None, include_source: bool = False):
     require_service_master(request)
-    safe_limit = max(1, min(limit, 300))
     contests = store.contests
     problems = store.problems
     divisions = store.divisions
@@ -219,12 +255,14 @@ async def judge_submissions(request: Request, limit: int = 100):
     for bucket in testcase_by_set.values():
         bucket.sort(key=lambda item: item.display_order)
 
-    latest = sorted(
+    latest_all = sorted(
         store.submissions.values(),
         key=lambda item: item.submitted_at,
         reverse=True,
-    )[:safe_limit]
+    )
+    latest, next_cursor = _page_slice(latest_all, limit, cursor)
 
+    job_by_submission_id = {job.submission_id: job for job in jobs.values()}
     data = []
     for submission in latest:
         problem = problems.get(submission.problem_id)
@@ -232,13 +270,16 @@ async def judge_submissions(request: Request, limit: int = 100):
         division = divisions.get(submission.division_id)
         team = teams.get(submission.participant_team_id)
         member = next((item for item in (team.members if team else []) if item.team_member_id == submission.team_member_id), None)
-        job = next((item for item in jobs.values() if item.submission_id == submission.submission_id), None)
+        job = job_by_submission_id.get(submission.submission_id)
         node = nodes.get(job.assigned_node_id) if job and job.assigned_node_id else None
         active_set = next((item for item in testcase_sets.values() if item.problem_id == submission.problem_id and item.is_active), None)
         case_count = len(testcase_by_set.get(active_set.testcase_set_id, [])) if active_set else 0
+        submission_payload = submission.model_dump(mode="json")
+        if not include_source:
+            submission_payload["source_code"] = None
         data.append(
             {
-                "submission": submission.model_dump(mode="json"),
+                "submission": submission_payload,
                 "contest": {"contest_id": contest.contest_id, "title": contest.title} if contest else None,
                 "division": {"division_id": division.division_id, "name": division.name} if division else None,
                 "problem": {
@@ -254,9 +295,10 @@ async def judge_submissions(request: Request, limit: int = 100):
                 "judge_job": job.model_dump(mode="json") if job else None,
                 "judge_node": node.model_dump(mode="json") if node else None,
                 "active_testcase_count": case_count,
+                "queue_position": job.queue_position if job else None,
             }
         )
-    return page(request, data)
+    return page(request, data, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
 
 
 @router.get("/admin/mail-queue")
