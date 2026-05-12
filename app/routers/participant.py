@@ -330,7 +330,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
 
 
 @router.get("/contests/{contest_id}/submissions")
-async def submissions(contest_id: str, request: Request, limit: int = 100, cursor: str | None = None):
+async def submissions(contest_id: str, request: Request, limit: int = 100, cursor: str | None = None, include_source: bool = False):
     participant, _ = _allow_submission_list_view(request, contest_id)
     if not participant:
         items = []
@@ -339,15 +339,29 @@ async def submissions(contest_id: str, request: Request, limit: int = 100, curso
                 items.append(_participant_submission_payload(submission, include_source=False))
         items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
         sliced, next_cursor = _page_slice(items, limit, cursor)
-        return page(request, sliced, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
+        return page(
+            request,
+            sliced,
+            next_cursor=next_cursor,
+            limit=max(1, min(limit, 300)),
+            total_count=len(items),
+            current_cursor=cursor,
+        )
     items = [
-        _participant_submission_payload(s, include_source=True)
+        _participant_submission_payload(s, include_source=include_source)
         for s in store.submissions.values()
         if s.contest_id == contest_id and s.participant_team_id == participant["team"].participant_team_id
     ]
     items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
     sliced, next_cursor = _page_slice(items, limit, cursor)
-    return page(request, sliced, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
+    return page(
+        request,
+        sliced,
+        next_cursor=next_cursor,
+        limit=max(1, min(limit, 300)),
+        total_count=len(items),
+        current_cursor=cursor,
+    )
 
 
 @router.get("/contests/{contest_id}/submissions/{submission_id}")

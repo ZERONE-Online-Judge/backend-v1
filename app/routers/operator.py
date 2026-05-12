@@ -787,7 +787,14 @@ async def operator_submissions(contest_id: str, request: Request, limit: int = 1
         items.append(payload)
     items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
     sliced, next_cursor = _page_slice(items, limit, cursor)
-    return page(request, sliced, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
+    return page(
+        request,
+        sliced,
+        next_cursor=next_cursor,
+        limit=max(1, min(limit, 300)),
+        total_count=len(items),
+        current_cursor=cursor,
+    )
 
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/test-submissions")
@@ -847,7 +854,14 @@ async def judge_history(contest_id: str, request: Request, limit: int = 100, cur
     jobs = [job.model_dump(mode="json") for job in store.judge_jobs.values() if job.contest_id == contest_id]
     jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
     sliced, next_cursor = _page_slice(jobs, limit, cursor)
-    return page(request, sliced, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
+    return page(
+        request,
+        sliced,
+        next_cursor=next_cursor,
+        limit=max(1, min(limit, 300)),
+        total_count=len(jobs),
+        current_cursor=cursor,
+    )
 
 
 @router.get("/operator/contests/{contest_id}/scoreboard/internal")

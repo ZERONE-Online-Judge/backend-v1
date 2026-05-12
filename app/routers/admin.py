@@ -298,7 +298,14 @@ async def judge_submissions(request: Request, limit: int = 100, cursor: str | No
                 "queue_position": job.queue_position if job else None,
             }
         )
-    return page(request, data, next_cursor=next_cursor, limit=max(1, min(limit, 300)))
+    return page(
+        request,
+        data,
+        next_cursor=next_cursor,
+        limit=max(1, min(limit, 300)),
+        total_count=len(latest_all),
+        current_cursor=cursor,
+    )
 
 
 @router.get("/admin/mail-queue")
