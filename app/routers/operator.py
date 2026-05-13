@@ -143,6 +143,7 @@ class ProblemCreateRequest(BaseModel):
 
 class ProblemUpdateRequest(BaseModel):
     division_id: str | None = None
+    problem_code: str | None = None
     title: str | None = None
     statement: str | None = None
     time_limit_ms: int | None = None
@@ -938,7 +939,9 @@ async def division_internal_scoreboard(contest_id: str, division_id: str, reques
 @router.get("/operator/contests/{contest_id}/problems")
 async def operator_problems(contest_id: str, request: Request):
     require_contest_staff(request, contest_id)
-    return page(request, [p.model_dump(mode="json") for p in store.problems.values() if p.contest_id == contest_id])
+    problems = [p for p in store.problems.values() if p.contest_id == contest_id]
+    problems.sort(key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
+    return page(request, [p.model_dump(mode="json") for p in problems])
 
 
 @router.post("/operator/contests/{contest_id}/storage/presign-upload")

@@ -7,6 +7,7 @@ import math
 import secrets
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal, create_schema
@@ -1990,8 +1991,16 @@ class DbStore:
                         division = db.get(ContestDivisionRow, value)
                         if not division or division.contest_id != contest_id:
                             raise ValueError("division not found")
+                    if key == "problem_code":
+                        value = str(value).strip()
+                        if not value:
+                            raise ValueError("problem code is required")
                     setattr(row, key, value)
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError as error:
+                db.rollback()
+                raise ValueError("problem code already exists in this division") from error
             db.refresh(row)
             return _problem(row)
 
