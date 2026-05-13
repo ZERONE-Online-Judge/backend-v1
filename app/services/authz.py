@@ -16,8 +16,10 @@ def bearer_token(request: Request) -> str | None:
 def require_staff(request: Request) -> StaffAccount:
     token = bearer_token(request)
     account = store.get_staff_by_access_token(token) if token else None
+    if not account and token:
+        account = store.get_staff_by_general_access_token(token)
     if not account:
-        raise authentication_required("Staff access token is required.")
+        raise authentication_required("Staff or general operator access token is required.")
     return account
 
 

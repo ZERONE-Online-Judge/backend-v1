@@ -914,9 +914,6 @@ class DbStore:
 
     def create_general_otp(self, email: str) -> str | None:
         with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            if account and (account.is_service_master or bool([item for item in (account.permissions or "").split(",") if item.strip()])):
-                return None
             if not self._has_general_login_identity(db, email):
                 return None
             code = f"{secrets.randbelow(1_000_000):06d}"
@@ -999,7 +996,12 @@ class DbStore:
                         continue
                     operator_contests.append({"contest": _contest(contest).model_dump(mode="json"), "scopes": ["master"]})
             if issue_operator_session:
-                operator_session = self._issue_staff_session(db, account)
+                operator_session = {
+                    "access_token": "",
+                    "refresh_token": "",
+                    "staff": _staff(account).model_dump(mode="json"),
+                    "default_redirect": "/admin" if account.is_service_master else "/operator",
+                }
 
         if not participant_contests and not operator_contests and not account:
             return None
@@ -1028,13 +1030,14 @@ class DbStore:
         db.commit()
         with self._session() as fresh_db:
             fresh_profile = self._general_profile(fresh_db, email, issue_operator_session=True)
-        return {"access_token": access_token, "refresh_token": refresh_token, **(fresh_profile or profile)}
+        result = {"access_token": access_token, "refresh_token": refresh_token, **(fresh_profile or profile)}
+        if result.get("operator_session"):
+            result["operator_session"]["access_token"] = access_token
+            result["operator_session"]["refresh_token"] = refresh_token
+        return result
 
     def verify_general_otp(self, email: str, otp_code: str) -> dict | None:
         with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            if account and (account.is_service_master or bool([item for item in (account.permissions or "").split(",") if item.strip()])):
-                return None
             otp = db.get(OtpCodeRow, email)
             demo_bypass = settings.allow_empty_otp and otp_code == ""
             if not demo_bypass and (not otp or otp.contest_id != GENERAL_OTP_SCOPE or otp.code != otp_code or _aware(otp.expires_at) <= now_utc()):
@@ -1087,7 +1090,29 @@ class DbStore:
             session.last_seen_at = now_utc()
             profile = self._general_profile(db, session.email, issue_operator_session=True)
             db.commit()
+            if profile and profile.get("operator_session"):
+                profile["operator_session"]["access_token"] = access_token
+                profile["operator_session"]["refresh_token"] = ""
             return profile
+
+    def get_staff_by_general_access_token(self, access_token: str) -> StaffAccount | None:
+        if not _valid_session_token(access_token, "general_access"):
+            return None
+        with self._session() as db:
+            session = db.scalar(
+                select(GeneralSessionRow).where(
+                    GeneralSessionRow.access_token_hash == token_hash(access_token),
+                    GeneralSessionRow.revoked_at.is_(None),
+                )
+            )
+            if not session or _aware(session.access_expires_at) <= now_utc():
+                return None
+            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == session.email))
+            if not account:
+                return None
+            session.last_seen_at = now_utc()
+            db.commit()
+            return _staff(account)
 
     def refresh_general_session(self, refresh_token: str) -> dict | None:
         if not _valid_session_token(refresh_token, "general_refresh"):
@@ -1109,7 +1134,11 @@ class DbStore:
             db.commit()
             if not profile:
                 return None
-            return {"access_token": access_token, "refresh_token": refresh_token, **profile}
+            result = {"access_token": access_token, "refresh_token": refresh_token, **profile}
+            if result.get("operator_session"):
+                result["operator_session"]["access_token"] = access_token
+                result["operator_session"]["refresh_token"] = refresh_token
+            return result
 
     def revoke_general_session(self, access_token: str | None, refresh_token: str | None) -> bool:
         with self._session() as db:

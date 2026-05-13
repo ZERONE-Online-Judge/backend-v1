@@ -3,7 +3,7 @@ from pydantic import BaseModel, EmailStr
 
 from app.settings import settings
 from app.services.errors import AppError
-from app.services.authz import bearer_token
+from app.services.authz import bearer_token, require_staff
 from app.services.responses import ok
 from app.services.store import store
 
@@ -71,42 +71,22 @@ class GeneralLogoutRequest(BaseModel):
 
 @router.post("/auth/staff/login")
 async def staff_login(payload: StaffLoginRequest, request: Request):
-    session = store.authenticate_staff(str(payload.email), payload.password)
-    if not session:
-        raise AppError(401, "invalid_credentials", "Invalid email or password.")
-    return ok(request, session)
+    raise AppError(410, "staff_login_removed", "Staff login has been unified into general email OTP login.")
 
 
 @router.post("/auth/staff/otp/request")
 async def staff_otp_request(payload: StaffOtpRequest, request: Request):
-    retry_after = store.staff_otp_retry_after_seconds(str(payload.email))
-    if retry_after > 0:
-        raise AppError(
-            429,
-            "otp_request_rate_limited",
-            f"Please wait {retry_after} seconds before requesting another verification code.",
-            {"retry_after_seconds": retry_after},
-        )
-    sent = store.create_staff_otp(str(payload.email))
-    if not sent:
-        raise AppError(404, "not_found", "Staff email is not registered.")
-    return ok(request, {"sent": True, "delivery": "email", "cooldown_seconds": settings.otp_request_cooldown_seconds})
+    raise AppError(410, "staff_login_removed", "Staff login has been unified into general email OTP login.")
 
 
 @router.post("/auth/staff/otp/verify")
 async def staff_otp_verify(payload: StaffOtpVerifyRequest, request: Request):
-    session = store.verify_staff_otp(str(payload.email), payload.otp_code)
-    if not session:
-        raise AppError(401, "invalid_credentials", "Invalid email or verification code.")
-    return ok(request, session)
+    raise AppError(410, "staff_login_removed", "Staff login has been unified into general email OTP login.")
 
 
 @router.get("/auth/staff/me")
 async def staff_me(request: Request):
-    token = bearer_token(request)
-    account = store.get_staff_by_access_token(token) if token else None
-    if not account:
-        raise AppError(401, "authentication_required", "Staff access token is required.")
+    account = require_staff(request)
     return ok(request, account.model_dump(mode="json"))
 
 
@@ -126,8 +106,6 @@ async def staff_refresh(payload: StaffRefreshRequest, request: Request):
 
 @router.post("/auth/general/otp/request")
 async def general_otp_request(payload: GeneralOtpRequest, request: Request):
-    if store.is_password_login_email(str(payload.email)):
-        raise AppError(400, "password_login_required", "This account must use password login.")
     retry_after = store.general_otp_retry_after_seconds(str(payload.email))
     if retry_after > 0:
         raise AppError(
@@ -155,41 +133,22 @@ async def general_otp_verify(payload: GeneralOtpVerifyRequest, request: Request)
 
 @router.post("/auth/general/login-method")
 async def general_login_method(payload: GeneralLoginMethodRequest, request: Request):
-    if store.is_password_login_email(str(payload.email)):
-        return ok(request, {"method": "password"})
     return ok(request, {"method": "otp"})
 
 
 @router.post("/auth/general/password/login")
 async def general_password_login(payload: GeneralPasswordLoginRequest, request: Request):
-    raise AppError(409, "invalid_state_transition", "Use password OTP flow: /auth/general/password/otp/request -> /auth/general/password/otp/verify.")
+    raise AppError(410, "password_login_removed", "Password login has been removed. Use email OTP login.")
 
 
 @router.post("/auth/general/password/otp/request")
 async def general_password_otp_request(payload: GeneralPasswordOtpRequest, request: Request):
-    retry_after = store.staff_otp_retry_after_seconds(str(payload.email))
-    if retry_after > 0:
-        raise AppError(
-            429,
-            "otp_request_rate_limited",
-            f"Please wait {retry_after} seconds before requesting another verification code.",
-            {"retry_after_seconds": retry_after},
-        )
-    sent = store.create_general_password_otp(str(payload.email), payload.password)
-    if not sent:
-        raise AppError(401, "invalid_credentials", "Invalid email or password.")
-    data = {"sent": True, "delivery": "email", "cooldown_seconds": settings.otp_request_cooldown_seconds}
-    if settings.allow_empty_otp:
-        data["demo_otp"] = sent
-    return ok(request, data)
+    raise AppError(410, "password_login_removed", "Password login has been removed. Use email OTP login.")
 
 
 @router.post("/auth/general/password/otp/verify")
 async def general_password_otp_verify(payload: GeneralPasswordOtpVerifyRequest, request: Request):
-    session = store.verify_general_password_otp(str(payload.email), payload.password, payload.otp_code)
-    if not session:
-        raise AppError(401, "invalid_credentials", "Invalid email, password, or verification code.")
-    return ok(request, session)
+    raise AppError(410, "password_login_removed", "Password login has been removed. Use email OTP login.")
 
 
 @router.get("/auth/general/me")

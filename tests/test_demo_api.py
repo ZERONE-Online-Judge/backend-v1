@@ -61,9 +61,11 @@ def reset_demo_contest_window():
 
 
 def staff_tokens(email: str = "test3@zoj.com") -> dict:
-    response = client.post("/api/auth/staff/login", json={"email": email, "password": "demo"})
+    response = client.post("/api/auth/general/otp/verify", json={"email": email, "otp_code": ""})
     assert response.status_code == 200
-    return response.json()["data"]
+    operator_session = response.json()["data"].get("operator_session")
+    assert operator_session
+    return operator_session
 
 
 def auth_headers(token: str) -> dict:
@@ -133,38 +135,48 @@ def test_public_home():
     assert response.json()["data"]["active_contest_count"] >= 1
 
 
-def test_staff_login_success():
-    response = client.post("/api/auth/staff/login", json={"email": "test3@zoj.com", "password": "demo"})
+def test_service_master_general_otp_login_success():
+    response = client.post("/api/auth/general/otp/verify", json={"email": "test3@zoj.com", "otp_code": ""})
     assert response.status_code == 200
-    assert response.json()["data"]["default_redirect"] == "/admin"
-    assert response.json()["data"]["access_token"]
-    assert response.json()["data"]["refresh_token"]
-    assert jwt_payload(response.json()["data"]["access_token"])["typ"] == "staff_access"
-    assert jwt_payload(response.json()["data"]["refresh_token"])["typ"] == "staff_refresh"
+    session = response.json()["data"]
+    assert session["access_token"]
+    assert session["refresh_token"]
+    assert jwt_payload(session["access_token"])["typ"] == "general_access"
+    assert jwt_payload(session["refresh_token"])["typ"] == "general_refresh"
+    assert session["operator_session"]["default_redirect"] == "/admin"
+    assert session["operator_session"]["access_token"]
+    assert session["operator_session"]["refresh_token"]
+    assert session["operator_session"]["access_token"] == session["access_token"]
+    assert session["operator_session"]["refresh_token"] == session["refresh_token"]
+    assert jwt_payload(session["operator_session"]["access_token"])["typ"] == "general_access"
+    assert jwt_payload(session["operator_session"]["refresh_token"])["typ"] == "general_refresh"
 
 
-def test_staff_login_failure():
+def test_legacy_staff_login_is_removed():
     response = client.post("/api/auth/staff/login", json={"email": "test3@zoj.com", "password": "bad"})
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "invalid_credentials"
+    assert response.status_code == 410
+    assert response.json()["error"]["code"] == "staff_login_removed"
 
 
-def test_staff_otp_login_success():
-    request = client.post("/api/auth/staff/otp/request", json={"email": "test4@zoj.com"})
+def test_operator_general_otp_login_success():
+    request = client.post("/api/auth/general/otp/request", json={"email": "test4@zoj.com"})
     assert request.status_code == 200
 
     code = store.otp_codes["test4@zoj.com"]
-    verify = client.post("/api/auth/staff/otp/verify", json={"email": "test4@zoj.com", "otp_code": code})
+    verify = client.post("/api/auth/general/otp/verify", json={"email": "test4@zoj.com", "otp_code": code})
     assert verify.status_code == 200
-    assert verify.json()["data"]["default_redirect"] == "/operator"
+    assert verify.json()["data"]["operator_session"]["default_redirect"] == "/operator"
+    assert verify.json()["data"]["operator_session"]["access_token"] == verify.json()["data"]["access_token"]
+    contests = client.get("/api/operator/contests", headers=auth_headers(verify.json()["data"]["access_token"]))
+    assert contests.status_code == 200
 
 
-def test_staff_otp_request_is_rate_limited():
-    first = client.post("/api/auth/staff/otp/request", json={"email": "test3@zoj.com"})
+def test_general_otp_request_is_rate_limited_for_staff_account():
+    first = client.post("/api/auth/general/otp/request", json={"email": "test3@zoj.com"})
     assert first.status_code == 200
     assert first.json()["data"]["cooldown_seconds"] == 10
 
-    second = client.post("/api/auth/staff/otp/request", json={"email": "test3@zoj.com"})
+    second = client.post("/api/auth/general/otp/request", json={"email": "test3@zoj.com"})
     assert second.status_code == 429
     assert second.json()["error"]["code"] == "otp_request_rate_limited"
     assert second.json()["error"]["details"]["retry_after_seconds"] >= 1
@@ -263,22 +275,22 @@ def test_admin_service_notice_management():
     assert any(item["service_notice_id"] == notice_id for item in public.json()["data"])
 
 
-def test_staff_session_me_refresh_and_logout():
+def test_general_operator_session_me_refresh_and_logout():
     tokens = staff_tokens()
 
     me = client.get("/api/auth/staff/me", headers=auth_headers(tokens["access_token"]))
     assert me.status_code == 200
     assert me.json()["data"]["email"] == "test3@zoj.com"
 
-    refreshed = client.post("/api/auth/staff/refresh", json={"refresh_token": tokens["refresh_token"]})
+    refreshed = client.post("/api/auth/general/refresh", json={"refresh_token": tokens["refresh_token"]})
     assert refreshed.status_code == 200
     assert refreshed.json()["data"]["access_token"]
     assert refreshed.json()["data"]["refresh_token"] == tokens["refresh_token"]
-    assert refreshed.json()["data"]["staff"]["email"] == "test3@zoj.com"
-    assert refreshed.json()["data"]["default_redirect"] == "/admin"
+    assert refreshed.json()["data"]["account"]["email"] == "test3@zoj.com"
+    assert refreshed.json()["data"]["operator_session"]["default_redirect"] == "/admin"
 
     logout = client.post(
-        "/api/auth/staff/logout",
+        "/api/auth/general/logout",
         headers=auth_headers(refreshed.json()["data"]["access_token"]),
         json={"refresh_token": tokens["refresh_token"]},
     )
