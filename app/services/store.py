@@ -2382,7 +2382,20 @@ class DbStore:
             submission_count_by_team: dict[str, int] = {}
             best_by_team_problem: dict[tuple[str, str], dict] = {}
             problem_attempts_by_team: dict[tuple[str, str], dict] = {}
-            ignored_statuses = {SubmissionStatus.COMPILE_ERROR.value}
+            scored_statuses = {
+                SubmissionStatus.ACCEPTED.value,
+                SubmissionStatus.WRONG_ANSWER.value,
+                SubmissionStatus.COMPILE_ERROR.value,
+                SubmissionStatus.RUNTIME_ERROR.value,
+                SubmissionStatus.TIME_LIMIT_EXCEEDED.value,
+                SubmissionStatus.MEMORY_LIMIT_EXCEEDED.value,
+                SubmissionStatus.OUTPUT_LIMIT_EXCEEDED.value,
+                SubmissionStatus.SYSTEM_ERROR.value,
+            }
+            best_score_statuses = scored_statuses - {
+                SubmissionStatus.COMPILE_ERROR.value,
+                SubmissionStatus.SYSTEM_ERROR.value,
+            }
             for submission in submissions:
                 submission_count_by_team[submission.participant_team_id] = submission_count_by_team.get(submission.participant_team_id, 0) + 1
                 if submission.problem_id not in problem_by_id:
@@ -2396,9 +2409,12 @@ class DbStore:
                         "wrong_before_solved": 0,
                     },
                 )
-                if submission.status in ignored_statuses or submission.awarded_score is None:
+                if submission.status not in scored_statuses or submission.awarded_score is None:
                     continue
-                stats["attempts"] += 1
+                if not stats["solved"]:
+                    stats["attempts"] += 1
+                if submission.status not in best_score_statuses:
+                    continue
                 current = best_by_team_problem.get(key)
                 score = max(submission.awarded_score, 0)
                 max_score = problem_by_id[submission.problem_id].max_score

@@ -1747,6 +1747,9 @@ def test_scoreboard_uses_best_non_compile_score_per_problem():
     problem_score = next(item for item in team_row["problem_scores"] if item["problem_id"] == problem["problem_id"])
     assert problem_score["score"] == 30
     assert problem_score["best_submission_id"] == submissions[0]["submission_id"]
+    assert problem_score["attempts"] == 3
+    assert problem_score["wrong_attempts"] == 3
+    assert problem_score["solved"] is False
 
 
 def test_manual_rejudge_api_is_not_available_to_service_master_or_operator():
