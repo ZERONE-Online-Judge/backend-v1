@@ -10,7 +10,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr
 
-from app.models import ContestStatus, ProblemAsset, TeamMemberRole, now_utc
+from app.models import ContestStatus, ProblemAsset, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import require_contest_staff, require_staff
 from app.services.errors import AppError, not_found
 from app.services.package_builder import PackageBuildError, build_problem_package, package_role
@@ -20,6 +20,8 @@ from app.services.storage import object_storage
 from app.services.testcase_verifier import UploadedTestcase, build_verified_testcase_set, verify_active_testcases_with_candidate_asset
 
 router = APIRouter(tags=["operator"])
+
+OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
 
 
 def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str | None]:
@@ -941,7 +943,32 @@ async def operator_problems(contest_id: str, request: Request):
     require_contest_staff(request, contest_id)
     problems = [p for p in store.problems.values() if p.contest_id == contest_id]
     problems.sort(key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
-    return page(request, [p.model_dump(mode="json") for p in problems])
+    teams = [
+        team
+        for team in store.teams.values()
+        if team.contest_id == contest_id and not team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX)
+    ]
+    total_teams_by_division: dict[str, int] = {}
+    valid_team_ids: set[str] = set()
+    for team in teams:
+        valid_team_ids.add(team.participant_team_id)
+        total_teams_by_division[team.division_id] = total_teams_by_division.get(team.division_id, 0) + 1
+
+    solved_teams_by_problem: dict[str, set[str]] = {}
+    for submission in store.submissions.values():
+        if submission.contest_id != contest_id or submission.status != SubmissionStatus.ACCEPTED:
+            continue
+        if submission.participant_team_id not in valid_team_ids:
+            continue
+        solved_teams_by_problem.setdefault(submission.problem_id, set()).add(submission.participant_team_id)
+
+    items = []
+    for problem in problems:
+        item = problem.model_dump(mode="json")
+        item["solved_team_count"] = len(solved_teams_by_problem.get(problem.problem_id, set()))
+        item["total_team_count"] = total_teams_by_division.get(problem.division_id, 0)
+        items.append(item)
+    return page(request, items)
 
 
 @router.post("/operator/contests/{contest_id}/storage/presign-upload")
