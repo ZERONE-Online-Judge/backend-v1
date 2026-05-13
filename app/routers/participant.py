@@ -143,6 +143,8 @@ def _allow_submission_list_view(request: Request, contest_id: str) -> tuple[dict
 
 def _participant_submission_payload(submission, include_source: bool) -> dict:
     item = submission.model_dump(mode="json")
+    source_code = item.get("source_code") or ""
+    item["source_code_length"] = len(source_code.encode("utf-8"))
     # Participants should not receive internal judge diagnostics/logs.
     item["compile_message"] = None
     item["judge_message"] = None

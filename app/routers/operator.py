@@ -782,6 +782,7 @@ async def operator_submissions(contest_id: str, request: Request, limit: int = 1
         payload["team_name"] = team.team_name if team else None
         payload["member_name"] = member.name if member else None
         payload["member_email"] = str(member.email) if member else None
+        payload["source_code_length"] = len((submission.source_code or "").encode("utf-8"))
         if not include_source:
             payload["source_code"] = None
         items.append(payload)
@@ -809,6 +810,7 @@ async def operator_submission_detail(contest_id: str, submission_id: str, reques
     payload["team_name"] = team.team_name if team else None
     payload["member_name"] = member.name if member else None
     payload["member_email"] = str(member.email) if member else None
+    payload["source_code_length"] = len((submission.source_code or "").encode("utf-8"))
     return ok(request, payload)
 
 
