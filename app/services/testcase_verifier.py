@@ -121,6 +121,60 @@ def build_verified_testcase_set(contest_id: str, problem_id: str, cases: list[Up
     }
 
 
+def verify_active_testcases_with_candidate_asset(contest_id: str, problem_id: str, candidate_asset: ProblemAsset) -> dict | None:
+    candidate_role = package_role(candidate_asset)
+    if candidate_role not in {"validator", "checker", "package-resource"}:
+        return None
+
+    sets = store.testcase_sets_for_problem(contest_id, problem_id)
+    active_set = next((item for item in sets if item.get("is_active")), None)
+    active_cases = active_set.get("testcases", []) if active_set else []
+    if not active_set or not active_cases:
+        return {
+            "candidate_role": candidate_role,
+            "checked": False,
+            "reason": "active testcase set is empty",
+        }
+
+    assets = [*store.problem_assets_for_problem(contest_id, problem_id), candidate_asset]
+    role_assets: dict[str, list[ProblemAsset]] = {}
+    for asset in assets:
+        role = package_role(asset)
+        if role:
+            role_assets.setdefault(role, []).append(asset)
+
+    package_resources = role_assets.get("package-resource", [])
+    if not package_resources:
+        package_resources = [asset for asset in assets if Path(asset.original_filename).name.lower() == "testlib.h"]
+    if not package_resources:
+        raise PackageBuildError("testlib.h package-resource file is required.")
+
+    should_run_validator = candidate_role in {"validator", "package-resource"}
+    should_run_checker = candidate_role in {"checker", "package-resource"}
+
+    with tempfile.TemporaryDirectory(prefix="zoj-asset-verify-") as temp:
+        work_root = Path(temp)
+        validator = _prepare_program(work_root / "validator", _latest_required(role_assets, "validator", assets), package_resources) if should_run_validator else None
+        checker = _prepare_program(work_root / "checker", _latest_required(role_assets, "checker", assets), package_resources) if should_run_checker else None
+        for index, case in enumerate(sorted(active_cases, key=lambda item: item.get("display_order", 0)), start=1):
+            display_order = int(case.get("display_order") or index)
+            input_text = _normalize_text_for_tooling(object_storage.read_bytes(case["input_storage_key"]))
+            output_text = _normalize_text_for_tooling(object_storage.read_bytes(case["output_storage_key"]))
+            if validator:
+                _run_program(validator, args=[], stdin=input_text, label=f"validator test {display_order}", capture_stdout=False)
+            if checker:
+                _run_checker(checker, work_root, display_order, input_text, output_text)
+
+    return {
+        "candidate_role": candidate_role,
+        "checked": True,
+        "testcase_set_id": active_set["testcase_set_id"],
+        "verified_count": len(active_cases),
+        "validator": should_run_validator,
+        "checker": should_run_checker,
+    }
+
+
 def _latest_required(role_assets: dict[str, list[ProblemAsset]], role: str, all_assets: list[ProblemAsset]) -> ProblemAsset:
     items = role_assets.get(role, [])
     if not items:

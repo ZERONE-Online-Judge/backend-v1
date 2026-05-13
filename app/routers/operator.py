@@ -10,14 +10,14 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr
 
-from app.models import ContestStatus, TeamMemberRole, now_utc
+from app.models import ContestStatus, ProblemAsset, TeamMemberRole, now_utc
 from app.services.authz import require_contest_staff, require_staff
 from app.services.errors import AppError, not_found
 from app.services.package_builder import PackageBuildError, build_problem_package, package_role
 from app.services.responses import ok, page
 from app.services.store import store
 from app.services.storage import object_storage
-from app.services.testcase_verifier import UploadedTestcase, build_verified_testcase_set
+from app.services.testcase_verifier import UploadedTestcase, build_verified_testcase_set, verify_active_testcases_with_candidate_asset
 
 router = APIRouter(tags=["operator"])
 
@@ -1008,6 +1008,23 @@ async def problem_assets(contest_id: str, problem_id: str, request: Request):
 async def create_problem_asset(contest_id: str, problem_id: str, payload: ProblemAssetCreateRequest, request: Request, background_tasks: BackgroundTasks):
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
+    candidate_asset = ProblemAsset(
+        contest_id=contest_id,
+        problem_id=problem_id,
+        original_filename=payload.original_filename,
+        storage_key=payload.storage_key,
+        mime_type=payload.mime_type,
+        file_size=payload.file_size,
+        sha256=payload.sha256,
+    )
+    try:
+        verify_active_testcases_with_candidate_asset(contest_id, problem_id, candidate_asset)
+    except PackageBuildError as error:
+        try:
+            object_storage.delete(payload.storage_key)
+        except Exception:
+            pass
+        raise AppError(422, "package_asset_verification_failed", str(error))
     try:
         asset = store.create_problem_asset(
             contest_id=contest_id,

@@ -893,6 +893,23 @@ def test_operator_creates_verified_testcase_set_from_in_out_files():
     assert data["testcase_set"]["is_active"] is True
     assert data["testcases"][0]["input_storage_key"] == input_key
 
+    bad_checker = "import sys\nassert False, 'bad checker must not be accepted'\n"
+    bad_checker_key = f"contests/{contest_id}/problems/{problem['problem_id']}/package-files/checker/{suffix}-bad-checker.py"
+    object_storage.write_text(bad_checker_key, bad_checker)
+    rejected = client.post(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/assets",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "original_filename": "checker.py",
+            "storage_key": bad_checker_key,
+            "mime_type": "text/plain",
+            "file_size": len(bad_checker.encode("utf-8")),
+            "sha256": hashlib.sha256(bad_checker.encode("utf-8")).hexdigest(),
+        },
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "package_asset_verification_failed"
+
 
 def test_operator_can_delete_testcase_and_testcase_set():
     contest_id = first_contest_id()
