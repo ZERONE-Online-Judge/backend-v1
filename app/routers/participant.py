@@ -27,6 +27,10 @@ def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str 
     return items[start:end], next_cursor
 
 
+def _sort_problems(items: list):
+    return sorted(items, key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
+
+
 class OtpRequest(BaseModel):
     email: EmailStr
 
@@ -197,7 +201,7 @@ async def division_workspace(contest_id: str, division_id: str, request: Request
     division = store.get_division(contest_id, division_id)
     if not division:
         raise not_found()
-    problems = [p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id]
+    problems = _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])
     return ok(
         request,
         {
@@ -216,7 +220,7 @@ async def problems(contest_id: str, request: Request):
     division_id = participant["division"].division_id if participant else (divisions[0].division_id if divisions else None)
     return page(
         request,
-        [p.model_dump(mode="json") for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id],
+        [p.model_dump(mode="json") for p in _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])],
     )
 
 
@@ -227,7 +231,7 @@ async def division_problems(contest_id: str, division_id: str, request: Request)
         raise not_found()
     return page(
         request,
-        [p.model_dump(mode="json") for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id],
+        [p.model_dump(mode="json") for p in _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])],
     )
 
 
