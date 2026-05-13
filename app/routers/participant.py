@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models import ContestStatus, now_utc
+from app.models import ContestStatus, SubmissionStatus, now_utc
 from app.services.authz import bearer_token, require_participant
 from app.services.errors import AppError, invalid_state, not_found
 from app.services.responses import ok, page
@@ -29,6 +29,39 @@ def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str 
 
 def _sort_problems(items: list):
     return sorted(items, key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
+
+
+def _problem_solve_statuses(contest_id: str, participant: dict | None) -> dict[str, str]:
+    if not participant:
+        return {}
+    team_id = participant["team"].participant_team_id
+    statuses: dict[str, str] = {}
+    pending = {SubmissionStatus.WAITING, SubmissionStatus.PREPARING, SubmissionStatus.JUDGING}
+    wrong = {
+        SubmissionStatus.WRONG_ANSWER,
+        SubmissionStatus.TIME_LIMIT_EXCEEDED,
+        SubmissionStatus.MEMORY_LIMIT_EXCEEDED,
+        SubmissionStatus.OUTPUT_LIMIT_EXCEEDED,
+    }
+    for submission in store.submissions.values():
+        if submission.contest_id != contest_id or submission.participant_team_id != team_id:
+            continue
+        current = statuses.get(submission.problem_id)
+        if current == "accepted":
+            continue
+        if submission.status == SubmissionStatus.ACCEPTED:
+            statuses[submission.problem_id] = "accepted"
+        elif submission.status in wrong:
+            statuses[submission.problem_id] = "wrong"
+        elif submission.status in pending and current is None:
+            statuses[submission.problem_id] = "unsolved"
+    return statuses
+
+
+def _problem_payload(problem, solve_statuses: dict[str, str]) -> dict:
+    item = problem.model_dump(mode="json")
+    item["solve_status"] = solve_statuses.get(problem.problem_id, "unsolved")
+    return item
 
 
 class OtpRequest(BaseModel):
@@ -182,14 +215,15 @@ async def workspace(contest_id: str, request: Request, team_member_email: str | 
     division = participant["division"] if participant else (divisions[0] if divisions else None)
     if not division:
         raise not_found("Contest division is not configured.")
-    problems = [p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division.division_id]
+    problems = _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division.division_id])
+    solve_statuses = _problem_solve_statuses(contest_id, participant)
     return ok(
         request,
         {
             "contest": contest.model_dump(mode="json"),
             "division": division.model_dump(mode="json"),
             "divisions": [item.model_dump(mode="json") for item in divisions],
-            "problems": [p.model_dump(mode="json") for p in problems],
+            "problems": [_problem_payload(p, solve_statuses) for p in problems],
             "emergency_notice": contest.emergency_notice,
         },
     )
@@ -197,17 +231,18 @@ async def workspace(contest_id: str, request: Request, team_member_email: str | 
 
 @router.get("/contests/{contest_id}/divisions/{division_id}/workspace")
 async def division_workspace(contest_id: str, division_id: str, request: Request):
-    _, contest = _allow_problem_view(request, contest_id, division_id)
+    participant, contest = _allow_problem_view(request, contest_id, division_id)
     division = store.get_division(contest_id, division_id)
     if not division:
         raise not_found()
     problems = _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])
+    solve_statuses = _problem_solve_statuses(contest_id, participant)
     return ok(
         request,
         {
             "contest": contest.model_dump(mode="json"),
             "division": division.model_dump(mode="json"),
-            "problems": [p.model_dump(mode="json") for p in problems],
+            "problems": [_problem_payload(p, solve_statuses) for p in problems],
             "emergency_notice": contest.emergency_notice,
         },
     )
@@ -218,20 +253,22 @@ async def problems(contest_id: str, request: Request):
     participant, _ = _allow_problem_view(request, contest_id)
     divisions = store.contest_divisions(contest_id)
     division_id = participant["division"].division_id if participant else (divisions[0].division_id if divisions else None)
+    solve_statuses = _problem_solve_statuses(contest_id, participant)
     return page(
         request,
-        [p.model_dump(mode="json") for p in _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])],
+        [_problem_payload(p, solve_statuses) for p in _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])],
     )
 
 
 @router.get("/contests/{contest_id}/divisions/{division_id}/problems")
 async def division_problems(contest_id: str, division_id: str, request: Request):
-    _allow_problem_view(request, contest_id, division_id)
+    participant, _ = _allow_problem_view(request, contest_id, division_id)
     if not store.get_division(contest_id, division_id):
         raise not_found()
+    solve_statuses = _problem_solve_statuses(contest_id, participant)
     return page(
         request,
-        [p.model_dump(mode="json") for p in _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])],
+        [_problem_payload(p, solve_statuses) for p in _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])],
     )
 
 
