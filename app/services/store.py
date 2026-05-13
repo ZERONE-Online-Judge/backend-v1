@@ -1236,8 +1236,16 @@ class DbStore:
             session.access_token_hash = token_hash(access_token)
             session.access_expires_at = now_utc() + timedelta(seconds=settings.staff_access_token_ttl_seconds)
             session.last_seen_at = now_utc()
+            account = db.get(StaffAccountRow, session.staff_account_id)
+            if not account:
+                return None
             db.commit()
-            return {"access_token": access_token}
+            return {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "staff": _staff(account).model_dump(mode="json"),
+                "default_redirect": "/admin" if account.is_service_master else "/operator",
+            }
 
     def revoke_staff_session(self, access_token: str | None, refresh_token: str | None) -> bool:
         with self._session() as db:

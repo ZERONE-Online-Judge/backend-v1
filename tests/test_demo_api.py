@@ -273,6 +273,9 @@ def test_staff_session_me_refresh_and_logout():
     refreshed = client.post("/api/auth/staff/refresh", json={"refresh_token": tokens["refresh_token"]})
     assert refreshed.status_code == 200
     assert refreshed.json()["data"]["access_token"]
+    assert refreshed.json()["data"]["refresh_token"] == tokens["refresh_token"]
+    assert refreshed.json()["data"]["staff"]["email"] == "test3@zoj.com"
+    assert refreshed.json()["data"]["default_redirect"] == "/admin"
 
     logout = client.post(
         "/api/auth/staff/logout",
