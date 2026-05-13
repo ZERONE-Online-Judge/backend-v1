@@ -1680,7 +1680,7 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     assert completed.status_code == 200
 
 
-def test_scoreboard_uses_best_non_compile_score_per_problem():
+def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     contest_id, login = participant_login()
     set_contest_mutable(contest_id)
     operator = staff_tokens("test4@zoj.com")
@@ -1692,8 +1692,8 @@ def test_scoreboard_uses_best_non_compile_score_per_problem():
         json={
             "division_id": division_id,
             "problem_code": f"S{uuid4().hex[:6]}",
-            "title": "Best Score Policy",
-            "statement": "Scoreboard should keep only the best effective score.",
+            "title": "ICPC Attempt Policy",
+            "statement": "Scoreboard should use solved count and penalty, not partial scores.",
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
             "display_order": 120,
@@ -1745,10 +1745,11 @@ def test_scoreboard_uses_best_non_compile_score_per_problem():
     assert scoreboard.status_code == 200
     team_row = next(row for row in scoreboard.json()["data"]["rows"] if row["team_id"] == login["team"]["participant_team_id"])
     problem_score = next(item for item in team_row["problem_scores"] if item["problem_id"] == problem["problem_id"])
-    assert problem_score["score"] == 30
-    assert problem_score["best_submission_id"] == submissions[0]["submission_id"]
-    assert problem_score["attempts"] == 3
-    assert problem_score["wrong_attempts"] == 3
+    assert "score" not in problem_score
+    assert "max_score" not in problem_score
+    assert problem_score["best_submission_id"] is None
+    assert problem_score["attempts"] == 2
+    assert problem_score["wrong_attempts"] == 2
     assert problem_score["solved"] is False
 
 
@@ -1825,8 +1826,11 @@ def test_manual_rejudge_api_is_not_available_to_service_master_or_operator():
         for item in row["problem_scores"]
         if item["problem_id"] == problem["problem_id"]
     )
-    assert problem_score["score"] == 90
-    assert problem_score["best_submission_id"] == submission["submission_id"]
+    assert "score" not in problem_score
+    assert problem_score["best_submission_id"] is None
+    assert problem_score["attempts"] == 1
+    assert problem_score["wrong_attempts"] == 1
+    assert problem_score["solved"] is False
 
 
 def test_judge_claim_includes_active_testcases():

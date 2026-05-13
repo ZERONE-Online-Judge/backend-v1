@@ -138,7 +138,6 @@ class ProblemCreateRequest(BaseModel):
     time_limit_ms: int
     memory_limit_mb: int
     display_order: int
-    max_score: int = 100
 
 
 class ProblemUpdateRequest(BaseModel):
@@ -149,7 +148,6 @@ class ProblemUpdateRequest(BaseModel):
     time_limit_ms: int | None = None
     memory_limit_mb: int | None = None
     display_order: int | None = None
-    max_score: int | None = None
 
 
 class ProblemAssetCreateRequest(BaseModel):
@@ -974,7 +972,7 @@ async def create_problem(contest_id: str, payload: ProblemCreateRequest, request
             time_limit_ms=payload.time_limit_ms,
             memory_limit_mb=payload.memory_limit_mb,
             display_order=payload.display_order,
-            max_score=payload.max_score,
+            max_score=100,
         )
     except ValueError:
         raise not_found("Contest division is not configured.")

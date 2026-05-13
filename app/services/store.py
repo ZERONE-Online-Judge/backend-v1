@@ -2380,21 +2380,17 @@ class DbStore:
                 submissions = [submission for submission in submissions if submission.participant_team_id not in excluded_team_ids]
 
             submission_count_by_team: dict[str, int] = {}
-            best_by_team_problem: dict[tuple[str, str], dict] = {}
+            accepted_by_team_problem: dict[tuple[str, str], dict] = {}
             problem_attempts_by_team: dict[tuple[str, str], dict] = {}
-            scored_statuses = {
-                SubmissionStatus.ACCEPTED.value,
+            penalty_statuses = {
                 SubmissionStatus.WRONG_ANSWER.value,
-                SubmissionStatus.COMPILE_ERROR.value,
-                SubmissionStatus.RUNTIME_ERROR.value,
                 SubmissionStatus.TIME_LIMIT_EXCEEDED.value,
                 SubmissionStatus.MEMORY_LIMIT_EXCEEDED.value,
                 SubmissionStatus.OUTPUT_LIMIT_EXCEEDED.value,
-                SubmissionStatus.SYSTEM_ERROR.value,
             }
-            best_score_statuses = scored_statuses - {
-                SubmissionStatus.COMPILE_ERROR.value,
-                SubmissionStatus.SYSTEM_ERROR.value,
+            tracked_statuses = {
+                SubmissionStatus.ACCEPTED.value,
+                *penalty_statuses,
             }
             for submission in submissions:
                 submission_count_by_team[submission.participant_team_id] = submission_count_by_team.get(submission.participant_team_id, 0) + 1
@@ -2409,57 +2405,53 @@ class DbStore:
                         "wrong_before_solved": 0,
                     },
                 )
-                if submission.status not in scored_statuses or submission.awarded_score is None:
+                if stats["solved"] or submission.status not in tracked_statuses:
                     continue
-                if not stats["solved"]:
+                if submission.status in penalty_statuses:
                     stats["attempts"] += 1
-                if submission.status not in best_score_statuses:
                     continue
-                current = best_by_team_problem.get(key)
-                score = max(submission.awarded_score, 0)
-                max_score = problem_by_id[submission.problem_id].max_score
-                solved_now = score >= max_score
-                if solved_now and not stats["solved"]:
+                if submission.status == SubmissionStatus.ACCEPTED.value:
                     stats["solved"] = True
-                    stats["wrong_before_solved"] = max(0, stats["attempts"] - 1)
-                if current is None or score > current["score"]:
-                    best_by_team_problem[key] = {
-                        "score": score,
+                    stats["wrong_before_solved"] = stats["attempts"]
+                    solved_at = _aware(submission.submitted_at)
+                    elapsed_minutes = max(0, int((solved_at - _aware(contest.start_at)).total_seconds() // 60))
+                    accepted_by_team_problem[key] = {
                         "submission_id": submission.submission_id,
-                        "submitted_at": _aware(submission.submitted_at),
+                        "submitted_at": solved_at,
+                        "elapsed_minutes": elapsed_minutes,
+                        "penalty": elapsed_minutes + stats["wrong_before_solved"] * 20,
                         "status": submission.status,
                     }
 
             rows = []
             for team in teams:
                 problem_scores = []
-                total_score = 0
+                total_penalty = 0
                 solved = 0
-                last_improved_at = None
+                last_solved_at = None
                 for problem in problems:
-                    best = best_by_team_problem.get((team.participant_team_id, problem.problem_id))
+                    accepted = accepted_by_team_problem.get((team.participant_team_id, problem.problem_id))
                     stats = problem_attempts_by_team.get((team.participant_team_id, problem.problem_id))
-                    score = best["score"] if best else 0
-                    total_score += score
-                    solved_problem = score >= problem.max_score
+                    solved_problem = accepted is not None
                     if solved_problem:
                         solved += 1
-                    if best and (last_improved_at is None or best["submitted_at"] > last_improved_at):
-                        last_improved_at = best["submitted_at"]
+                        total_penalty += int(accepted["penalty"])
+                    if accepted and (last_solved_at is None or accepted["submitted_at"] > last_solved_at):
+                        last_solved_at = accepted["submitted_at"]
                     attempts = int(stats["attempts"]) if stats else 0
                     wrong_attempts = int(stats["wrong_before_solved"]) if solved_problem and stats else attempts
                     problem_scores.append(
                         {
                             "problem_id": problem.problem_id,
                             "problem_code": problem.problem_code,
-                            "score": score,
-                            "max_score": problem.max_score,
                             "attempts": attempts,
                             "wrong_attempts": wrong_attempts,
                             "solved": solved_problem,
-                            "best_submission_id": best["submission_id"] if best else None,
-                            "best_submitted_at": best["submitted_at"] if best else None,
-                            "best_status": best["status"] if best else None,
+                            "penalty": accepted["penalty"] if accepted else None,
+                            "solved_at": accepted["submitted_at"] if accepted else None,
+                            "best_submission_id": accepted["submission_id"] if accepted else None,
+                            "best_submitted_at": accepted["submitted_at"] if accepted else None,
+                            "best_status": accepted["status"] if accepted else None,
                         }
                     )
                 division = divisions.get(team.division_id)
@@ -2470,15 +2462,14 @@ class DbStore:
                         "division_id": team.division_id,
                         "division": division.name if division else None,
                         "solved": solved,
-                        "score": total_score,
-                        "latest_score": total_score,
+                        "penalty": total_penalty,
                         "submission_count": submission_count_by_team.get(team.participant_team_id, 0),
-                        "last_improved_at": last_improved_at,
+                        "last_solved_at": last_solved_at,
                         "problem_scores": problem_scores,
                     }
                 )
 
-            rows.sort(key=lambda row: (-row["score"], -row["solved"], row["last_improved_at"] or datetime.max.replace(tzinfo=timezone.utc), row["team_name"]))
+            rows.sort(key=lambda row: (-row["solved"], row["penalty"], row["last_solved_at"] or datetime.max.replace(tzinfo=timezone.utc), row["team_name"]))
             for rank, row in enumerate(rows, start=1):
                 row["rank"] = rank
             return {"frozen": frozen, "rows": rows}
