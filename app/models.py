@@ -171,6 +171,8 @@ class Submission(BaseModel):
     failed_testcase_order: int | None = None
     progress_current: int | None = None
     progress_total: int | None = None
+    runtime_ms: int | None = None
+    memory_kb: int | None = None
 
 
 class JudgeJob(BaseModel):

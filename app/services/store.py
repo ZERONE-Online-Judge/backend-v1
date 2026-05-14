@@ -230,6 +230,8 @@ def _submission(row: SubmissionRow) -> Submission:
         failed_testcase_order=row.failed_testcase_order,
         progress_current=row.progress_current,
         progress_total=row.progress_total,
+        runtime_ms=row.runtime_ms,
+        memory_kb=row.memory_kb,
     )
 
 
@@ -2958,6 +2960,8 @@ class DbStore:
         compile_message: str | None,
         judge_message: str | None,
         failed_testcase_order: int | None,
+        runtime_ms: int | None = None,
+        memory_kb: int | None = None,
     ) -> tuple[Submission, JudgeJob] | None:
         with self._session() as db:
             job = db.get(JudgeJobRow, job_id)
@@ -2978,6 +2982,8 @@ class DbStore:
             submission.compile_message = compile_message
             submission.judge_message = judge_message
             submission.failed_testcase_order = failed_testcase_order
+            submission.runtime_ms = max(runtime_ms, 0) if runtime_ms is not None else None
+            submission.memory_kb = max(memory_kb, 0) if memory_kb is not None else None
             if submission.progress_total is not None and final_status == SubmissionStatus.ACCEPTED:
                 submission.progress_current = submission.progress_total
             submission.status_updated_at = now_utc()

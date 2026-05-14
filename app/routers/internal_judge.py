@@ -40,6 +40,8 @@ class ResultRequest(BaseModel):
     compile_message: str | None = None
     judge_message: str | None = None
     failed_testcase_order: int | None = None
+    runtime_ms: int | None = None
+    memory_kb: int | None = None
 
 
 class ProgressRequest(BaseModel):
@@ -112,6 +114,8 @@ async def report_result(job_id: str, payload: ResultRequest, request: Request):
             payload.compile_message,
             payload.judge_message,
             payload.failed_testcase_order,
+            payload.runtime_ms,
+            payload.memory_kb,
         )
     except ValueError as error:
         if "lease mismatch" in str(error):

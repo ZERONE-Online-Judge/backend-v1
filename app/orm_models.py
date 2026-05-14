@@ -146,6 +146,8 @@ class SubmissionRow(Base):
     failed_testcase_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
     progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_kb: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class JudgeJobRow(Base):

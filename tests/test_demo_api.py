@@ -1618,6 +1618,29 @@ def test_submission_progress_is_updated_during_judging():
     assert waited.json()["data"]["progress_total"] is None
     assert waited.json()["data"]["progress_percent"] == 40
 
+    completed = client.post(
+        f"/api/internal/judge/jobs/{job['judge_job_id']}/result",
+        json={
+            "node_secret": node_secret,
+            "lease_token": job["lease_token"],
+            "final_status": "wrong_answer",
+            "awarded_score": 0,
+            "runtime_ms": 123,
+            "memory_kb": 4567,
+        },
+    )
+    assert completed.status_code == 200
+    assert completed.json()["data"]["submission"]["runtime_ms"] == 123
+    assert completed.json()["data"]["submission"]["memory_kb"] == 4567
+
+    participant_detail = client.get(
+        f"/api/contests/{contest_id}/submissions/{submission_id}",
+        headers=auth_headers(login["access_token"]),
+    )
+    assert participant_detail.status_code == 200
+    assert participant_detail.json()["data"]["runtime_ms"] == 123
+    assert participant_detail.json()["data"]["memory_kb"] == 4567
+
 
 def test_operator_and_admin_submission_detail_include_source_without_list_payload_bloat():
     contest_id, login = participant_login()

@@ -45,3 +45,7 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE submissions ADD COLUMN progress_current INTEGER"))
                 if "progress_total" not in columns:
                     connection.execute(text("ALTER TABLE submissions ADD COLUMN progress_total INTEGER"))
+                if "runtime_ms" not in columns:
+                    connection.execute(text("ALTER TABLE submissions ADD COLUMN runtime_ms INTEGER"))
+                if "memory_kb" not in columns:
+                    connection.execute(text("ALTER TABLE submissions ADD COLUMN memory_kb INTEGER"))
