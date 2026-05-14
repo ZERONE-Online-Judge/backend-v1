@@ -15,6 +15,7 @@ from app.services.authz import require_contest_staff, require_staff
 from app.services.errors import AppError, not_found
 from app.services.package_builder import PackageBuildError, build_problem_package, package_role
 from app.services.responses import ok, page
+from app.settings import settings
 from app.services.store import store
 from app.services.storage import object_storage
 from app.services.testcase_verifier import UploadedTestcase, build_verified_testcase_set, verify_active_testcases_with_candidate_asset
@@ -455,7 +456,7 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
         updates["freeze_at"] = freeze_at
     time_fields = {"start_at", "end_at", "freeze_at"}
     time_changed = any(key in updates and getattr(contest, key) != updates[key] for key in time_fields)
-    if time_changed:
+    if time_changed and settings.feature_emergency_notice_auto:
         auto_notice = _time_update_notice_body(contest.start_at, contest.freeze_at, contest.end_at, start_at, freeze_at, end_at)
         manual_notice = updates.get("emergency_notice")
         updates["emergency_notice"] = f"{auto_notice}\n\n{manual_notice}".strip() if manual_notice else auto_notice
@@ -469,7 +470,7 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
             continue
         changed_lines.append(f"- {key}: {old_value} -> {new_value}")
     if changed_lines:
-        if time_changed:
+        if time_changed and settings.feature_emergency_notice_auto:
             store.create_contest_notice(
                 contest_id,
                 "대회 운영 시간이 변경되었습니다",

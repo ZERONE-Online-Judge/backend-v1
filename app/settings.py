@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_env: str = "development"
+    release_color: str = "local"
+    release_version: str | None = None
     public_base_url: str = "http://localhost:5173"
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     database_url: str = "sqlite:////private/tmp/zerone_online_judge_demo_v5.db"
@@ -46,6 +48,9 @@ class Settings(BaseSettings):
     judge_claim_max_batch_size: int = 100
     judge_lease_timeout_seconds: int = 120
     judge_node_active_window_seconds: int = 30
+    feature_submission_runtime_metrics: bool = True
+    feature_public_scoreboard_penalty: bool = True
+    feature_emergency_notice_auto: bool = True
 
 
 settings = Settings()

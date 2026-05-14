@@ -2504,6 +2504,8 @@ class DbStore:
             for rank, row in enumerate(rows, start=1):
                 row["rank"] = rank
                 if public_view:
+                    if not settings.feature_public_scoreboard_penalty:
+                        row["penalty"] = None
                     row["last_solved_at"] = None
                     for problem_score in row["problem_scores"]:
                         problem_score["penalty"] = None
@@ -2981,8 +2983,9 @@ class DbStore:
             submission.compile_message = compile_message
             submission.judge_message = judge_message
             submission.failed_testcase_order = failed_testcase_order
-            submission.runtime_ms = max(runtime_ms, 0) if runtime_ms is not None else None
-            submission.memory_kb = max(memory_kb, 0) if memory_kb is not None else None
+            if settings.feature_submission_runtime_metrics:
+                submission.runtime_ms = max(runtime_ms, 0) if runtime_ms is not None else None
+                submission.memory_kb = max(memory_kb, 0) if memory_kb is not None else None
             if submission.progress_total is not None and final_status == SubmissionStatus.ACCEPTED:
                 submission.progress_current = submission.progress_total
             submission.status_updated_at = now_utc()

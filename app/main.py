@@ -47,7 +47,15 @@ async def request_id_middleware(request: Request, call_next):
 
 @app.get("/api/health")
 async def health(request: Request):
-    return {"data": {"status": "ok", "env": settings.app_env}, "request_id": request.state.request_id}
+    return {
+        "data": {
+            "status": "ok",
+            "env": settings.app_env,
+            "release_color": settings.release_color,
+            "release_version": settings.release_version,
+        },
+        "request_id": request.state.request_id,
+    }
 
 
 app.include_router(public.router, prefix="/api")

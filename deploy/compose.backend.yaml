@@ -1,33 +1,47 @@
+x-api-service: &api-service
+  build:
+    context: ..
+  env_file:
+    - ./env/backend.env
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    minio-init:
+      condition: service_completed_successfully
+  expose:
+    - "8000"
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
+    interval: 10s
+    timeout: 3s
+    retries: 12
+  restart: unless-stopped
+
 services:
   nginx:
     image: nginx:stable
     depends_on:
-      - api
+      api-blue:
+        condition: service_healthy
     ports:
       - "6001:80"
     volumes:
-      - ../../demo-frontend/dist:/usr/share/nginx/html:ro
+      - ../../demo_frontend/dist:/usr/share/nginx/html:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/api-upstream.conf:/etc/nginx/conf.d/api-upstream.conf:ro
     restart: unless-stopped
 
-  api:
-    build:
-      context: ..
-    env_file:
-      - ./env/backend.env
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      minio-init:
-        condition: service_completed_successfully
-    expose:
-      - "8000"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
-      interval: 10s
-      timeout: 3s
-      retries: 12
-    restart: unless-stopped
+  api-blue:
+    <<: *api-service
+    environment:
+      RELEASE_COLOR: blue
+      RELEASE_VERSION: ${RELEASE_VERSION:-local}
+
+  api-green:
+    <<: *api-service
+    environment:
+      RELEASE_COLOR: green
+      RELEASE_VERSION: ${RELEASE_VERSION:-local}
 
   migrate:
     build:
