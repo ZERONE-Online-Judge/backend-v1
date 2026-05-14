@@ -2504,7 +2504,6 @@ class DbStore:
             for rank, row in enumerate(rows, start=1):
                 row["rank"] = rank
                 if public_view:
-                    row["penalty"] = None
                     row["last_solved_at"] = None
                     for problem_score in row["problem_scores"]:
                         problem_score["penalty"] = None
