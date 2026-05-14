@@ -2501,6 +2501,14 @@ class DbStore:
             rows.sort(key=lambda row: (-row["solved"], row["penalty"], row["last_solved_at"] or datetime.max.replace(tzinfo=timezone.utc), row["team_name"]))
             for rank, row in enumerate(rows, start=1):
                 row["rank"] = rank
+                if public_view:
+                    row["penalty"] = None
+                    row["last_solved_at"] = None
+                    for problem_score in row["problem_scores"]:
+                        problem_score["penalty"] = None
+                        problem_score["solved_at"] = None
+                        problem_score["best_submission_id"] = None
+                        problem_score["best_submitted_at"] = None
             return {"frozen": frozen, "rows": rows}
 
     def enqueue_mail(self, mail_type: str, recipient_email: str, subject: str, body_text: str) -> MailQueueItem:

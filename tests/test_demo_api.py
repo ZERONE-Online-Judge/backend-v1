@@ -1614,8 +1614,9 @@ def test_submission_progress_is_updated_during_judging():
     )
     assert waited.status_code == 200
     assert waited.json()["data"]["status"] == SubmissionStatus.JUDGING.value
-    assert waited.json()["data"]["progress_current"] == 2
-    assert waited.json()["data"]["progress_total"] == 5
+    assert waited.json()["data"]["progress_current"] is None
+    assert waited.json()["data"]["progress_total"] is None
+    assert waited.json()["data"]["progress_percent"] == 40
 
 
 def test_operator_and_admin_submission_detail_include_source_without_list_payload_bloat():

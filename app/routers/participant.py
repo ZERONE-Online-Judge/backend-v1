@@ -145,6 +145,13 @@ def _participant_submission_payload(submission, include_source: bool) -> dict:
     item = submission.model_dump(mode="json")
     source_code = item.get("source_code") or ""
     item["source_code_length"] = len(source_code.encode("utf-8"))
+    progress_current = item.get("progress_current")
+    progress_total = item.get("progress_total")
+    item["progress_percent"] = None
+    if isinstance(progress_current, int) and isinstance(progress_total, int) and progress_total > 0:
+        item["progress_percent"] = max(0, min(100, round((progress_current / progress_total) * 100)))
+    item["progress_current"] = None
+    item["progress_total"] = None
     # Participants should not receive internal judge diagnostics/logs.
     item["compile_message"] = None
     item["judge_message"] = None
