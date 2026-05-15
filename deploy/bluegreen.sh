@@ -68,9 +68,9 @@ healthcheck() {
   done
 }
 
-reload_nginx() {
+apply_nginx() {
+  compose up -d --force-recreate nginx
   compose exec -T nginx nginx -t
-  compose exec -T nginx nginx -s reload
 }
 
 cmd="${1:-}"
@@ -94,7 +94,7 @@ case "$cmd" in
     color=$(normalize_color "${2:-}")
     healthcheck "$color"
     write_upstream "$color"
-    reload_nginx
+    apply_nginx
     echo "active=$color"
     ;;
   stop)
@@ -107,7 +107,7 @@ case "$cmd" in
     compose up -d --build "api-$color"
     healthcheck "$color"
     write_upstream "$color"
-    reload_nginx
+    apply_nginx
     echo "active=$color"
     ;;
   *)
