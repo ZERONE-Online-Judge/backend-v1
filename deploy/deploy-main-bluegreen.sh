@@ -3,8 +3,6 @@ set -eu
 
 DEPLOY_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 BACKEND_DIR=$(CDPATH= cd -- "$DEPLOY_DIR/.." && pwd)
-PROJECT_DIR=$(CDPATH= cd -- "$BACKEND_DIR/.." && pwd)
-FRONTEND_DIR="$PROJECT_DIR/demo_frontend"
 BLUEGREEN="$DEPLOY_DIR/bluegreen.sh"
 COMPOSE_FILE="$DEPLOY_DIR/compose.backend.yaml"
 
@@ -67,33 +65,20 @@ Usage:
 
 Environment:
   ALLOW_DIRTY=1        Allow deploy with local uncommitted changes.
-  SKIP_FRONTEND=1      Skip npm ci/build.
   RELEASE_VERSION=x    Override release version. Default: backend git short sha.
 
 Flow:
-  check clean worktrees -> git pull origin main -> build frontend ->
+  check clean backend worktree -> git pull origin main ->
   deploy inactive API -> health check -> nginx switch -> stop previous API
 EOF
   exit 0
 fi
 
 ensure_clean_worktree "$BACKEND_DIR" "backend_v1"
-ensure_clean_worktree "$FRONTEND_DIR" "demo_frontend"
 
 pull_main "$BACKEND_DIR" "backend_v1"
-pull_main "$FRONTEND_DIR" "demo_frontend"
 
 release_version="${RELEASE_VERSION:-$(git -C "$BACKEND_DIR" rev-parse --short=12 HEAD)}"
-
-if [ "${SKIP_FRONTEND:-0}" != "1" ]; then
-  log "build frontend"
-  if [ -f "$FRONTEND_DIR/package-lock.json" ]; then
-    npm --prefix "$FRONTEND_DIR" ci
-  else
-    npm --prefix "$FRONTEND_DIR" install
-  fi
-  npm --prefix "$FRONTEND_DIR" run build
-fi
 
 active="$("$BLUEGREEN" active || true)"
 target="$(inactive_color "$active")"

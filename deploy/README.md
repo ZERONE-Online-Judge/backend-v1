@@ -66,15 +66,15 @@ cd backend_v1/deploy
 ./bluegreen.sh deploy green
 ```
 
-Pull `main`, build the frontend, deploy the inactive API pool, switch traffic, and stop the previous API pool:
+Pull backend `main`, deploy the inactive API pool, switch traffic, and stop the previous API pool:
 
 ```bash
 cd backend_v1/deploy
 ./deploy-main-bluegreen.sh
 ```
 
-The one-command deploy script pulls both `backend_v1` and `demo_frontend` from `origin main`.
-It aborts when either worktree has uncommitted changes. Override only when intentional:
+The one-command deploy script only pulls `backend_v1` from `origin main`.
+The backend deploy aborts when the backend worktree has uncommitted changes. Override only when intentional:
 
 ```bash
 ALLOW_DIRTY=1 ./deploy-main-bluegreen.sh
