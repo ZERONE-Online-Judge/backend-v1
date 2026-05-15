@@ -96,6 +96,12 @@ async def staff_logout(payload: StaffLogoutRequest, request: Request):
     return ok(request, {"revoked": revoked})
 
 
+@router.api_route("/auth/staff/logout", methods=["GET", "DELETE"])
+async def staff_logout_compat(request: Request):
+    revoked = store.revoke_staff_session(bearer_token(request), None)
+    return ok(request, {"revoked": revoked})
+
+
 @router.post("/auth/staff/refresh")
 async def staff_refresh(payload: StaffRefreshRequest, request: Request):
     refreshed = store.refresh_staff_session(payload.refresh_token)
@@ -171,6 +177,13 @@ async def general_refresh(payload: GeneralRefreshRequest, request: Request):
 @router.post("/auth/general/logout")
 async def general_logout(payload: GeneralLogoutRequest, request: Request):
     revoked = store.revoke_general_session(bearer_token(request), payload.refresh_token)
+    return ok(request, {"revoked": revoked})
+
+
+@router.api_route("/auth/general/logout", methods=["GET", "DELETE"])
+@router.api_route("/auth/logout", methods=["GET", "POST", "DELETE"])
+async def general_logout_compat(request: Request):
+    revoked = store.revoke_general_session(bearer_token(request), None)
     return ok(request, {"revoked": revoked})
 
 
