@@ -18,6 +18,7 @@ Usage:
   ./bluegreen.sh start blue|green
   ./bluegreen.sh switch blue|green
   ./bluegreen.sh deploy blue|green
+  ./bluegreen.sh stop blue|green
 
 Deploy order:
   migrate -> start target api -> health check -> switch nginx upstream
@@ -88,6 +89,10 @@ case "$cmd" in
     write_upstream "$color"
     reload_nginx
     echo "active=$color"
+    ;;
+  stop)
+    color=$(normalize_color "${2:-}")
+    compose stop "api-$color"
     ;;
   deploy)
     color=$(normalize_color "${2:-}")

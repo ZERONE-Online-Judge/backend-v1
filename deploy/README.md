@@ -66,6 +66,26 @@ cd backend_v1/deploy
 ./bluegreen.sh deploy green
 ```
 
+Pull `main`, build the frontend, deploy the inactive API pool, switch traffic, and stop the previous API pool:
+
+```bash
+cd backend_v1/deploy
+./deploy-main-bluegreen.sh
+```
+
+The one-command deploy script pulls both `backend_v1` and `demo_frontend` from `origin main`.
+It aborts when either worktree has uncommitted changes. Override only when intentional:
+
+```bash
+ALLOW_DIRTY=1 ./deploy-main-bluegreen.sh
+```
+
+If the public health endpoint is not `http://127.0.0.1:6001/api/health`, set it explicitly:
+
+```bash
+PUBLIC_HEALTH_URL=https://judge.example.com/api/health ./deploy-main-bluegreen.sh
+```
+
 Rollback is only an upstream switch:
 
 ```bash
