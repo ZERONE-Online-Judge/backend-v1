@@ -33,7 +33,14 @@ normalize_color() {
 }
 
 active_color() {
+  ensure_upstream_file
   sed -n 's/.*server api-\(blue\|green\):8000.*/\1/p' "$UPSTREAM_FILE" | head -n 1
+}
+
+ensure_upstream_file() {
+  if [ ! -f "$UPSTREAM_FILE" ]; then
+    write_upstream blue
+  fi
 }
 
 write_upstream() {

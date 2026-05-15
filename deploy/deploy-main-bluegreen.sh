@@ -20,8 +20,10 @@ ensure_clean_worktree() {
   if [ "${ALLOW_DIRTY:-0}" = "1" ]; then
     return
   fi
-  if [ -n "$(git -C "$repo_dir" status --porcelain)" ]; then
+  dirty=$(git -C "$repo_dir" status --porcelain | grep -v ' deploy/nginx/api-upstream.conf$' || true)
+  if [ -n "$dirty" ]; then
     echo "$repo_name has uncommitted changes. Commit/stash them or run with ALLOW_DIRTY=1." >&2
+    printf '%s\n' "$dirty" >&2
     exit 1
   fi
 }
@@ -73,6 +75,8 @@ Flow:
 EOF
   exit 0
 fi
+
+git -C "$BACKEND_DIR" update-index --skip-worktree deploy/nginx/api-upstream.conf 2>/dev/null || true
 
 ensure_clean_worktree "$BACKEND_DIR" "backend_v1"
 

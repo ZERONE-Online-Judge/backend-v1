@@ -9,4 +9,5 @@ venv/
 .coverage.*
 htmlcov/
 .DS_Store
+deploy/nginx/api-upstream.conf
 
