@@ -8,6 +8,7 @@ FILES = {
     "backend.env.example": """APP_ENV=production
 PUBLIC_BASE_URL=https://judge.example.com
 CORS_ALLOW_ORIGINS=https://judge.example.com
+CORS_ALLOW_ORIGIN_REGEX=
 DATABASE_URL=postgresql+psycopg://zerone:password@postgres:5432/zerone
 REDIS_URL=redis://redis:6379/0
 ENABLE_DEMO_SEED=false
