@@ -24,6 +24,38 @@ npm --prefix demo_frontend run build
 The production frontend uses relative `/api`, which Nginx proxies to the backend container.
 Nginx is the only public entrypoint for the backend stack.
 
+Optional test frontend domain:
+
+- `judge.zerone01.kr` is served from `${FRONTEND_DIST_PATH:-../../demo_frontend/dist}`.
+- `test.judge.zerone01.kr` is served from `${TEST_FRONTEND_DIST_PATH:-../../demo_frontend/dist}`.
+- Both domains proxy `/api`, `/minio`, and `/minio-console` to the same backend stack.
+
+If you want a different build for the test domain, build it into a separate directory and pass it to compose:
+
+```bash
+TEST_FRONTEND_DIST_PATH=/srv/zoj/test-frontend-dist \
+docker compose -f backend_v1/deploy/compose.backend.yaml up -d --force-recreate nginx
+```
+
+If a host-level Nginx terminates TLS in front of this compose stack, proxy both hostnames to the compose Nginx port while preserving `Host`:
+
+```nginx
+server {
+  listen 443 ssl http2;
+  server_name judge.zerone01.kr test.judge.zerone01.kr;
+
+  location / {
+    proxy_pass http://127.0.0.1:6001;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+```
+
+Also point DNS for `test.judge.zerone01.kr` to the same server and issue a certificate that covers the test hostname.
+
 ## 3. Start Backend Stack
 
 ```bash

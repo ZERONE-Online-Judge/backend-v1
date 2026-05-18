@@ -27,6 +27,7 @@ services:
       - "6001:80"
     volumes:
       - ${FRONTEND_DIST_PATH:-../../demo-frontend/dist}:/usr/share/nginx/html:ro
+      - ${TEST_FRONTEND_DIST_PATH:-../../test-frontend/dist}:/usr/share/nginx/html-test:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/api-upstream.conf:/etc/nginx/conf.d/api-upstream.conf:ro
     restart: unless-stopped
