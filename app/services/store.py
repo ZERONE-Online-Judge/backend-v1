@@ -68,6 +68,7 @@ from app.services.security import decode_session_token, hash_password, new_sessi
 from app.services.storage import object_storage
 from app.services.mail_templates import (
     absolute_url,
+    contest_notice_mail,
     contest_reminder_mail,
     participant_invite_mail,
     render_basic_html,
@@ -1685,7 +1686,8 @@ class DbStore:
         created_by_email: str | None = None,
     ) -> ContestNotice:
         with self._session() as db:
-            if not db.get(ContestRow, contest_id):
+            contest = db.get(ContestRow, contest_id)
+            if not contest:
                 raise ValueError("contest not found")
             row = ContestNoticeRow(
                 contest_id=contest_id,
@@ -1697,6 +1699,35 @@ class DbStore:
                 created_by_email=created_by_email,
             )
             db.add(row)
+            content = contest_notice_mail(
+                contest_title=contest.title,
+                organization_name=contest.organization_name,
+                notice_title=title,
+                notice_body=body,
+                notice_url=absolute_url(f"/contests/{contest_id}/board"),
+                pinned=pinned,
+                emergency=emergency,
+            )
+            participant_emails = db.scalars(
+                select(TeamMemberRow.email)
+                .where(TeamMemberRow.contest_id == contest_id)
+                .order_by(TeamMemberRow.email)
+            ).all()
+            notified: set[str] = set()
+            for email in participant_emails:
+                normalized = email.strip().lower()
+                if not normalized or normalized in notified:
+                    continue
+                notified.add(normalized)
+                db.add(
+                    MailQueueItemRow(
+                        mail_type="contest_notice_created",
+                        recipient_email=normalized,
+                        subject=content.subject,
+                        body_text=content.body_text,
+                        body_html=content.body_html,
+                    )
+                )
             db.commit()
             db.refresh(row)
             return _contest_notice(row)

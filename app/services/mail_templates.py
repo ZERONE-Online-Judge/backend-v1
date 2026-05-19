@@ -165,3 +165,52 @@ def contest_reminder_mail(*, contest_title: str, organization_name: str, team_na
             button_url=contest_url,
         ),
     )
+
+
+def contest_notice_mail(
+    *,
+    contest_title: str,
+    organization_name: str,
+    notice_title: str,
+    notice_body: str,
+    notice_url: str,
+    pinned: bool,
+    emergency: bool,
+) -> MailContent:
+    subject = f"[Zerone OJ] {contest_title} 공지: {notice_title}"
+    labels = []
+    if pinned:
+        labels.append("고정")
+    if emergency:
+        labels.append("긴급")
+    notice_type = " · ".join(labels) if labels else "공지"
+    body = [
+        f"{contest_title}에 새 공지가 등록되었습니다.",
+        notice_body.strip(),
+    ]
+    meta = [
+        ("대회", contest_title),
+        ("주최", organization_name),
+        ("구분", notice_type),
+        ("공지 제목", notice_title),
+    ]
+    text = "\n".join(
+        [
+            *body,
+            "",
+            f"구분: {notice_type}",
+            f"바로가기: {notice_url}",
+        ]
+    )
+    return MailContent(
+        subject=subject,
+        body_text=text,
+        body_html=render_branded_email(
+            title=notice_title,
+            preheader=f"{contest_title} 새 공지",
+            body=body,
+            meta=meta,
+            button_label="공지 확인하기",
+            button_url=notice_url,
+        ),
+    )

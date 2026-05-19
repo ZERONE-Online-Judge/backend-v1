@@ -42,8 +42,14 @@ inactive_color() {
   case "$active" in
     blue) printf '%s\n' green ;;
     green) printf '%s\n' blue ;;
-    *) printf '%s\n' blue ;;
+    *) echo "cannot choose inactive color because active color is unknown" >&2; exit 1 ;;
   esac
+}
+
+public_active_color() {
+  health_url="${PUBLIC_HEALTH_URL:-http://127.0.0.1:6001/api/health}"
+  response="$(curl -fsS "$health_url" 2>/dev/null || true)"
+  printf '%s\n' "$response" | sed -n 's/.*"release_color"[[:space:]]*:[[:space:]]*"\(blue\|green\)".*/\1/p' | head -n 1
 }
 
 health_via_nginx() {
@@ -90,10 +96,15 @@ pull_main "$BACKEND_DIR" "backend_v1"
 
 release_version="${RELEASE_VERSION:-$(git -C "$BACKEND_DIR" rev-parse --short=12 HEAD)}"
 
-active="$("$BLUEGREEN" active || true)"
+file_active="$("$BLUEGREEN" active || true)"
+public_active="$(public_active_color || true)"
+active="${public_active:-$file_active}"
+if [ -n "$public_active" ] && [ -n "$file_active" ] && [ "$public_active" != "$file_active" ]; then
+  log "warning: public active=$public_active differs from upstream file active=$file_active; using public active"
+fi
 target="$(inactive_color "$active")"
 
-log "active=${active:-none}, target=$target, release=$release_version"
+log "active=$active, target=$target, release=$release_version"
 
 log "deploy api-$target"
 RELEASE_VERSION="$release_version" "$BLUEGREEN" deploy "$target"

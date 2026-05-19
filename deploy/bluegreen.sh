@@ -70,6 +70,11 @@ healthcheck() {
 }
 
 apply_nginx() {
+  expected_color=$(normalize_color "${1:-}")
+  if ! compose exec -T nginx sh -c "grep -q 'server api-$expected_color:8000;' /etc/nginx/conf.d/api-upstream.conf"; then
+    echo "nginx container does not see api-$expected_color upstream config" >&2
+    return 1
+  fi
   compose exec -T nginx nginx -t
   compose exec -T nginx nginx -s reload
 }
@@ -95,7 +100,7 @@ case "$cmd" in
     color=$(normalize_color "${2:-}")
     healthcheck "$color"
     write_upstream "$color"
-    apply_nginx
+    apply_nginx "$color"
     echo "active=$color"
     ;;
   stop)
@@ -108,7 +113,7 @@ case "$cmd" in
     compose up -d --build "api-$color"
     healthcheck "$color"
     write_upstream "$color"
-    apply_nginx
+    apply_nginx "$color"
     echo "active=$color"
     ;;
   *)

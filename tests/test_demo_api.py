@@ -210,6 +210,15 @@ def test_contest_notice_and_board_flow():
     )
     assert participant_notices.status_code == 200
     assert any(item["title"] == "공지" for item in participant_notices.json()["data"])
+    mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(staff_tokens()["access_token"]))
+    assert mail_queue.status_code == 200
+    assert any(
+        item["mail_type"] == "contest_notice_created"
+        and item["recipient_email"] == "test2@zoj.com"
+        and "공지" in item["subject"]
+        and "공지 확인하기" in item["body_html"]
+        for item in mail_queue.json()["data"]
+    )
 
     question = client.post(
         f"/api/contests/{contest_id}/boards",
