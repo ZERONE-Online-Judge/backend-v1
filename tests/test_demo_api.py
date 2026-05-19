@@ -1136,6 +1136,87 @@ def test_contest_resources_hidden_without_participant_during_contest():
     assert submissions.json()["error"]["code"] == "not_found"
 
 
+def test_public_contest_resources_can_be_viewed_without_participant_during_contest():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+
+    updated = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={
+            "problem_access_after_end": "public",
+            "scoreboard_access_after_end": "public",
+            "submission_access_after_end": "public",
+            "board_access_after_end": "public",
+            "notice_access_after_end": "public",
+        },
+    )
+    assert updated.status_code == 200
+
+    try:
+        assert client.get(f"/api/contests/{contest_id}/problems").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/scoreboard").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/submissions").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/boards").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/notices").status_code == 200
+    finally:
+        restored = client.patch(
+            f"/api/operator/contests/{contest_id}/settings",
+            headers=headers,
+            json={
+                "problem_access_after_end": "private",
+                "scoreboard_access_after_end": "private",
+                "submission_access_after_end": "private",
+                "board_access_after_end": "participants",
+                "notice_access_after_end": "public",
+                "scoreboard_freeze_mode": "auto",
+            },
+        )
+        assert restored.status_code == 200
+
+
+def test_operator_can_manually_override_public_scoreboard_freeze_mode():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+
+    frozen = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={"scoreboard_freeze_mode": "frozen"},
+    )
+    assert frozen.status_code == 200
+    assert frozen.json()["data"]["scoreboard_freeze_mode"] == "frozen"
+    public_state = client.get(
+        f"/api/operator/contests/{contest_id}/scoreboard/internal",
+        headers=headers,
+    )
+    assert public_state.status_code == 200
+    assert public_state.json()["data"]["frozen_public_view"] is True
+
+    live = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={"scoreboard_freeze_mode": "live"},
+    )
+    assert live.status_code == 200
+    assert live.json()["data"]["scoreboard_freeze_mode"] == "live"
+    public_state = client.get(
+        f"/api/operator/contests/{contest_id}/scoreboard/internal",
+        headers=headers,
+    )
+    assert public_state.status_code == 200
+    assert public_state.json()["data"]["frozen_public_view"] is False
+
+    restored = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={"scoreboard_freeze_mode": "auto"},
+    )
+    assert restored.status_code == 200
+
+
 def test_participant_cannot_view_problems_before_contest_start():
     contest_id, login = participant_login()
     set_contest_mutable(contest_id)

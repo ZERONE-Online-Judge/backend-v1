@@ -10,7 +10,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr
 
-from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, SubmissionStatus, TeamMemberRole, now_utc
+from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import require_contest_staff, require_staff
 from app.services.errors import AppError, not_found
 from app.services.package_builder import PackageBuildError, build_problem_package, package_role
@@ -87,6 +87,7 @@ class ContestSettingsUpdateRequest(BaseModel):
     submission_access_after_end: ContestResourceAccess | None = None
     board_access_after_end: ContestResourceAccess | None = None
     notice_access_after_end: ContestResourceAccess | None = None
+    scoreboard_freeze_mode: ScoreboardFreezeMode | None = None
     emergency_notice: str | None = None
 
 
@@ -702,6 +703,8 @@ async def update_participant(contest_id: str, participant_team_id: str, payload:
     require_contest_staff(request, contest_id)
     if payload.status is not None and payload.status not in {"invited", "active", "disabled", "disqualified"}:
         raise AppError(422, "validation_error", "Unsupported participant team status.")
+    if payload.team_name is not None or payload.division_id is not None or payload.status is not None:
+        _require_contest_mutation_open(contest_id)
     try:
         team = store.update_participant_team(
             contest_id=contest_id,
@@ -930,10 +933,11 @@ async def judge_history(contest_id: str, request: Request, limit: int = 100, cur
 async def internal_scoreboard(contest_id: str, request: Request):
     require_contest_staff(request, contest_id)
     board = store.scoreboard_rows(contest_id, public_view=False)
+    public_board = store.scoreboard_rows(contest_id, public_view=True)
     if not board:
         raise not_found()
     rows = [{**row, "visible_to_team": False} for row in board["rows"]]
-    return ok(request, {"frozen_public_view": board["frozen"], "operator_live_view": True, "rows": rows})
+    return ok(request, {"frozen_public_view": bool(public_board and public_board["frozen"]), "operator_live_view": True, "rows": rows})
 
 
 @router.get("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/internal")
@@ -943,10 +947,11 @@ async def division_internal_scoreboard(contest_id: str, division_id: str, reques
     if not division:
         raise not_found()
     board = store.scoreboard_rows(contest_id, division_id, public_view=False)
+    public_board = store.scoreboard_rows(contest_id, division_id, public_view=True)
     if not board:
         raise not_found()
     rows = [{**row, "visible_to_team": False} for row in board["rows"]]
-    return ok(request, {"division": division.model_dump(mode="json"), "frozen_public_view": board["frozen"], "operator_live_view": True, "rows": rows})
+    return ok(request, {"division": division.model_dump(mode="json"), "frozen_public_view": bool(public_board and public_board["frozen"]), "operator_live_view": True, "rows": rows})
 
 
 @router.get("/operator/contests/{contest_id}/problems")

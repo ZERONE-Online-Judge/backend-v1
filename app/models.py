@@ -31,6 +31,12 @@ class ContestResourceAccess(StrEnum):
     PUBLIC = "public"
 
 
+class ScoreboardFreezeMode(StrEnum):
+    AUTO = "auto"
+    LIVE = "live"
+    FROZEN = "frozen"
+
+
 class SubmissionStatus(StrEnum):
     WAITING = "waiting"
     PREPARING = "preparing"
@@ -103,6 +109,7 @@ class Contest(BaseModel):
     submission_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
     board_access_after_end: ContestResourceAccess = ContestResourceAccess.PARTICIPANTS
     notice_access_after_end: ContestResourceAccess = ContestResourceAccess.PUBLIC
+    scoreboard_freeze_mode: ScoreboardFreezeMode = ScoreboardFreezeMode.AUTO
     emergency_notice: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
 

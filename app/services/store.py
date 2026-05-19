@@ -19,6 +19,7 @@ from app.models import (
     ContestQuestion,
     ContestQuestionAnswer,
     ContestResourceAccess,
+    ScoreboardFreezeMode,
     ContestStatus,
     JudgeJob,
     JudgeJobStatus,
@@ -120,6 +121,7 @@ def _contest(row: ContestRow) -> Contest:
         submission_access_after_end=ContestResourceAccess(submission_access),
         board_access_after_end=ContestResourceAccess(row.board_access_after_end or "participants"),
         notice_access_after_end=ContestResourceAccess(row.notice_access_after_end or "public"),
+        scoreboard_freeze_mode=ScoreboardFreezeMode(row.scoreboard_freeze_mode or "auto"),
         emergency_notice=row.emergency_notice,
         created_at=_aware(row.created_at),
     )
@@ -1685,6 +1687,7 @@ class DbStore:
             "submission_access_after_end",
             "board_access_after_end",
             "notice_access_after_end",
+            "scoreboard_freeze_mode",
             "emergency_notice",
         }
         with self._session() as db:
@@ -1693,7 +1696,7 @@ class DbStore:
                 return None
             for key, value in values.items():
                 if key in allowed and value is not None:
-                    if isinstance(value, (ContestStatus, ContestResourceAccess)):
+                    if isinstance(value, (ContestStatus, ContestResourceAccess, ScoreboardFreezeMode)):
                         value = value.value
                     setattr(row, key, value)
             if "problem_access_after_end" in values:
@@ -2411,9 +2414,14 @@ class DbStore:
             now = now_utc()
             freeze_at = _aware(contest.freeze_at)
             end_at = _aware(contest.end_at)
-            if public_view and freeze_at and end_at and freeze_at <= now < end_at:
-                cutoff_at = freeze_at
-                frozen = True
+            freeze_mode = contest.scoreboard_freeze_mode or ScoreboardFreezeMode.AUTO.value
+            if public_view and freeze_mode != ScoreboardFreezeMode.LIVE.value:
+                if freeze_mode == ScoreboardFreezeMode.FROZEN.value:
+                    cutoff_at = freeze_at if freeze_at and freeze_at <= now else now
+                    frozen = True
+                elif freeze_at and freeze_at <= now:
+                    cutoff_at = freeze_at
+                    frozen = True
 
             team_filters = [ParticipantTeamRow.contest_id == contest_id]
             problem_filters = [ProblemRow.contest_id == contest_id]

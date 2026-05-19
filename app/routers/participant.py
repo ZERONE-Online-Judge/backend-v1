@@ -87,7 +87,7 @@ class QuestionCreateRequest(BaseModel):
 def _is_ended(contest) -> bool:
     if contest.status == ContestStatus.SCHEDULE_TBD:
         return False
-    return contest.status in {ContestStatus.ENDED, ContestStatus.ARCHIVED} or now_utc() >= contest.end_at
+    return contest.status in {ContestStatus.ENDED, ContestStatus.FINALIZED, ContestStatus.ARCHIVED} or now_utc() >= contest.end_at
 
 
 def _has_started(contest) -> bool:
@@ -107,6 +107,22 @@ def _allow_after_end_resource(contest, access: ContestResourceAccess, participan
     return False
 
 
+def _allow_started_resource(contest, access: ContestResourceAccess, participant: dict | None) -> bool:
+    if not _has_started(contest):
+        return False
+    if access == ContestResourceAccess.PUBLIC:
+        return True
+    return participant is not None
+
+
+def _allow_visible_resource(access: ContestResourceAccess, participant: dict | None) -> bool:
+    if access == ContestResourceAccess.PUBLIC:
+        return True
+    if access == ContestResourceAccess.PARTICIPANTS:
+        return participant is not None
+    return participant is not None
+
+
 def _allow_problem_view(request: Request, contest_id: str, division_id: str | None = None) -> tuple[dict | None, object]:
     contest = store.get_public_contest(contest_id)
     if not contest:
@@ -118,11 +134,9 @@ def _allow_problem_view(request: Request, contest_id: str, division_id: str | No
         if _allow_after_end_resource(contest, contest.problem_access_after_end, participant):
             return participant, contest
         raise not_found()
-    if participant:
-        if division_id and participant["division"].division_id != division_id:
-            raise not_found("Division is not available for this participant.")
-        if not _has_started(contest):
-            raise not_found()
+    if participant and division_id and participant["division"].division_id != division_id:
+        raise not_found("Division is not available for this participant.")
+    if _allow_started_resource(contest, contest.problem_access_after_end, participant):
         return participant, contest
     raise not_found()
 
@@ -138,9 +152,9 @@ def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str |
         if _allow_after_end_resource(contest, contest.scoreboard_access_after_end, participant):
             return participant, contest
         raise not_found()
-    if participant:
-        if division_id and participant["division"].division_id != division_id:
-            raise not_found("Division is not available for this participant.")
+    if participant and division_id and participant["division"].division_id != division_id:
+        raise not_found("Division is not available for this participant.")
+    if _allow_started_resource(contest, contest.scoreboard_access_after_end, participant):
         return participant, contest
     raise not_found()
 
@@ -154,7 +168,7 @@ def _allow_submission_list_view(request: Request, contest_id: str) -> tuple[dict
         if _allow_after_end_resource(contest, contest.submission_access_after_end, participant):
             return participant, contest
         raise not_found()
-    if participant:
+    if _allow_started_resource(contest, contest.submission_access_after_end, participant):
         return participant, contest
     raise not_found()
 
@@ -353,7 +367,7 @@ async def contest_notices(contest_id: str, request: Request):
     if not contest:
         raise not_found()
     participant = _optional_participant(request, contest_id)
-    if _is_ended(contest) and not _allow_after_end_resource(contest, contest.notice_access_after_end, participant):
+    if _is_ended(contest) and not _allow_visible_resource(contest.notice_access_after_end, participant):
         raise not_found()
     return page(request, [notice.model_dump(mode="json") for notice in store.contest_notices_for_view(contest_id, participant)])
 
@@ -364,7 +378,7 @@ async def contest_board(contest_id: str, request: Request):
     if not contest:
         raise not_found()
     participant = _optional_participant(request, contest_id)
-    if _is_ended(contest) and not _allow_after_end_resource(contest, contest.board_access_after_end, participant):
+    if _is_ended(contest) and not _allow_visible_resource(contest.board_access_after_end, participant):
         raise not_found()
     return page(request, [question.model_dump(mode="json") for question in store.questions_for_view(contest_id, participant)])
 
@@ -408,12 +422,19 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
 
 
 @router.get("/contests/{contest_id}/submissions")
-async def submissions(contest_id: str, request: Request, limit: int = 100, cursor: str | None = None, include_source: bool = False):
+async def submissions(
+    contest_id: str,
+    request: Request,
+    limit: int = 100,
+    cursor: str | None = None,
+    include_source: bool = False,
+    division_id: str | None = None,
+):
     participant, _ = _allow_submission_list_view(request, contest_id)
     if not participant:
         items = []
         for submission in store.submissions.values():
-            if submission.contest_id == contest_id:
+            if submission.contest_id == contest_id and (not division_id or submission.division_id == division_id):
                 items.append(_participant_submission_payload(submission, include_source=False))
         items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
         sliced, next_cursor = _page_slice(items, limit, cursor)
