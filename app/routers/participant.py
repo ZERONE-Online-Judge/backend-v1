@@ -367,9 +367,24 @@ async def contest_notices(contest_id: str, request: Request):
     if not contest:
         raise not_found()
     participant = _optional_participant(request, contest_id)
-    if _is_ended(contest) and not _allow_visible_resource(contest.notice_access_after_end, participant):
+    ended = _is_ended(contest)
+    if ended and not _allow_visible_resource(contest.notice_access_after_end, participant):
         raise not_found()
-    return page(request, [notice.model_dump(mode="json") for notice in store.contest_notices_for_view(contest_id, participant)])
+    include_participant_visible = (
+        ended
+        and contest.notice_access_after_end == ContestResourceAccess.PUBLIC
+    )
+    return page(
+        request,
+        [
+            notice.model_dump(mode="json")
+            for notice in store.contest_notices_for_view(
+                contest_id,
+                participant,
+                include_participant_visible=include_participant_visible,
+            )
+        ],
+    )
 
 
 @router.get("/contests/{contest_id}/boards")

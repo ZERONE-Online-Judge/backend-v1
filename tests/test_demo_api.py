@@ -1274,6 +1274,53 @@ def test_public_contest_resources_use_manual_ended_status_even_when_end_time_is_
         assert restored.status_code == 200
 
 
+def test_public_notice_access_after_end_includes_participant_visible_notices():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+    now = datetime.now(timezone.utc)
+    set_contest_mutable(contest_id)
+
+    created_notice = client.post(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=headers,
+        json={
+            "title": "종료 후 참가자 공지",
+            "body": "종료 후 비로그인 공개 대상입니다.",
+            "visibility": "participants",
+        },
+    )
+    assert created_notice.status_code == 200
+
+    try:
+        updated = client.patch(
+            f"/api/operator/contests/{contest_id}/settings",
+            headers=headers,
+            json={
+                "start_at": (now - timedelta(hours=3)).isoformat(),
+                "freeze_at": (now - timedelta(hours=2)).isoformat(),
+                "end_at": (now - timedelta(hours=1)).isoformat(),
+                "notice_access_after_end": "public",
+            },
+        )
+        assert updated.status_code == 200
+
+        public_notices = client.get(f"/api/contests/{contest_id}/notices")
+        assert public_notices.status_code == 200
+        assert any(
+            notice["title"] == "종료 후 참가자 공지"
+            for notice in public_notices.json()["data"]
+        )
+    finally:
+        set_contest_mutable(contest_id)
+        restored_notice = client.patch(
+            f"/api/operator/contests/{contest_id}/notices/{created_notice.json()['data']['contest_notice_id']}",
+            headers=headers,
+            json={"visibility": "public"},
+        )
+        assert restored_notice.status_code == 200
+
+
 def test_operator_can_manually_override_public_scoreboard_freeze_mode():
     contest_id = first_contest_id()
     operator = staff_tokens("test4@zoj.com")

@@ -1533,12 +1533,18 @@ class DbStore:
             queued.append(self.enqueue_mail(mail_type, str(account.email), subject, body_text))
         return queued
 
-    def contest_notices_for_view(self, contest_id: str, participant: dict | None = None, operator: bool = False) -> list[ContestNotice]:
+    def contest_notices_for_view(
+        self,
+        contest_id: str,
+        participant: dict | None = None,
+        operator: bool = False,
+        include_participant_visible: bool = False,
+    ) -> list[ContestNotice]:
         with self._session() as db:
             rows = db.scalars(
                 select(ContestNoticeRow).where(ContestNoticeRow.contest_id == contest_id).order_by(ContestNoticeRow.pinned.desc(), ContestNoticeRow.published_at.desc())
             ).all()
-            if operator or participant:
+            if operator or participant or include_participant_visible:
                 visible = rows
             else:
                 visible = [row for row in rows if row.visibility == "public"]
