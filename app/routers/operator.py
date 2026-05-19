@@ -324,24 +324,25 @@ def _require_contest_mutation_open(contest_id: str):
     return contest
 
 
-def _settings_update_changes_operation(updates: dict) -> bool:
-    return any(
-        key in updates
-        for key in {
-            "title",
-            "organization_name",
-            "overview",
-            "status",
-            "problem_public_after_end",
-            "scoreboard_public_after_end",
-            "submission_public_after_end",
-            "problem_access_after_end",
-            "scoreboard_access_after_end",
-            "submission_access_after_end",
-            "board_access_after_end",
-            "notice_access_after_end",
-        }
-    )
+def _settings_update_changes_operation(contest, updates: dict) -> bool:
+    operation_locked_fields = {
+        "title",
+        "organization_name",
+        "overview",
+        "status",
+    }
+    for key in operation_locked_fields:
+        if key not in updates:
+            continue
+        current_value = getattr(contest, key)
+        next_value = updates[key]
+        if isinstance(current_value, ContestStatus):
+            current_value = current_value.value
+        if isinstance(next_value, ContestStatus):
+            next_value = next_value.value
+        if current_value != next_value:
+            return True
+    return False
 
 
 def _schedule_bundle_warm(background_tasks: BackgroundTasks, contest_id: str, problem_id: str) -> None:
@@ -428,7 +429,7 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
     if not contest:
         raise not_found()
     updates = payload.model_dump(exclude_unset=True)
-    if _settings_update_changes_operation(updates):
+    if _settings_update_changes_operation(contest, updates):
         _require_contest_mutation_open(contest_id)
 
     explicit_start = "start_at" in updates
