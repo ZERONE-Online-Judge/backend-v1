@@ -1573,6 +1573,122 @@ def test_operator_bulk_creates_participant_teams():
     assert duplicate.json()["data"]["errors"][0]["message"] == "participant email already registered"
 
 
+def test_participant_invite_mail_is_html_and_sent_when_public():
+    contest_id = first_contest_id()
+    set_contest_mutable(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    master = staff_tokens()
+    divisions = client.get(f"/api/operator/contests/{contest_id}/divisions", headers=auth_headers(operator["access_token"]))
+    division = divisions.json()["data"][0]
+    suffix = uuid4().hex[:8]
+    leader_email = f"invite-leader-{suffix}@zoj.com"
+
+    created = client.post(
+        f"/api/operator/contests/{contest_id}/participants",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "division_id": division["division_id"],
+            "team_name": f"Invite Team {suffix}",
+            "leader": {"name": "Invite Leader", "email": leader_email},
+            "members": [],
+        },
+    )
+    assert created.status_code == 200
+
+    mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
+    invite = next(item for item in mail_queue.json()["data"] if item["recipient_email"] == leader_email)
+    assert invite["mail_type"] == "participant_invited"
+    assert "대회에 초대되었습니다" in invite["subject"]
+    assert "body_html" in invite and "대회 페이지 열기" in invite["body_html"]
+    assert f"/contests/{contest_id}" in invite["body_html"]
+
+
+def test_private_participant_invites_are_sent_when_contest_becomes_public():
+    master = staff_tokens()
+    created_contest = client.post(
+        "/api/admin/contests",
+        headers=auth_headers(master["access_token"]),
+        json={
+            "organization_name": "Delayed Invite Org",
+            "status": "scheduled",
+            "start_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+            "freeze_at": (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat(),
+            "end_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+            "operator_email": "delayed-invite-operator@zoj.com",
+        },
+    )
+    assert created_contest.status_code == 200
+    contest_id = created_contest.json()["data"]["contest_id"]
+    division = client.post(
+        f"/api/admin/contests/{contest_id}/divisions",
+        headers=auth_headers(master["access_token"]),
+        json={"code": "main", "name": "Main", "description": ""},
+    )
+    assert division.status_code == 200
+    operator = staff_tokens("delayed-invite-operator@zoj.com")
+    suffix = uuid4().hex[:8]
+    leader_email = f"delayed-invite-{suffix}@zoj.com"
+
+    created_team = client.post(
+        f"/api/operator/contests/{contest_id}/participants",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "division_id": division.json()["data"]["division_id"],
+            "team_name": f"Delayed Invite {suffix}",
+            "leader": {"name": "Delayed Leader", "email": leader_email},
+            "members": [],
+        },
+    )
+    assert created_team.status_code == 200
+    mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
+    assert not any(item["mail_type"] == "participant_invited" and item["recipient_email"] == leader_email for item in mail_queue.json()["data"])
+
+    now = datetime.now(timezone.utc)
+    opened = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "status": "open",
+            "start_at": (now + timedelta(hours=2)).isoformat(),
+            "freeze_at": (now + timedelta(hours=5)).isoformat(),
+            "end_at": (now + timedelta(hours=6)).isoformat(),
+        },
+    )
+    assert opened.status_code == 200
+
+    mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
+    assert any(item["mail_type"] == "participant_invited" and item["recipient_email"] == leader_email for item in mail_queue.json()["data"])
+
+
+def test_due_contest_reminders_enqueue_html_mail_once():
+    contest_id = first_contest_id()
+    set_contest_mutable(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    master = staff_tokens()
+    now = datetime.now(timezone.utc)
+    updated = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "status": "open",
+            "start_at": (now + timedelta(minutes=9)).isoformat(),
+            "freeze_at": (now + timedelta(hours=2)).isoformat(),
+            "end_at": (now + timedelta(hours=3)).isoformat(),
+        },
+    )
+    assert updated.status_code == 200
+
+    first_count = store.enqueue_due_contest_reminders()
+    second_count = store.enqueue_due_contest_reminders()
+    assert first_count > 0
+    assert second_count == 0
+
+    mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
+    reminder = next(item for item in mail_queue.json()["data"] if item["mail_type"] == "contest_reminder_10m")
+    assert "시작 10분 전 안내" in reminder["subject"]
+    assert "body_html" in reminder and "대회 페이지 열기" in reminder["body_html"]
+
+
 def test_participant_email_conflict_with_staff_is_scoped_to_same_contest():
     contest_id = first_contest_id()
     set_contest_mutable(contest_id)

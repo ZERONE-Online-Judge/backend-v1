@@ -260,6 +260,7 @@ class MailQueueItem(BaseModel):
     recipient_email: EmailStr
     subject: str
     body_text: str
+    body_html: str | None = None
     status: str = "pending"
     created_at: datetime = Field(default_factory=now_utc)
 

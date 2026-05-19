@@ -475,6 +475,8 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
     updated = store.update_contest_settings(contest_id, **updates)
     if not updated:
         raise not_found()
+    if not store._contest_accepts_participant_invites(contest.status.value) and store._contest_accepts_participant_invites(updated.status.value):
+        store.enqueue_participant_invites_for_contest(contest_id)
     changed_lines = []
     for key, new_value in updates.items():
         old_value = getattr(contest, key)
@@ -667,6 +669,7 @@ async def create_participant(contest_id: str, payload: ParticipantCreateRequest,
         )
     except ValueError as error:
         raise AppError(422, "validation_error", str(error), {"field": "email_conflict"})
+    store.enqueue_participant_invite_for_team(contest_id, team.participant_team_id)
     return ok(request, team.model_dump(mode="json"))
 
 
@@ -688,6 +691,7 @@ async def bulk_create_participants(contest_id: str, payload: ParticipantBulkCrea
                 leader_email=str(item.leader.email),
                 members=[(member.name, str(member.email)) for member in item.members],
             )
+            store.enqueue_participant_invite_for_team(contest_id, team.participant_team_id)
             division = store.get_division(contest_id, team.division_id)
             created.append({**team.model_dump(mode="json"), "division": division.model_dump(mode="json") if division else None})
         except ValueError as error:

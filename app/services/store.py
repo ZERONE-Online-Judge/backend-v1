@@ -66,6 +66,12 @@ from app.orm_models import (
 )
 from app.services.security import decode_session_token, hash_password, new_session_token, new_token, token_hash, verify_password
 from app.services.storage import object_storage
+from app.services.mail_templates import (
+    absolute_url,
+    contest_reminder_mail,
+    participant_invite_mail,
+    render_basic_html,
+)
 
 STAFF_OTP_SCOPE = "__staff__"
 GENERAL_OTP_SCOPE = "__general__"
@@ -358,6 +364,7 @@ def _mail(row: MailQueueItemRow) -> MailQueueItem:
         recipient_email=row.recipient_email,
         subject=row.subject,
         body_text=row.body_text,
+        body_html=row.body_html,
         status=row.status,
         created_at=_aware(row.created_at),
     )
@@ -1533,6 +1540,80 @@ class DbStore:
             queued.append(self.enqueue_mail(mail_type, str(account.email), subject, body_text))
         return queued
 
+    def _contest_accepts_participant_invites(self, status: str) -> bool:
+        return status in {ContestStatus.OPEN.value, ContestStatus.RUNNING.value}
+
+    def enqueue_participant_invites_for_contest(self, contest_id: str) -> int:
+        with self._session() as db:
+            contest = db.get(ContestRow, contest_id)
+            if not contest or not self._contest_accepts_participant_invites(contest.status):
+                return 0
+            teams = db.scalars(
+                select(ParticipantTeamRow)
+                .options(selectinload(ParticipantTeamRow.members))
+                .where(ParticipantTeamRow.contest_id == contest_id)
+            ).all()
+            queued_count = 0
+            for team in teams:
+                division = db.get(ContestDivisionRow, team.division_id)
+                if not division:
+                    continue
+                queued_count += self._enqueue_participant_invite_rows(db, contest, division, team)
+            db.commit()
+            return queued_count
+
+    def enqueue_participant_invite_for_team(self, contest_id: str, participant_team_id: str) -> int:
+        with self._session() as db:
+            contest = db.get(ContestRow, contest_id)
+            if not contest or not self._contest_accepts_participant_invites(contest.status):
+                return 0
+            team = db.scalar(
+                select(ParticipantTeamRow)
+                .options(selectinload(ParticipantTeamRow.members))
+                .where(
+                    ParticipantTeamRow.contest_id == contest_id,
+                    ParticipantTeamRow.participant_team_id == participant_team_id,
+                )
+            )
+            if not team:
+                return 0
+            division = db.get(ContestDivisionRow, team.division_id)
+            if not division:
+                return 0
+            queued_count = self._enqueue_participant_invite_rows(db, contest, division, team)
+            db.commit()
+            return queued_count
+
+    def _enqueue_participant_invite_rows(
+        self,
+        db: Session,
+        contest: ContestRow,
+        division: ContestDivisionRow,
+        team: ParticipantTeamRow,
+    ) -> int:
+        content = participant_invite_mail(
+            contest_title=contest.title,
+            organization_name=contest.organization_name,
+            team_name=team.team_name,
+            division_name=division.name,
+            contest_url=absolute_url(f"/contests/{contest.contest_id}"),
+        )
+        queued_count = 0
+        for member in team.members:
+            if self._mail_exists(db, "participant_invited", member.email, content.subject):
+                continue
+            db.add(
+                MailQueueItemRow(
+                    mail_type="participant_invited",
+                    recipient_email=member.email,
+                    subject=content.subject,
+                    body_text=content.body_text,
+                    body_html=content.body_html,
+                )
+            )
+            queued_count += 1
+        return queued_count
+
     def contest_notices_for_view(
         self,
         contest_id: str,
@@ -2584,13 +2665,111 @@ class DbStore:
                         problem_score["best_submitted_at"] = None
             return {"frozen": frozen, "rows": rows}
 
-    def enqueue_mail(self, mail_type: str, recipient_email: str, subject: str, body_text: str) -> MailQueueItem:
+    def _mail_exists(self, db: Session, mail_type: str, recipient_email: str, subject: str) -> bool:
+        return (
+            db.scalar(
+                select(MailQueueItemRow.mail_queue_id)
+                .where(
+                    MailQueueItemRow.mail_type == mail_type,
+                    MailQueueItemRow.recipient_email == recipient_email,
+                    MailQueueItemRow.subject == subject,
+                    MailQueueItemRow.status != "failed",
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    def enqueue_mail(
+        self,
+        mail_type: str,
+        recipient_email: str,
+        subject: str,
+        body_text: str,
+        body_html: str | None = None,
+        dedupe: bool = False,
+    ) -> MailQueueItem:
         with self._session() as db:
-            row = MailQueueItemRow(mail_type=mail_type, recipient_email=recipient_email, subject=subject, body_text=body_text)
+            if dedupe and self._mail_exists(db, mail_type, recipient_email, subject):
+                existing = db.scalar(
+                    select(MailQueueItemRow)
+                    .where(
+                        MailQueueItemRow.mail_type == mail_type,
+                        MailQueueItemRow.recipient_email == recipient_email,
+                        MailQueueItemRow.subject == subject,
+                        MailQueueItemRow.status != "failed",
+                    )
+                    .order_by(MailQueueItemRow.created_at.desc())
+                    .limit(1)
+                )
+                return _mail(existing)
+            row = MailQueueItemRow(
+                mail_type=mail_type,
+                recipient_email=recipient_email,
+                subject=subject,
+                body_text=body_text,
+                body_html=body_html or render_basic_html(subject, body_text),
+            )
             db.add(row)
             db.commit()
             db.refresh(row)
             return _mail(row)
+
+    def enqueue_due_contest_reminders(self) -> int:
+        reminder_windows = [
+            ("24h", timedelta(hours=24), "24시간"),
+            ("1h", timedelta(hours=1), "1시간"),
+            ("10m", timedelta(minutes=10), "10분"),
+        ]
+        now = now_utc()
+        queued_count = 0
+        with self._session() as db:
+            contests = db.scalars(
+                select(ContestRow).where(
+                    ContestRow.status.in_([ContestStatus.OPEN.value, ContestStatus.RUNNING.value]),
+                    ContestRow.start_at > now,
+                    ContestRow.start_at <= now + timedelta(hours=24),
+                )
+            ).all()
+            for contest in contests:
+                starts_in = _aware(contest.start_at) - now
+                for code, window, label in reminder_windows:
+                    if starts_in < timedelta(0) or starts_in > window:
+                        continue
+                    teams = db.scalars(
+                        select(ParticipantTeamRow)
+                        .options(selectinload(ParticipantTeamRow.members))
+                        .where(ParticipantTeamRow.contest_id == contest.contest_id)
+                    ).all()
+                    for team in teams:
+                        division = db.get(ContestDivisionRow, team.division_id)
+                        if not division:
+                            continue
+                        content = contest_reminder_mail(
+                            contest_title=contest.title,
+                            organization_name=contest.organization_name,
+                            team_name=team.team_name,
+                            division_name=division.name,
+                            starts_at=_aware(contest.start_at),
+                            remaining_label=label,
+                            contest_url=absolute_url(f"/contests/{contest.contest_id}"),
+                        )
+                        mail_type = f"contest_reminder_{code}"
+                        for member in team.members:
+                            if self._mail_exists(db, mail_type, member.email, content.subject):
+                                continue
+                            db.add(
+                                MailQueueItemRow(
+                                    mail_type=mail_type,
+                                    recipient_email=member.email,
+                                    subject=content.subject,
+                                    body_text=content.body_text,
+                                    body_html=content.body_html,
+                                )
+                            )
+                            queued_count += 1
+            db.commit()
+        return queued_count
 
     def enqueue_bundle_warm(self, contest_id: str, problem_id: str) -> None:
         with self._session() as db:
@@ -2634,6 +2813,10 @@ class DbStore:
                     recipient_email=email,
                     subject="Zerone Online Judge 인증번호",
                     body_text=f"인증번호는 {code} 입니다. {settings.otp_ttl_seconds // 60}분 안에 입력하세요.",
+                    body_html=render_basic_html(
+                        "Zerone Online Judge 인증번호",
+                        f"인증번호는 {code} 입니다. {settings.otp_ttl_seconds // 60}분 안에 입력하세요.",
+                    ),
                 )
             )
             db.commit()
