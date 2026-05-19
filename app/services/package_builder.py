@@ -49,7 +49,10 @@ _EXECUTABLE_SOURCE_SUFFIXES = {".cpp", ".c", ".py", ".java"}
 
 def package_role(asset: ProblemAsset) -> str | None:
     for role in PACKAGE_ROLES:
-        if f"/package-files/{role}/" in asset.storage_key:
+        if (
+            f"/package-files/{role}/" in asset.storage_key
+            or f"/support/{role}/" in asset.storage_key
+        ):
             return role
     return None
 
