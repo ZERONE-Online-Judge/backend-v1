@@ -532,13 +532,37 @@ def test_operator_mutations_are_locked_during_running_contest():
         },
     )
     assert time_update.status_code == 200
-    assert "대회 운영 시간이 변경되었습니다" in time_update.json()["data"]["emergency_notice"]
+    emergency_body = time_update.json()["data"]["emergency_notice"]
+    assert "운영시간이 변경되었습니다" in emergency_body
+    assert "오픈:" in emergency_body
+    assert "프리즈:" in emergency_body
+    assert "마감:" in emergency_body
+    assert "KST" in emergency_body
     notices = client.get(
         f"/api/operator/contests/{contest_id}/notices",
         headers=auth_headers(operator["access_token"]),
     )
     assert notices.status_code == 200
     assert any(item["title"] == "대회 운영 시간이 변경되었습니다" and item["emergency"] for item in notices.json()["data"])
+
+
+def test_auto_time_notice_only_lists_changed_time_fields():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+    set_contest_mutable(contest_id)
+    contest = store.contests[contest_id]
+
+    update = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={"freeze_at": (contest.freeze_at + timedelta(minutes=10)).isoformat()},
+    )
+    assert update.status_code == 200
+    emergency_body = update.json()["data"]["emergency_notice"]
+    assert "프리즈:" in emergency_body
+    assert "오픈:" not in emergency_body
+    assert "마감:" not in emergency_body
 
 
 def test_admin_can_create_contest_with_operator_email_only():

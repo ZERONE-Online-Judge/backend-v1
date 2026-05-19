@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr
@@ -23,6 +24,7 @@ from app.services.testcase_verifier import UploadedTestcase, build_verified_test
 router = APIRouter(tags=["operator"])
 
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
+KST = ZoneInfo("Asia/Seoul")
 
 
 def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str | None]:
@@ -212,21 +214,30 @@ class PresignUploadRequest(BaseModel):
 
 
 def _format_datetime_for_notice(value: datetime) -> str:
-    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    return value.astimezone(KST).strftime("%y년 %m월 %d일 %H시 %M분 KST")
 
 
-def _time_update_notice_body(old_start: datetime, old_freeze: datetime, old_end: datetime, new_start: datetime, new_freeze: datetime, new_end: datetime) -> str:
-    return "\n".join(
+def _time_update_notice_body(contest_title: str, changed_fields: list[tuple[str, datetime, datetime]]) -> str:
+    labels = {
+        "start_at": "오픈",
+        "freeze_at": "프리즈",
+        "end_at": "마감",
+    }
+    lines = [
+        f"{contest_title} 운영시간이 변경되었습니다.",
+        "",
+    ]
+    lines.extend(
+        f"- {labels[field]}: {_format_datetime_for_notice(old_value)} -> {_format_datetime_for_notice(new_value)}"
+        for field, old_value, new_value in changed_fields
+    )
+    lines.extend(
         [
-            "대회 운영 시간이 변경되었습니다.",
             "",
-            f"- 시작: {_format_datetime_for_notice(old_start)} -> {_format_datetime_for_notice(new_start)}",
-            f"- 스코어보드 프리즈: {_format_datetime_for_notice(old_freeze)} -> {_format_datetime_for_notice(new_freeze)}",
-            f"- 종료: {_format_datetime_for_notice(old_end)} -> {_format_datetime_for_notice(new_end)}",
-            "",
-            "변경된 시간 기준으로 제출 가능 여부와 대회 상태가 자동 조정됩니다.",
+            "변경된 시간 기준으로 대회 접근, 제출 가능 여부, 스코어보드 프리즈가 자동 적용됩니다.",
         ]
     )
+    return "\n".join(lines)
 
 
 def _problem_package_status(contest_id: str, problem_id: str) -> dict:
@@ -470,10 +481,15 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
             default_freeze = end_at
         freeze_at = default_freeze
         updates["freeze_at"] = freeze_at
-    time_fields = {"start_at", "end_at", "freeze_at"}
-    time_changed = any(key in updates and getattr(contest, key) != updates[key] for key in time_fields)
+    time_fields = ("start_at", "freeze_at", "end_at")
+    changed_time_fields = [
+        (key, getattr(contest, key), updates[key])
+        for key in time_fields
+        if key in updates and getattr(contest, key) != updates[key]
+    ]
+    time_changed = bool(changed_time_fields)
     if time_changed and settings.feature_emergency_notice_auto:
-        auto_notice = _time_update_notice_body(contest.start_at, contest.freeze_at, contest.end_at, start_at, freeze_at, end_at)
+        auto_notice = _time_update_notice_body(contest.title, changed_time_fields)
         manual_notice = updates.get("emergency_notice")
         updates["emergency_notice"] = f"{auto_notice}\n\n{manual_notice}".strip() if manual_notice else auto_notice
     updated = store.update_contest_settings(contest_id, **updates)
