@@ -485,24 +485,27 @@ def test_admin_can_create_contest_with_operator_email_only():
     assert any(item["mail_type"] == "contest_operator_assigned" for item in queued)
 
 
-def test_admin_created_contest_defaults_to_schedule_tbd_and_is_publicly_visible():
+def test_admin_created_contest_defaults_to_draft_and_is_hidden_publicly():
     master = staff_tokens()
     created = client.post(
         "/api/admin/contests",
         headers=auth_headers(master["access_token"]),
         json={
-            "title": "Schedule TBD Contest",
+            "title": "Draft Contest",
             "organization_name": "Zerone",
             "operator_email": "schedule-tbd-operator@zoj.com",
         },
     )
     assert created.status_code == 200
     contest = created.json()["data"]
-    assert contest["status"] == ContestStatus.SCHEDULE_TBD.value
+    assert contest["status"] == ContestStatus.DRAFT.value
 
     public_detail = client.get(f"/api/public/contests/{contest['contest_id']}")
-    assert public_detail.status_code == 200
-    assert public_detail.json()["data"]["contest"]["status"] == ContestStatus.SCHEDULE_TBD.value
+    assert public_detail.status_code == 404
+
+    accounts = client.get("/api/admin/service-managers", headers=auth_headers(master["access_token"]))
+    master_account = next(item for item in accounts.json()["data"] if item["email"] == "test3@zoj.com")
+    assert master_account["contest_scopes"][contest["contest_id"]] == ["contest.*"]
 
 
 def test_operator_contest_list_includes_scheduled_assigned_contest():
@@ -1205,6 +1208,57 @@ def test_public_contest_resources_can_be_viewed_without_participant_after_end():
         assert client.get(f"/api/contests/{contest_id}/boards").status_code == 200
         assert client.get(f"/api/contests/{contest_id}/notices").status_code == 200
     finally:
+        restored = client.patch(
+            f"/api/operator/contests/{contest_id}/settings",
+            headers=headers,
+            json={
+                "problem_access_after_end": "private",
+                "scoreboard_access_after_end": "private",
+                "submission_access_after_end": "private",
+                "board_access_after_end": "participants",
+                "notice_access_after_end": "public",
+                "scoreboard_freeze_mode": "auto",
+            },
+        )
+        assert restored.status_code == 200
+
+
+def test_public_contest_resources_use_manual_ended_status_even_when_end_time_is_future():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+    now = datetime.now(timezone.utc)
+    set_contest_mutable(contest_id)
+
+    updated = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={
+            "status": "ended",
+            "start_at": (now + timedelta(hours=1)).isoformat(),
+            "freeze_at": (now + timedelta(hours=3)).isoformat(),
+            "end_at": (now + timedelta(hours=4)).isoformat(),
+            "problem_access_after_end": "public",
+            "scoreboard_access_after_end": "public",
+            "submission_access_after_end": "public",
+            "board_access_after_end": "public",
+            "notice_access_after_end": "public",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["data"]["status"] == ContestStatus.ENDED.value
+
+    try:
+        public_detail = client.get(f"/api/public/contests/{contest_id}")
+        assert public_detail.status_code == 200
+        assert public_detail.json()["data"]["contest"]["status"] == ContestStatus.ENDED.value
+        assert client.get(f"/api/contests/{contest_id}/problems").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/scoreboard").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/submissions").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/boards").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/notices").status_code == 200
+    finally:
+        set_contest_mutable(contest_id)
         restored = client.patch(
             f"/api/operator/contests/{contest_id}/settings",
             headers=headers,

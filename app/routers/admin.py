@@ -40,7 +40,7 @@ class ContestCreateRequest(BaseModel):
     title: str | None = None
     organization_name: str
     overview: str | None = None
-    status: ContestStatus = ContestStatus.SCHEDULE_TBD
+    status: ContestStatus = ContestStatus.DRAFT
     start_at: datetime | None = None
     end_at: datetime | None = None
     freeze_at: datetime | None = None
@@ -97,7 +97,7 @@ async def admin_contests(request: Request):
 
 @router.post("/admin/contests")
 async def create_contest(payload: ContestCreateRequest, request: Request):
-    require_service_master(request)
+    account = require_service_master(request)
     contest = store.create_contest(
         payload.title,
         payload.organization_name,
@@ -106,6 +106,11 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
         payload.end_at,
         payload.freeze_at,
         payload.status,
+    )
+    store.upsert_contest_operator(
+        contest.contest_id,
+        account.email,
+        account.display_name or account.email,
     )
     if payload.operator_email:
         try:

@@ -79,7 +79,13 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 def _schedule_status(status: str, start_at: datetime, end_at: datetime, now: datetime) -> str:
-    if status in {ContestStatus.DRAFT.value, ContestStatus.SCHEDULE_TBD.value, ContestStatus.FINALIZED.value, ContestStatus.ARCHIVED.value}:
+    if status in {
+        ContestStatus.DRAFT.value,
+        ContestStatus.SCHEDULE_TBD.value,
+        ContestStatus.ENDED.value,
+        ContestStatus.FINALIZED.value,
+        ContestStatus.ARCHIVED.value,
+    }:
         return status
     start = _aware(start_at)
     end = _aware(end_at)
@@ -89,7 +95,7 @@ def _schedule_status(status: str, start_at: datetime, end_at: datetime, now: dat
         return ContestStatus.ENDED.value
     if start <= now < end:
         return ContestStatus.RUNNING.value
-    if now < start and status in {ContestStatus.RUNNING.value, ContestStatus.ENDED.value}:
+    if now < start and status == ContestStatus.RUNNING.value:
         return ContestStatus.OPEN.value
     return status
 
@@ -673,7 +679,17 @@ class DbStore:
     def ensure_demo_fixtures(self) -> None:
         with self._session() as db:
             contest = db.scalar(
-                select(ContestRow).where(ContestRow.status.not_in([ContestStatus.DRAFT.value, ContestStatus.SCHEDULED.value])).order_by(ContestRow.created_at)
+                select(ContestRow)
+                .where(
+                    ContestRow.status.not_in(
+                        [
+                            ContestStatus.DRAFT.value,
+                            ContestStatus.SCHEDULE_TBD.value,
+                            ContestStatus.SCHEDULED.value,
+                        ]
+                    )
+                )
+                .order_by(ContestRow.created_at)
             )
             if not contest:
                 return
@@ -1309,7 +1325,15 @@ class DbStore:
         self.refresh_contest_statuses()
         with self._session() as db:
             rows = db.scalars(
-                select(ContestRow).where(ContestRow.status.not_in([ContestStatus.DRAFT.value, ContestStatus.SCHEDULED.value]))
+                select(ContestRow).where(
+                    ContestRow.status.not_in(
+                        [
+                            ContestStatus.DRAFT.value,
+                            ContestStatus.SCHEDULE_TBD.value,
+                            ContestStatus.SCHEDULED.value,
+                        ]
+                    )
+                )
             ).all()
             return [_contest(row) for row in rows]
 
@@ -1317,7 +1341,11 @@ class DbStore:
         self.refresh_contest_statuses()
         with self._session() as db:
             row = db.get(ContestRow, contest_id)
-            if not row or row.status in {ContestStatus.DRAFT.value, ContestStatus.SCHEDULED.value}:
+            if not row or row.status in {
+                ContestStatus.DRAFT.value,
+                ContestStatus.SCHEDULE_TBD.value,
+                ContestStatus.SCHEDULED.value,
+            }:
                 return None
             return _contest(row)
 

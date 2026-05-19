@@ -315,7 +315,7 @@ def _require_contest_mutation_open(contest_id: str):
     if not contest:
         raise not_found()
     now = now_utc()
-    in_time_window = contest.status != ContestStatus.SCHEDULE_TBD and contest.start_at <= now < contest.end_at and contest.status not in {
+    in_time_window = contest.status not in {ContestStatus.DRAFT, ContestStatus.SCHEDULE_TBD} and contest.start_at <= now < contest.end_at and contest.status not in {
         ContestStatus.ENDED,
         ContestStatus.FINALIZED,
         ContestStatus.ARCHIVED,
