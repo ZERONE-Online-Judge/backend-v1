@@ -1176,6 +1176,50 @@ def test_public_contest_resources_can_be_viewed_without_participant_during_conte
         assert restored.status_code == 200
 
 
+def test_public_contest_resources_can_be_viewed_without_participant_after_end():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+    now = datetime.now(timezone.utc)
+
+    updated = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={
+            "start_at": (now - timedelta(hours=3)).isoformat(),
+            "freeze_at": (now - timedelta(hours=2)).isoformat(),
+            "end_at": (now - timedelta(hours=1)).isoformat(),
+            "problem_access_after_end": "public",
+            "scoreboard_access_after_end": "public",
+            "submission_access_after_end": "public",
+            "board_access_after_end": "public",
+            "notice_access_after_end": "public",
+        },
+    )
+    assert updated.status_code == 200
+
+    try:
+        assert client.get(f"/api/contests/{contest_id}/problems").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/scoreboard").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/submissions").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/boards").status_code == 200
+        assert client.get(f"/api/contests/{contest_id}/notices").status_code == 200
+    finally:
+        restored = client.patch(
+            f"/api/operator/contests/{contest_id}/settings",
+            headers=headers,
+            json={
+                "problem_access_after_end": "private",
+                "scoreboard_access_after_end": "private",
+                "submission_access_after_end": "private",
+                "board_access_after_end": "participants",
+                "notice_access_after_end": "public",
+                "scoreboard_freeze_mode": "auto",
+            },
+        )
+        assert restored.status_code == 200
+
+
 def test_operator_can_manually_override_public_scoreboard_freeze_mode():
     contest_id = first_contest_id()
     operator = staff_tokens("test4@zoj.com")
@@ -1747,6 +1791,14 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     assert operator_list.status_code == 200
     listed = next(item for item in operator_list.json()["data"] if item["submission_id"] == submission_id)
     assert listed["source_code"] is None
+    operator_page = client.get(
+        f"/api/operator/contests/{contest_id}/submissions?limit=1&division_id={division_id}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert operator_page.status_code == 200
+    assert len(operator_page.json()["data"]) <= 1
+    assert operator_page.json()["page"]["limit"] == 1
+    assert all(item["division_id"] == division_id for item in operator_page.json()["data"])
 
     operator_detail = client.get(
         f"/api/operator/contests/{contest_id}/submissions/{submission_id}",
@@ -1766,6 +1818,18 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     assert admin_list.status_code == 200
     admin_listed = next(item for item in admin_list.json()["data"] if item["submission"]["submission_id"] == submission_id)
     assert admin_listed["submission"]["source_code"] is None
+    admin_page = client.get(
+        f"/api/admin/judge/submissions?limit=1&contest_id={contest_id}&division_id={division_id}",
+        headers=auth_headers(master["access_token"]),
+    )
+    assert admin_page.status_code == 200
+    assert len(admin_page.json()["data"]) <= 1
+    assert admin_page.json()["page"]["limit"] == 1
+    assert all(
+        item["submission"]["contest_id"] == contest_id
+        and item["submission"]["division_id"] == division_id
+        for item in admin_page.json()["data"]
+    )
 
     admin_detail = client.get(f"/api/admin/judge/submissions/{submission_id}", headers=auth_headers(master["access_token"]))
     assert admin_detail.status_code == 200
@@ -2091,6 +2155,10 @@ def test_participant_submission_requires_token_and_filters_team():
     own_list = client.get(f"/api/contests/{contest_id}/submissions", headers=auth_headers(login["access_token"]))
     assert own_list.status_code == 200
     assert all(item["participant_team_id"] == login["team"]["participant_team_id"] for item in own_list.json()["data"])
+    own_page = client.get(f"/api/contests/{contest_id}/submissions?limit=1", headers=auth_headers(login["access_token"]))
+    assert own_page.status_code == 200
+    assert len(own_page.json()["data"]) <= 1
+    assert own_page.json()["page"]["limit"] == 1
 
     detail = client.get(f"/api/contests/{contest_id}/submissions/{submission_id}", headers=auth_headers(login["access_token"]))
     assert detail.status_code == 200

@@ -780,7 +780,14 @@ async def revoke_participant_member_sessions(contest_id: str, participant_team_i
 
 
 @router.get("/operator/contests/{contest_id}/submissions")
-async def operator_submissions(contest_id: str, request: Request, limit: int = 100, cursor: str | None = None, include_source: bool = False):
+async def operator_submissions(
+    contest_id: str,
+    request: Request,
+    limit: int = 100,
+    cursor: str | None = None,
+    include_source: bool = False,
+    division_id: str | None = None,
+):
     require_contest_staff(request, contest_id)
     teams = {team.participant_team_id: team for team in store.teams.values() if team.contest_id == contest_id}
     members = {
@@ -791,6 +798,8 @@ async def operator_submissions(contest_id: str, request: Request, limit: int = 1
     items = []
     for submission in store.submissions.values():
         if submission.contest_id != contest_id:
+            continue
+        if division_id and submission.division_id != division_id:
             continue
         payload = submission.model_dump(mode="json")
         team = teams.get(submission.participant_team_id)

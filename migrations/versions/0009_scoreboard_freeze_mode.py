@@ -16,6 +16,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("UPDATE contests SET problem_access_after_end = 'public' WHERE problem_public_after_end = TRUE")
+    op.execute("UPDATE contests SET scoreboard_access_after_end = 'public' WHERE scoreboard_public_after_end = TRUE")
+    op.execute("UPDATE contests SET submission_access_after_end = 'public' WHERE submission_public_after_end = TRUE")
     op.add_column(
         "contests",
         sa.Column(

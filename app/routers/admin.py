@@ -239,7 +239,14 @@ async def judge_dashboard(
 
 
 @router.get("/admin/judge/submissions")
-async def judge_submissions(request: Request, limit: int = 100, cursor: str | None = None, include_source: bool = False):
+async def judge_submissions(
+    request: Request,
+    limit: int = 100,
+    cursor: str | None = None,
+    include_source: bool = False,
+    contest_id: str | None = None,
+    division_id: str | None = None,
+):
     require_service_master(request)
     contests = store.contests
     problems = store.problems
@@ -256,11 +263,13 @@ async def judge_submissions(request: Request, limit: int = 100, cursor: str | No
     for bucket in testcase_by_set.values():
         bucket.sort(key=lambda item: item.display_order)
 
-    latest_all = sorted(
-        store.submissions.values(),
-        key=lambda item: item.submitted_at,
-        reverse=True,
-    )
+    latest_all = [
+        submission
+        for submission in store.submissions.values()
+        if (not contest_id or submission.contest_id == contest_id)
+        and (not division_id or submission.division_id == division_id)
+    ]
+    latest_all.sort(key=lambda item: item.submitted_at, reverse=True)
     latest, next_cursor = _page_slice(latest_all, limit, cursor)
 
     job_by_submission_id = {job.submission_id: job for job in jobs.values()}

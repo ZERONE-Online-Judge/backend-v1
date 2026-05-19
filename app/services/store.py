@@ -101,9 +101,9 @@ def _valid_session_token(token: str, expected_type: str) -> bool:
 
 
 def _contest(row: ContestRow) -> Contest:
-    problem_access = row.problem_access_after_end or ("public" if row.problem_public_after_end else "private")
-    scoreboard_access = row.scoreboard_access_after_end or ("public" if row.scoreboard_public_after_end else "private")
-    submission_access = row.submission_access_after_end or ("public" if row.submission_public_after_end else "private")
+    problem_access = "public" if row.problem_public_after_end else (row.problem_access_after_end or "private")
+    scoreboard_access = "public" if row.scoreboard_public_after_end else (row.scoreboard_access_after_end or "private")
+    submission_access = "public" if row.submission_public_after_end else (row.submission_access_after_end or "private")
     return Contest(
         contest_id=row.contest_id,
         title=row.title,
