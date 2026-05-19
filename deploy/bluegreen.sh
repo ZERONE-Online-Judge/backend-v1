@@ -52,16 +52,17 @@ write_upstream() {
     echo "  keepalive 32;"
     echo "}"
   } > "$tmp"
-  mv "$tmp" "$UPSTREAM_FILE"
+  cat "$tmp" > "$UPSTREAM_FILE"
+  rm -f "$tmp"
 }
 
 healthcheck() {
   color=$(normalize_color "$1")
   tries=0
-  until compose exec -T "api-$color" python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)" >/dev/null 2>&1; do
+  until compose exec -T "api-$color" python -c "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)); raise SystemExit(0 if data.get('data', {}).get('release_color') == '$color' else 1)" >/dev/null 2>&1; do
     tries=$((tries + 1))
     if [ "$tries" -ge 60 ]; then
-      echo "api-$color health check failed" >&2
+      echo "api-$color health check failed or release_color mismatch" >&2
       return 1
     fi
     sleep 1

@@ -50,10 +50,16 @@ health_via_nginx() {
   expected_color="$1"
   health_url="${PUBLIC_HEALTH_URL:-http://127.0.0.1:6001/api/health}"
   tries=0
-  until curl -fsS "$health_url" | grep -q "\"release_color\":\"$expected_color\""; do
+  last_response=""
+  while :; do
+    last_response="$(curl -fsS "$health_url" 2>/dev/null || true)"
+    if printf '%s\n' "$last_response" | grep -Eq "\"release_color\"[[:space:]]*:[[:space:]]*\"$expected_color\""; then
+      return 0
+    fi
     tries=$((tries + 1))
     if [ "$tries" -ge 30 ]; then
       echo "public health check did not route to $expected_color: $health_url" >&2
+      echo "last health response: ${last_response:-<empty>}" >&2
       return 1
     fi
     sleep 1
