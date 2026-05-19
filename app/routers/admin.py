@@ -206,6 +206,15 @@ async def update_service_notice(notice_id: str, payload: ServiceNoticeUpdateRequ
     return ok(request, notice.model_dump(mode="json"))
 
 
+@router.delete("/admin/service-notices/{notice_id}")
+async def delete_service_notice(notice_id: str, request: Request):
+    require_service_master(request)
+    deleted = store.delete_service_notice(notice_id)
+    if not deleted:
+        raise AppError(404, "not_found", "Service notice was not found.")
+    return ok(request, {"service_notice_id": notice_id, "deleted": True})
+
+
 @router.get("/admin/judge/dashboard")
 async def judge_dashboard(
     request: Request,

@@ -121,6 +121,10 @@ class ContestAnswerCreateRequest(BaseModel):
     visibility: str = "public"
 
 
+class ContestQuestionUpdateRequest(BaseModel):
+    visibility: str | None = None
+
+
 class OperatorTestSubmissionRequest(BaseModel):
     language: str
     source_code: str
@@ -607,12 +611,42 @@ async def update_notice(contest_id: str, notice_id: str, payload: ContestNoticeU
     return ok(request, notice.model_dump(mode="json"))
 
 
+@router.delete("/operator/contests/{contest_id}/notices/{notice_id}")
+async def delete_notice(contest_id: str, notice_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    deleted = store.delete_contest_notice(contest_id, notice_id)
+    if not deleted:
+        raise not_found()
+    return ok(request, {"contest_notice_id": notice_id, "deleted": True})
+
+
 @router.get("/operator/contests/{contest_id}/boards")
 async def operator_board(contest_id: str, request: Request):
     require_contest_staff(request, contest_id)
     if contest_id not in store.contests:
         raise not_found()
     return page(request, [question.model_dump(mode="json") for question in store.questions_for_view(contest_id, operator=True)])
+
+
+@router.patch("/operator/contests/{contest_id}/boards/{question_id}")
+async def update_question(contest_id: str, question_id: str, payload: ContestQuestionUpdateRequest, request: Request):
+    require_contest_staff(request, contest_id)
+    updates = payload.model_dump(exclude_unset=True)
+    if "visibility" in updates and updates["visibility"] not in {"public", "private"}:
+        raise AppError(422, "validation_error", "Unsupported question visibility.")
+    question = store.update_question(contest_id, question_id, **updates)
+    if not question:
+        raise not_found()
+    return ok(request, question.model_dump(mode="json"))
+
+
+@router.delete("/operator/contests/{contest_id}/boards/{question_id}")
+async def delete_question(contest_id: str, question_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    deleted = store.delete_question(contest_id, question_id)
+    if not deleted:
+        raise not_found()
+    return ok(request, {"contest_question_id": question_id, "deleted": True})
 
 
 @router.post("/operator/contests/{contest_id}/boards/{question_id}/answers")

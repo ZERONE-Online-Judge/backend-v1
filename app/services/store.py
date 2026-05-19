@@ -1672,6 +1672,15 @@ class DbStore:
             db.refresh(row)
             return _contest_notice(row)
 
+    def delete_contest_notice(self, contest_id: str, notice_id: str) -> bool:
+        with self._session() as db:
+            row = db.get(ContestNoticeRow, notice_id)
+            if not row or row.contest_id != contest_id:
+                return False
+            db.delete(row)
+            db.commit()
+            return True
+
     def questions_for_view(self, contest_id: str, participant: dict | None = None, operator: bool = False) -> list[ContestQuestion]:
         participant_team_id = participant["team"].participant_team_id if participant else None
         with self._session() as db:
@@ -1708,6 +1717,29 @@ class DbStore:
             db.commit()
             db.refresh(row)
             return _question(row, db.get(ParticipantTeamRow, row.participant_team_id), db.get(TeamMemberRow, row.team_member_id))
+
+    def update_question(self, contest_id: str, question_id: str, **values) -> ContestQuestion | None:
+        allowed = {"visibility"}
+        with self._session() as db:
+            row = db.get(ContestQuestionRow, question_id)
+            if not row or row.contest_id != contest_id:
+                return None
+            for key, value in values.items():
+                if key in allowed and value is not None:
+                    setattr(row, key, value)
+            row.updated_at = now_utc()
+            db.commit()
+            db.refresh(row)
+            return _question(row, db.get(ParticipantTeamRow, row.participant_team_id), db.get(TeamMemberRow, row.team_member_id))
+
+    def delete_question(self, contest_id: str, question_id: str) -> bool:
+        with self._session() as db:
+            row = db.get(ContestQuestionRow, question_id)
+            if not row or row.contest_id != contest_id:
+                return False
+            db.delete(row)
+            db.commit()
+            return True
 
     def create_answer(self, contest_id: str, question_id: str, body: str, visibility: str, created_by_email: str | None = None) -> ContestQuestionAnswer | None:
         with self._session() as db:
@@ -1784,6 +1816,15 @@ class DbStore:
             db.commit()
             db.refresh(row)
             return _notice(row)
+
+    def delete_service_notice(self, notice_id: str) -> bool:
+        with self._session() as db:
+            row = db.get(ServiceNoticeRow, notice_id)
+            if not row:
+                return False
+            db.delete(row)
+            db.commit()
+            return True
 
     def update_contest_settings(self, contest_id: str, **values) -> Contest | None:
         allowed = {

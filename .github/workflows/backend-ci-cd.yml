@@ -1,0 +1,90 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "migrations/**"
+      - "deploy/**"
+      - "tests/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "alembic.ini"
+      - ".github/workflows/backend-ci-cd.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "migrations/**"
+      - "deploy/**"
+      - "tests/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "alembic.ini"
+      - ".github/workflows/backend-ci-cd.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest tests/test_demo_api.py
+
+  deploy:
+    name: Deploy Backend
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
+          BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
+          BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
+          BACKEND_DEPLOY_SSH_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
+        run: |
+          test -n "$BACKEND_DEPLOY_HOST"
+          test -n "$BACKEND_DEPLOY_USER"
+          test -n "$BACKEND_DEPLOY_SSH_KEY"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$BACKEND_DEPLOY_SSH_KEY" > ~/.ssh/backend_deploy_key
+          chmod 600 ~/.ssh/backend_deploy_key
+          ssh-keyscan -p "${BACKEND_DEPLOY_PORT:-22}" "$BACKEND_DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        env:
+          BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
+          BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
+          BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
+          BACKEND_DEPLOY_DIR: ${{ secrets.BACKEND_DEPLOY_DIR }}
+          PUBLIC_HEALTH_URL: ${{ secrets.PUBLIC_HEALTH_URL }}
+          RELEASE_VERSION: ${{ github.sha }}
+        run: |
+          test -n "$BACKEND_DEPLOY_DIR"
+          ssh -i ~/.ssh/backend_deploy_key \
+            -p "${BACKEND_DEPLOY_PORT:-22}" \
+            "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
+            "cd '$BACKEND_DEPLOY_DIR' && PUBLIC_HEALTH_URL='${PUBLIC_HEALTH_URL:-}' RELEASE_VERSION='$RELEASE_VERSION' ./deploy-main-bluegreen.sh"
+

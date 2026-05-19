@@ -223,6 +223,25 @@ def test_contest_notice_and_board_flow():
     assert public_board.status_code == 200
     assert all(item["visibility"] == "public" for item in public_board.json()["data"])
 
+    hidden = client.patch(
+        f"/api/operator/contests/{contest_id}/boards/{question_id}",
+        headers=auth_headers(operator["access_token"]),
+        json={"visibility": "private"},
+    )
+    assert hidden.status_code == 200
+    assert hidden.json()["data"]["visibility"] == "private"
+
+    public_board = client.get(f"/api/contests/{contest_id}/boards")
+    assert public_board.status_code == 200
+    assert all(item["contest_question_id"] != question_id for item in public_board.json()["data"])
+
+    visible = client.patch(
+        f"/api/operator/contests/{contest_id}/boards/{question_id}",
+        headers=auth_headers(operator["access_token"]),
+        json={"visibility": "public"},
+    )
+    assert visible.status_code == 200
+
     operator_board = client.get(
         f"/api/operator/contests/{contest_id}/boards",
         headers=auth_headers(operator["access_token"]),
@@ -244,6 +263,53 @@ def test_contest_notice_and_board_flow():
     assert participant_board.status_code == 200
     own_question = next(item for item in participant_board.json()["data"] if item["contest_question_id"] == question_id)
     assert own_question["answers"][0]["visibility"] == "questioner"
+
+    deleted = client.delete(
+        f"/api/operator/contests/{contest_id}/boards/{question_id}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["data"] == {
+        "contest_question_id": question_id,
+        "deleted": True,
+    }
+
+
+def test_operator_can_delete_contest_notice():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+
+    created = client.post(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=headers,
+        json={
+            "title": "삭제할 공지",
+            "body": "삭제 테스트",
+            "visibility": "public",
+        },
+    )
+    assert created.status_code == 200
+    notice_id = created.json()["data"]["contest_notice_id"]
+
+    deleted = client.delete(
+        f"/api/operator/contests/{contest_id}/notices/{notice_id}",
+        headers=headers,
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["data"] == {
+        "contest_notice_id": notice_id,
+        "deleted": True,
+    }
+
+    listed = client.get(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=headers,
+    )
+    assert listed.status_code == 200
+    assert all(
+        item["contest_notice_id"] != notice_id for item in listed.json()["data"]
+    )
 
 
 def test_admin_service_notice_management():
@@ -273,6 +339,20 @@ def test_admin_service_notice_management():
     public = client.get("/api/public/service-notices")
     assert public.status_code == 200
     assert any(item["service_notice_id"] == notice_id for item in public.json()["data"])
+
+    deleted = client.delete(
+        f"/api/admin/service-notices/{notice_id}",
+        headers=auth_headers(admin["access_token"]),
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["data"] == {
+        "service_notice_id": notice_id,
+        "deleted": True,
+    }
+
+    public = client.get("/api/public/service-notices")
+    assert public.status_code == 200
+    assert all(item["service_notice_id"] != notice_id for item in public.json()["data"])
 
 
 def test_general_operator_session_me_refresh_and_logout():
