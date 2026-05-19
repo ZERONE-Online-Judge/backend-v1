@@ -31,6 +31,7 @@ git pull --ff-only origin main
 docker compose -f compose.backend.yaml ps
 docker compose -f compose.backend.yaml run --rm migrate
 docker compose -f compose.backend.yaml up -d --build api-blue api-green nginx
+docker compose -f compose.backend.yaml exec -T nginx nginx -s reload
 ```
 
 `deploy-main-bluegreen.sh`가 worktree dirty 상태에서 중단되므로, 서버에서 직접 수정한 파일은 커밋하거나 별도 env 파일처럼 git ignore되는 위치에 둡니다.
@@ -43,5 +44,5 @@ docker compose -f compose.backend.yaml up -d --build api-blue api-green nginx
 4. 서버가 `origin main`을 pull
 5. Alembic migration 실행
 6. inactive API pool 빌드/기동
-7. Nginx upstream 전환
+7. Nginx upstream 전환 후 컨테이너 재생성 없이 reload
 8. 공개 health check 확인

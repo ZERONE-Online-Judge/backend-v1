@@ -20,9 +20,6 @@ x-api-service: &api-service
 services:
   nginx:
     image: nginx:stable
-    depends_on:
-      api-blue:
-        condition: service_healthy
     ports:
       - "6001:80"
     volumes:

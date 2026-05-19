@@ -83,6 +83,7 @@ docker compose -f backend_v1/deploy/compose.backend.yaml --profile backup up -d 
 
 Nginx proxies `/api` to `api_backend`, which is defined by `deploy/nginx/api-upstream.conf`.
 The active pool is either `api-blue:8000` or `api-green:8000`.
+Traffic switches by rewriting the upstream file and running `nginx -s reload`; the Nginx container is not recreated during blue-green deploy.
 
 Check current state:
 
@@ -131,7 +132,8 @@ The deploy command runs in this order:
 2. Start/build the target API pool.
 3. Check the target pool with `/api/health`.
 4. Rewrite `nginx/api-upstream.conf`.
-5. Reload Nginx.
+5. Validate Nginx config with `nginx -t`.
+6. Reload Nginx with `nginx -s reload`.
 
 Database migrations must be backward-compatible with the currently active API.
 Use expand-and-contract migrations:

@@ -69,8 +69,8 @@ healthcheck() {
 }
 
 apply_nginx() {
-  compose up -d --force-recreate nginx
   compose exec -T nginx nginx -t
+  compose exec -T nginx nginx -s reload
 }
 
 cmd="${1:-}"
