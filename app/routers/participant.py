@@ -96,7 +96,12 @@ def _has_started(contest) -> bool:
 
 def _optional_participant(request: Request, contest_id: str) -> dict | None:
     token = bearer_token(request)
-    return store.get_participant_by_access_token(contest_id, token) if token else None
+    if not token:
+        return None
+    return (
+        store.get_participant_by_access_token(contest_id, token)
+        or store.get_participant_by_general_access_token(contest_id, token)
+    )
 
 
 def _allow_after_end_resource(contest, access: ContestResourceAccess, participant: dict | None) -> bool:

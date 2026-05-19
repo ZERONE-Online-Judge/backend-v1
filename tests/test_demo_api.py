@@ -1401,6 +1401,53 @@ def test_public_notice_access_after_end_includes_participant_visible_notices():
         assert restored_notice.status_code == 200
 
 
+def test_general_participant_can_view_participant_notice_before_start():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+    set_contest_mutable(contest_id)
+
+    created_notice = client.post(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=headers,
+        json={
+            "title": "진행 전 참가자 공지",
+            "body": "일반 로그인 참가자에게 보여야 합니다.",
+            "visibility": "participants",
+        },
+    )
+    assert created_notice.status_code == 200
+
+    general = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": "test2@zoj.com", "otp_code": ""},
+    )
+    assert general.status_code == 200
+
+    try:
+        public_notices = client.get(f"/api/contests/{contest_id}/notices")
+        assert public_notices.status_code == 200
+        assert all(
+            notice["title"] != "진행 전 참가자 공지"
+            for notice in public_notices.json()["data"]
+        )
+
+        participant_notices = client.get(
+            f"/api/contests/{contest_id}/notices",
+            headers=auth_headers(general.json()["data"]["access_token"]),
+        )
+        assert participant_notices.status_code == 200
+        assert any(
+            notice["title"] == "진행 전 참가자 공지"
+            for notice in participant_notices.json()["data"]
+        )
+    finally:
+        client.delete(
+            f"/api/operator/contests/{contest_id}/notices/{created_notice.json()['data']['contest_notice_id']}",
+            headers=headers,
+        )
+
+
 def test_operator_can_manually_override_public_scoreboard_freeze_mode():
     contest_id = first_contest_id()
     operator = staff_tokens("test4@zoj.com")

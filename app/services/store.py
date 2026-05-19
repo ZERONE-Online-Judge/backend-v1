@@ -1131,6 +1131,49 @@ class DbStore:
                 profile["operator_session"]["refresh_token"] = ""
             return profile
 
+    def get_participant_by_general_access_token(self, contest_id: str, access_token: str) -> dict | None:
+        if not _valid_session_token(access_token, "general_access"):
+            return None
+        with self._session() as db:
+            session = db.scalar(
+                select(GeneralSessionRow).where(
+                    GeneralSessionRow.access_token_hash == token_hash(access_token),
+                    GeneralSessionRow.revoked_at.is_(None),
+                )
+            )
+            if not session or _aware(session.access_expires_at) <= now_utc():
+                return None
+            if db.scalar(select(StaffAccountRow.staff_account_id).where(StaffAccountRow.email == session.email).limit(1)):
+                return None
+            member = db.scalar(
+                select(TeamMemberRow).where(
+                    TeamMemberRow.contest_id == contest_id,
+                    TeamMemberRow.email == session.email,
+                )
+            )
+            if not member:
+                return None
+            team = db.scalar(
+                select(ParticipantTeamRow)
+                .options(selectinload(ParticipantTeamRow.members))
+                .where(ParticipantTeamRow.participant_team_id == member.participant_team_id)
+            )
+            division = db.get(ContestDivisionRow, team.division_id) if team else None
+            session.last_seen_at = now_utc()
+            db.commit()
+            if not team or not division:
+                return None
+            team_model = _team(team)
+            member_model = next(
+                item for item in team_model.members
+                if item.team_member_id == member.team_member_id
+            )
+            return {
+                "team": team_model,
+                "member": member_model,
+                "division": _division(division),
+            }
+
     def get_staff_by_general_access_token(self, access_token: str) -> StaffAccount | None:
         if not _valid_session_token(access_token, "general_access"):
             return None
