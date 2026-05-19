@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models import ContestStatus, SubmissionStatus, now_utc
+from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, now_utc
 from app.services.authz import bearer_token, require_participant
 from app.services.errors import AppError, invalid_state, not_found
 from app.services.responses import ok, page
@@ -99,19 +99,31 @@ def _optional_participant(request: Request, contest_id: str) -> dict | None:
     return store.get_participant_by_access_token(contest_id, token) if token else None
 
 
+def _allow_after_end_resource(contest, access: ContestResourceAccess, participant: dict | None) -> bool:
+    if access == ContestResourceAccess.PUBLIC:
+        return True
+    if access == ContestResourceAccess.PARTICIPANTS:
+        return participant is not None
+    return False
+
+
 def _allow_problem_view(request: Request, contest_id: str, division_id: str | None = None) -> tuple[dict | None, object]:
     contest = store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
     participant = _optional_participant(request, contest_id)
+    if _is_ended(contest):
+        if participant and division_id and participant["division"].division_id != division_id:
+            raise not_found("Division is not available for this participant.")
+        if _allow_after_end_resource(contest, contest.problem_access_after_end, participant):
+            return participant, contest
+        raise not_found()
     if participant:
         if division_id and participant["division"].division_id != division_id:
             raise not_found("Division is not available for this participant.")
         if not _has_started(contest):
             raise not_found()
         return participant, contest
-    if _is_ended(contest) and contest.problem_public_after_end:
-        return None, contest
     raise not_found()
 
 
@@ -120,12 +132,16 @@ def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str |
     if not contest:
         raise not_found()
     participant = _optional_participant(request, contest_id)
+    if _is_ended(contest):
+        if participant and division_id and participant["division"].division_id != division_id:
+            raise not_found("Division is not available for this participant.")
+        if _allow_after_end_resource(contest, contest.scoreboard_access_after_end, participant):
+            return participant, contest
+        raise not_found()
     if participant:
         if division_id and participant["division"].division_id != division_id:
             raise not_found("Division is not available for this participant.")
         return participant, contest
-    if _is_ended(contest) and contest.scoreboard_public_after_end:
-        return None, contest
     raise not_found()
 
 
@@ -134,10 +150,12 @@ def _allow_submission_list_view(request: Request, contest_id: str) -> tuple[dict
     if not contest:
         raise not_found()
     participant = _optional_participant(request, contest_id)
+    if _is_ended(contest):
+        if _allow_after_end_resource(contest, contest.submission_access_after_end, participant):
+            return participant, contest
+        raise not_found()
     if participant:
         return participant, contest
-    if _is_ended(contest) and contest.submission_public_after_end:
-        return None, contest
     raise not_found()
 
 
@@ -335,6 +353,8 @@ async def contest_notices(contest_id: str, request: Request):
     if not contest:
         raise not_found()
     participant = _optional_participant(request, contest_id)
+    if _is_ended(contest) and not _allow_after_end_resource(contest, contest.notice_access_after_end, participant):
+        raise not_found()
     return page(request, [notice.model_dump(mode="json") for notice in store.contest_notices_for_view(contest_id, participant)])
 
 
@@ -344,16 +364,22 @@ async def contest_board(contest_id: str, request: Request):
     if not contest:
         raise not_found()
     participant = _optional_participant(request, contest_id)
+    if _is_ended(contest) and not _allow_after_end_resource(contest, contest.board_access_after_end, participant):
+        raise not_found()
     return page(request, [question.model_dump(mode="json") for question in store.questions_for_view(contest_id, participant)])
 
 
 @router.post("/contests/{contest_id}/boards")
 async def create_question(contest_id: str, payload: QuestionCreateRequest, request: Request):
     participant = require_participant(request, contest_id)
+    contest = store.get_public_contest(contest_id)
+    if not contest:
+        raise not_found()
+    if _is_ended(contest) and not _allow_after_end_resource(contest, contest.board_access_after_end, participant):
+        raise not_found()
     if payload.visibility not in {"public", "private"}:
         raise AppError(422, "validation_error", "Unsupported question visibility.")
     question = store.create_question(contest_id, participant, payload.title, payload.body, payload.visibility)
-    contest = store.contests.get(contest_id)
     if contest:
         operator_accounts = [
             account

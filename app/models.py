@@ -25,6 +25,12 @@ class ContestStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class ContestResourceAccess(StrEnum):
+    PRIVATE = "private"
+    PARTICIPANTS = "participants"
+    PUBLIC = "public"
+
+
 class SubmissionStatus(StrEnum):
     WAITING = "waiting"
     PREPARING = "preparing"
@@ -92,6 +98,11 @@ class Contest(BaseModel):
     problem_public_after_end: bool = False
     scoreboard_public_after_end: bool = False
     submission_public_after_end: bool = False
+    problem_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
+    scoreboard_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
+    submission_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
+    board_access_after_end: ContestResourceAccess = ContestResourceAccess.PARTICIPANTS
+    notice_access_after_end: ContestResourceAccess = ContestResourceAccess.PUBLIC
     emergency_notice: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
 

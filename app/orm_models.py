@@ -21,6 +21,11 @@ class ContestRow(Base):
     problem_public_after_end: Mapped[bool] = mapped_column(Boolean, default=False)
     scoreboard_public_after_end: Mapped[bool] = mapped_column(Boolean, default=False)
     submission_public_after_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    problem_access_after_end: Mapped[str] = mapped_column(String(32), default="private")
+    scoreboard_access_after_end: Mapped[str] = mapped_column(String(32), default="private")
+    submission_access_after_end: Mapped[str] = mapped_column(String(32), default="private")
+    board_access_after_end: Mapped[str] = mapped_column(String(32), default="participants")
+    notice_access_after_end: Mapped[str] = mapped_column(String(32), default="public")
     emergency_notice: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 

@@ -10,7 +10,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr
 
-from app.models import ContestStatus, ProblemAsset, SubmissionStatus, TeamMemberRole, now_utc
+from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import require_contest_staff, require_staff
 from app.services.errors import AppError, not_found
 from app.services.package_builder import PackageBuildError, build_problem_package, package_role
@@ -82,6 +82,11 @@ class ContestSettingsUpdateRequest(BaseModel):
     problem_public_after_end: bool | None = None
     scoreboard_public_after_end: bool | None = None
     submission_public_after_end: bool | None = None
+    problem_access_after_end: ContestResourceAccess | None = None
+    scoreboard_access_after_end: ContestResourceAccess | None = None
+    submission_access_after_end: ContestResourceAccess | None = None
+    board_access_after_end: ContestResourceAccess | None = None
+    notice_access_after_end: ContestResourceAccess | None = None
     emergency_notice: str | None = None
 
 
@@ -330,6 +335,11 @@ def _settings_update_changes_operation(updates: dict) -> bool:
             "problem_public_after_end",
             "scoreboard_public_after_end",
             "submission_public_after_end",
+            "problem_access_after_end",
+            "scoreboard_access_after_end",
+            "submission_access_after_end",
+            "board_access_after_end",
+            "notice_access_after_end",
         }
     )
 

@@ -18,6 +18,7 @@ from app.models import (
     ContestNotice,
     ContestQuestion,
     ContestQuestionAnswer,
+    ContestResourceAccess,
     ContestStatus,
     JudgeJob,
     JudgeJobStatus,
@@ -99,6 +100,9 @@ def _valid_session_token(token: str, expected_type: str) -> bool:
 
 
 def _contest(row: ContestRow) -> Contest:
+    problem_access = row.problem_access_after_end or ("public" if row.problem_public_after_end else "private")
+    scoreboard_access = row.scoreboard_access_after_end or ("public" if row.scoreboard_public_after_end else "private")
+    submission_access = row.submission_access_after_end or ("public" if row.submission_public_after_end else "private")
     return Contest(
         contest_id=row.contest_id,
         title=row.title,
@@ -111,6 +115,11 @@ def _contest(row: ContestRow) -> Contest:
         problem_public_after_end=row.problem_public_after_end,
         scoreboard_public_after_end=row.scoreboard_public_after_end,
         submission_public_after_end=row.submission_public_after_end,
+        problem_access_after_end=ContestResourceAccess(problem_access),
+        scoreboard_access_after_end=ContestResourceAccess(scoreboard_access),
+        submission_access_after_end=ContestResourceAccess(submission_access),
+        board_access_after_end=ContestResourceAccess(row.board_access_after_end or "participants"),
+        notice_access_after_end=ContestResourceAccess(row.notice_access_after_end or "public"),
         emergency_notice=row.emergency_notice,
         created_at=_aware(row.created_at),
     )
@@ -1671,6 +1680,11 @@ class DbStore:
             "problem_public_after_end",
             "scoreboard_public_after_end",
             "submission_public_after_end",
+            "problem_access_after_end",
+            "scoreboard_access_after_end",
+            "submission_access_after_end",
+            "board_access_after_end",
+            "notice_access_after_end",
             "emergency_notice",
         }
         with self._session() as db:
@@ -1679,7 +1693,21 @@ class DbStore:
                 return None
             for key, value in values.items():
                 if key in allowed and value is not None:
-                    setattr(row, key, value.value if isinstance(value, ContestStatus) else value)
+                    if isinstance(value, (ContestStatus, ContestResourceAccess)):
+                        value = value.value
+                    setattr(row, key, value)
+            if "problem_access_after_end" in values:
+                row.problem_public_after_end = row.problem_access_after_end == ContestResourceAccess.PUBLIC.value
+            elif "problem_public_after_end" in values:
+                row.problem_access_after_end = "public" if row.problem_public_after_end else "private"
+            if "scoreboard_access_after_end" in values:
+                row.scoreboard_public_after_end = row.scoreboard_access_after_end == ContestResourceAccess.PUBLIC.value
+            elif "scoreboard_public_after_end" in values:
+                row.scoreboard_access_after_end = "public" if row.scoreboard_public_after_end else "private"
+            if "submission_access_after_end" in values:
+                row.submission_public_after_end = row.submission_access_after_end == ContestResourceAccess.PUBLIC.value
+            elif "submission_public_after_end" in values:
+                row.submission_access_after_end = "public" if row.submission_public_after_end else "private"
             row.status = _schedule_status(row.status, row.start_at, row.end_at, now_utc())
             db.commit()
             db.refresh(row)

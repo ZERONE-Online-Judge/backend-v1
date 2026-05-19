@@ -49,3 +49,16 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE submissions ADD COLUMN runtime_ms INTEGER"))
                 if "memory_kb" not in columns:
                     connection.execute(text("ALTER TABLE submissions ADD COLUMN memory_kb INTEGER"))
+        if "contests" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("contests")}
+            with engine.begin() as connection:
+                if "problem_access_after_end" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN problem_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
+                if "scoreboard_access_after_end" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN scoreboard_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
+                if "submission_access_after_end" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN submission_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
+                if "board_access_after_end" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN board_access_after_end VARCHAR(32) DEFAULT 'participants' NOT NULL"))
+                if "notice_access_after_end" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN notice_access_after_end VARCHAR(32) DEFAULT 'public' NOT NULL"))
