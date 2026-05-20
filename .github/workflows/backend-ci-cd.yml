@@ -37,6 +37,7 @@ jobs:
       DATABASE_URL: sqlite:////tmp/zerone_online_judge_ci.db
       ENABLE_DEMO_SEED: "true"
       ALLOW_EMPTY_OTP: "true"
+      LOCAL_OBJECT_STORAGE_ROOT: /tmp/zerone_online_judge_objects
     steps:
       - name: Checkout
         uses: actions/checkout@v4
