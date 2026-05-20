@@ -5,7 +5,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, now_utc
 from app.services.authz import bearer_token, require_participant
-from app.services.errors import AppError, invalid_state, not_found
+from app.services.errors import AppError, authentication_required, invalid_state, not_found
 from app.services.responses import ok, page
 from app.services.store import store
 from app.services.storage import object_storage
@@ -102,6 +102,13 @@ def _optional_participant(request: Request, contest_id: str) -> dict | None:
         store.get_participant_by_access_token(contest_id, token)
         or store.get_participant_by_general_access_token(contest_id, token)
     )
+
+
+def _require_contest_participant(request: Request, contest_id: str) -> dict:
+    participant = _optional_participant(request, contest_id)
+    if not participant:
+        raise authentication_required("Participant access token is required.")
+    return participant
 
 
 def _allow_after_end_resource(contest, access: ContestResourceAccess, participant: dict | None) -> bool:
@@ -485,7 +492,7 @@ async def submissions(
 
 @router.get("/contests/{contest_id}/submissions/{submission_id}")
 async def submission_detail(contest_id: str, submission_id: str, request: Request):
-    participant = require_participant(request, contest_id)
+    participant = _require_contest_participant(request, contest_id)
     submission = store.submissions.get(submission_id)
     if not submission or submission.contest_id != contest_id or submission.participant_team_id != participant["team"].participant_team_id:
         raise not_found()
@@ -500,7 +507,7 @@ async def wait_submission_status(
     wait_seconds: float = 2.0,
     poll_interval_seconds: float = 0.25,
 ):
-    participant = require_participant(request, contest_id)
+    participant = _require_contest_participant(request, contest_id)
     submission = store.submissions.get(submission_id)
     if not submission or submission.contest_id != contest_id or submission.participant_team_id != participant["team"].participant_team_id:
         raise not_found()
