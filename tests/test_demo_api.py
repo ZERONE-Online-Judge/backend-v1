@@ -975,7 +975,7 @@ def test_operator_creates_verified_testcase_set_from_in_out_files():
     assert created.status_code == 200
     problem = created.json()["data"]
 
-    def add_asset(role: str, filename: str, source: str):
+    def add_asset(role: str, filename: str, source: str) -> dict:
         storage_key = f"contests/{contest_id}/problems/{problem['problem_id']}/package-files/{role}/{suffix}-{filename}"
         object_storage.write_text(storage_key, source)
         response = client.post(
@@ -1143,6 +1143,12 @@ def test_operator_package_status_and_zip_testcase_import():
     assert missing.status_code == 200
     assert missing.json()["data"]["ready"] is False
     assert any("validator.cpp" in item for item in missing.json()["data"]["warnings"])
+    checker_status = next(
+        item for item in missing.json()["data"]["support_files"]
+        if item["role"] == "checker"
+    )
+    assert checker_status["required"] is False
+    assert all("checker.cpp" not in item for item in missing.json()["data"]["warnings"])
 
     def add_asset(role: str, filename: str, source: str):
         storage_key = f"contests/{contest_id}/problems/{problem['problem_id']}/package-files/{role}/{suffix}-{filename}"
@@ -1192,6 +1198,81 @@ def test_operator_package_status_and_zip_testcase_import():
     assert ready.status_code == 200
     assert ready.json()["data"]["ready"] is True
     assert ready.json()["data"]["active_testcase_count"] == 2
+
+
+def test_package_status_does_not_require_checker_when_testcases_exist():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    suffix = uuid4().hex[:8]
+    set_contest_mutable(contest_id)
+    created = client.post(
+        f"/api/operator/contests/{contest_id}/problems",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "division_id": store.contest_divisions(contest_id)[0].division_id,
+            "problem_code": f"NOCHK{suffix}",
+            "title": "No Checker Status",
+            "statement": "Checker is optional for plain testcase judging.",
+            "time_limit_ms": 1000,
+            "memory_limit_mb": 128,
+            "display_order": 62,
+            "max_score": 100,
+        },
+    )
+    assert created.status_code == 200
+    problem = created.json()["data"]
+
+    def add_asset(role: str, filename: str, source: str):
+        storage_key = f"contests/{contest_id}/problems/{problem['problem_id']}/package-files/{role}/{suffix}-{filename}"
+        object_storage.write_text(storage_key, source)
+        response = client.post(
+            f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/assets",
+            headers=auth_headers(operator["access_token"]),
+            json={
+                "original_filename": filename,
+                "storage_key": storage_key,
+                "mime_type": "text/plain",
+                "file_size": len(source.encode("utf-8")),
+                "sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            },
+        )
+        assert response.status_code == 200
+        return response.json()["data"]
+
+    add_asset("package-resource", "testlib.h", "// testlib placeholder\n")
+    add_asset("validator", "validator.py", "import sys\nsys.stdin.read()\n")
+    checker = add_asset(
+        "checker",
+        "checker.py",
+        "import sys\nassert open(sys.argv[2]).read().strip() == open(sys.argv[3]).read().strip()\n",
+    )
+
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("001.in", "1 2\n")
+        zipped.writestr("001.out", "3\n")
+
+    imported = client.post(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/verified-testcase-sets:zip",
+        headers=auth_headers(operator["access_token"]),
+        files={"file": ("cases.zip", archive.getvalue(), "application/zip")},
+    )
+    assert imported.status_code == 200
+    deleted_checker = client.delete(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/assets/{checker['asset_id']}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert deleted_checker.status_code == 200
+
+    status = client.get(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/package-status",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert status.status_code == 200
+    data = status.json()["data"]
+    assert data["ready"] is True
+    assert data["active_testcase_count"] == 1
+    assert all("checker.cpp" not in item for item in data["warnings"])
 
 
 def test_participant_login_returns_registered_division():

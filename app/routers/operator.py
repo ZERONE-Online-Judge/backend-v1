@@ -251,21 +251,21 @@ def _problem_package_status(contest_id: str, problem_id: str) -> dict:
     active_set = next((item for item in testcase_sets if item.get("is_active")), None)
     active_count = len(active_set.get("testcases", [])) if active_set else 0
     required_roles = [
-        ("package-resource", "testlib.h"),
-        ("validator", "validator.cpp"),
-        ("checker", "checker.cpp"),
+        ("package-resource", "testlib.h", True),
+        ("validator", "validator.cpp", True),
+        ("checker", "checker.cpp", False),
     ]
     support_files = []
     warnings = []
-    for role, label in required_roles:
+    for role, label, required in required_roles:
         files = sorted(role_assets.get(role, []), key=lambda item: item.created_at)
-        if not files:
+        if required and not files:
             warnings.append(f"{label} 파일이 없습니다.")
         support_files.append(
             {
                 "role": role,
                 "label": label,
-                "required": True,
+                "required": required,
                 "count": len(files),
                 "latest_filename": files[-1].original_filename if files else None,
                 "status": "ready" if files else "missing",
