@@ -841,6 +841,7 @@ async def operator_submissions(
     cursor: str | None = None,
     include_source: bool = False,
     division_id: str | None = None,
+    problem_id: str | None = None,
 ):
     require_contest_staff(request, contest_id)
     teams = {team.participant_team_id: team for team in store.teams.values() if team.contest_id == contest_id}
@@ -854,6 +855,8 @@ async def operator_submissions(
         if submission.contest_id != contest_id:
             continue
         if division_id and submission.division_id != division_id:
+            continue
+        if problem_id and submission.problem_id != problem_id:
             continue
         payload = submission.model_dump(mode="json")
         team = teams.get(submission.participant_team_id)

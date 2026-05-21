@@ -456,12 +456,15 @@ async def submissions(
     cursor: str | None = None,
     include_source: bool = False,
     division_id: str | None = None,
+    problem_id: str | None = None,
 ):
     participant, _ = _allow_submission_list_view(request, contest_id)
     if not participant:
         items = []
         for submission in store.submissions.values():
             if submission.contest_id == contest_id and (not division_id or submission.division_id == division_id):
+                if problem_id and submission.problem_id != problem_id:
+                    continue
                 items.append(_participant_submission_payload(submission, include_source=False))
         items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
         sliced, next_cursor = _page_slice(items, limit, cursor)
@@ -477,6 +480,7 @@ async def submissions(
         _participant_submission_payload(s, include_source=include_source)
         for s in store.submissions.values()
         if s.contest_id == contest_id and s.participant_team_id == participant["team"].participant_team_id
+        and (not problem_id or s.problem_id == problem_id)
     ]
     items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
     sliced, next_cursor = _page_slice(items, limit, cursor)

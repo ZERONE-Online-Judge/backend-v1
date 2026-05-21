@@ -987,9 +987,11 @@ class DbStore:
     def _general_profile(self, db: Session, email: str, issue_operator_session: bool = False) -> dict | None:
         participant_contests = []
         account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-        members = []
-        if not account:
-            members = db.scalars(select(TeamMemberRow).where(TeamMemberRow.email == email).order_by(TeamMemberRow.name)).all()
+        members = db.scalars(
+            select(TeamMemberRow)
+            .where(func.lower(TeamMemberRow.email) == email.lower())
+            .order_by(TeamMemberRow.name)
+        ).all()
         display_name = ""
         for member in members:
             team = db.scalar(
@@ -1144,12 +1146,10 @@ class DbStore:
             )
             if not session or _aware(session.access_expires_at) <= now_utc():
                 return None
-            if db.scalar(select(StaffAccountRow.staff_account_id).where(StaffAccountRow.email == session.email).limit(1)):
-                return None
             member = db.scalar(
                 select(TeamMemberRow).where(
                     TeamMemberRow.contest_id == contest_id,
-                    TeamMemberRow.email == session.email,
+                    func.lower(TeamMemberRow.email) == session.email.lower(),
                 )
             )
             if not member:
@@ -1238,9 +1238,7 @@ class DbStore:
 
     def issue_participant_session_for_general(self, email: str, contest_id: str) -> tuple[ParticipantTeam, TeamMember, ContestDivision, str] | None:
         with self._session() as db:
-            if db.scalar(select(StaffAccountRow.staff_account_id).where(StaffAccountRow.email == email).limit(1)):
-                return None
-            member = db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, TeamMemberRow.email == email))
+            member = db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, func.lower(TeamMemberRow.email) == email.lower()))
             if not member:
                 return None
             team = db.scalar(
