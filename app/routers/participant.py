@@ -7,7 +7,7 @@ from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, n
 from app.services.authz import bearer_token, require_participant
 from app.services.errors import AppError, authentication_required, invalid_state, not_found
 from app.services.responses import ok, page
-from app.services.store import store
+from app.services.store import OPERATOR_TEST_TEAM_PREFIX, store
 from app.services.storage import object_storage
 from app.settings import settings
 
@@ -200,6 +200,17 @@ def _participant_submission_payload(submission, include_source: bool) -> dict:
     return item
 
 
+def _is_operator_test_submission(submission) -> bool:
+    team = store.teams.get(submission.participant_team_id)
+    return bool(team and team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX))
+
+
+def _mock_submission_payload(submission) -> dict:
+    item = _participant_submission_payload(submission, include_source=False)
+    item["source_code"] = ""
+    return item
+
+
 @router.post("/contests/{contest_id}/participant-login/otp/request")
 async def request_otp(contest_id: str, payload: OtpRequest, request: Request):
     contest = store.get_public_contest(contest_id)
@@ -369,6 +380,64 @@ async def create_submission(contest_id: str, problem_id: str, payload: Submissio
     return ok(request, submission.model_dump(mode="json"))
 
 
+@router.post("/contests/{contest_id}/problems/{problem_id}/mock-submissions")
+async def create_mock_submission(contest_id: str, problem_id: str, payload: SubmissionCreateRequest, request: Request):
+    problem = store.problems.get(problem_id)
+    if not problem or problem.contest_id != contest_id:
+        raise not_found()
+    participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
+    if not _is_ended(contest) or not contest.mock_judging_enabled:
+        raise not_found()
+    if contest.problem_access_after_end == ContestResourceAccess.PRIVATE:
+        raise not_found()
+    if contest.problem_access_after_end == ContestResourceAccess.PARTICIPANTS and not participant:
+        raise authentication_required("Participant access token is required.")
+    if payload.language not in {"c99", "cpp17", "python313", "java8"}:
+        raise AppError(422, "validation_error", "Unsupported language.", {"fields": [{"path": "body.language", "code": "invalid_enum"}]})
+    if not payload.source_code.strip():
+        raise AppError(422, "validation_error", "Source code is required.")
+    try:
+        submission = store.create_operator_test_submission(contest_id, problem_id, payload.language, payload.source_code)
+    except ValueError:
+        raise not_found()
+    return ok(request, _mock_submission_payload(submission))
+
+
+@router.get("/contests/{contest_id}/mock-submissions/{submission_id}/status:wait")
+async def wait_mock_submission_status(
+    contest_id: str,
+    submission_id: str,
+    request: Request,
+    wait_seconds: float = 2.0,
+    poll_interval_seconds: float = 0.25,
+):
+    submission = store.submissions.get(submission_id)
+    if not submission or submission.contest_id != contest_id or not _is_operator_test_submission(submission):
+        raise not_found()
+    problem = store.problems.get(submission.problem_id)
+    if not problem:
+        raise not_found()
+    participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
+    if not _is_ended(contest) or not contest.mock_judging_enabled:
+        raise not_found()
+    if contest.problem_access_after_end == ContestResourceAccess.PARTICIPANTS and not participant:
+        raise authentication_required("Participant access token is required.")
+    wait_budget = max(0.0, min(wait_seconds, 10.0))
+    poll = max(0.1, min(poll_interval_seconds, 1.0))
+    loops = max(1, int(wait_budget / poll))
+    for _ in range(loops):
+        updated = store.submissions.get(submission_id)
+        if not updated:
+            raise not_found()
+        if updated.status not in {"waiting", "preparing", "judging"}:
+            return ok(request, _mock_submission_payload(updated))
+        await asyncio.sleep(poll)
+    latest = store.submissions.get(submission_id)
+    if not latest:
+        raise not_found()
+    return ok(request, _mock_submission_payload(latest))
+
+
 @router.get("/contests/{contest_id}/notices")
 async def contest_notices(contest_id: str, request: Request):
     contest = store.get_public_contest(contest_id)
@@ -459,6 +528,8 @@ async def submissions(
         items = []
         for submission in store.submissions.values():
             if submission.contest_id == contest_id and (not division_id or submission.division_id == division_id):
+                if _is_operator_test_submission(submission):
+                    continue
                 if problem_id and submission.problem_id != problem_id:
                     continue
                 items.append(_participant_submission_payload(submission, include_source=False))

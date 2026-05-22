@@ -64,6 +64,8 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN notice_access_after_end VARCHAR(32) DEFAULT 'public' NOT NULL"))
                 if "scoreboard_freeze_mode" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN scoreboard_freeze_mode VARCHAR(32) DEFAULT 'auto' NOT NULL"))
+                if "mock_judging_enabled" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN mock_judging_enabled BOOLEAN DEFAULT 0 NOT NULL"))
         if "mail_queue" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("mail_queue")}
             if "body_html" not in columns:

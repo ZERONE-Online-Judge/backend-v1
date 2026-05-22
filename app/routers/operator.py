@@ -90,6 +90,7 @@ class ContestSettingsUpdateRequest(BaseModel):
     board_access_after_end: ContestResourceAccess | None = None
     notice_access_after_end: ContestResourceAccess | None = None
     scoreboard_freeze_mode: ScoreboardFreezeMode | None = None
+    mock_judging_enabled: bool | None = None
     emergency_notice: str | None = None
 
 
@@ -454,6 +455,10 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
     updates = payload.model_dump(exclude_unset=True)
     if _settings_update_changes_operation(contest, updates):
         _require_contest_mutation_open(contest_id)
+
+    next_problem_access = updates.get("problem_access_after_end", contest.problem_access_after_end)
+    if next_problem_access == ContestResourceAccess.PRIVATE:
+        updates["mock_judging_enabled"] = False
 
     explicit_start = "start_at" in updates
     explicit_end = "end_at" in updates

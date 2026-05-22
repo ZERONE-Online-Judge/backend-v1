@@ -110,6 +110,7 @@ class Contest(BaseModel):
     board_access_after_end: ContestResourceAccess = ContestResourceAccess.PARTICIPANTS
     notice_access_after_end: ContestResourceAccess = ContestResourceAccess.PUBLIC
     scoreboard_freeze_mode: ScoreboardFreezeMode = ScoreboardFreezeMode.AUTO
+    mock_judging_enabled: bool = False
     emergency_notice: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
 

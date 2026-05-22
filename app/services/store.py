@@ -135,6 +135,7 @@ def _contest(row: ContestRow) -> Contest:
         board_access_after_end=ContestResourceAccess(row.board_access_after_end or "participants"),
         notice_access_after_end=ContestResourceAccess(row.notice_access_after_end or "public"),
         scoreboard_freeze_mode=ScoreboardFreezeMode(row.scoreboard_freeze_mode or "auto"),
+        mock_judging_enabled=bool(row.mock_judging_enabled),
         emergency_notice=row.emergency_notice,
         created_at=_aware(row.created_at),
     )
@@ -1916,6 +1917,7 @@ class DbStore:
             "board_access_after_end",
             "notice_access_after_end",
             "scoreboard_freeze_mode",
+            "mock_judging_enabled",
             "emergency_notice",
         }
         with self._session() as db:
@@ -1931,6 +1933,8 @@ class DbStore:
                 row.problem_public_after_end = row.problem_access_after_end == ContestResourceAccess.PUBLIC.value
             elif "problem_public_after_end" in values:
                 row.problem_access_after_end = "public" if row.problem_public_after_end else "private"
+            if row.problem_access_after_end == ContestResourceAccess.PRIVATE.value:
+                row.mock_judging_enabled = False
             if "scoreboard_access_after_end" in values:
                 row.scoreboard_public_after_end = row.scoreboard_access_after_end == ContestResourceAccess.PUBLIC.value
             elif "scoreboard_public_after_end" in values:

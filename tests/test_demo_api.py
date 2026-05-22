@@ -1417,6 +1417,65 @@ def test_public_contest_resources_can_be_viewed_without_participant_after_end():
         assert restored.status_code == 200
 
 
+def test_mock_judging_after_end_is_separate_from_public_submission_list():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+    problem = next(item for item in store.problems.values() if item.contest_id == contest_id)
+    now = datetime.now(timezone.utc)
+
+    updated = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={
+            "start_at": (now - timedelta(hours=3)).isoformat(),
+            "freeze_at": (now - timedelta(hours=2)).isoformat(),
+            "end_at": (now - timedelta(hours=1)).isoformat(),
+            "problem_access_after_end": "public",
+            "submission_access_after_end": "public",
+            "mock_judging_enabled": True,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["data"]["mock_judging_enabled"] is True
+
+    try:
+        created = client.post(
+            f"/api/contests/{contest_id}/problems/{problem.problem_id}/mock-submissions",
+            json={"language": "cpp17", "source_code": "int main(){return 0;}"},
+        )
+        assert created.status_code == 200
+        submission_id = created.json()["data"]["submission_id"]
+
+        waited = client.get(f"/api/contests/{contest_id}/mock-submissions/{submission_id}/status:wait")
+        assert waited.status_code == 200
+        assert waited.json()["data"]["source_code"] == ""
+
+        public_list = client.get(f"/api/contests/{contest_id}/submissions")
+        assert public_list.status_code == 200
+        assert all(item["submission_id"] != submission_id for item in public_list.json()["data"])
+
+        private_again = client.patch(
+            f"/api/operator/contests/{contest_id}/settings",
+            headers=headers,
+            json={"problem_access_after_end": "private", "mock_judging_enabled": True},
+        )
+        assert private_again.status_code == 200
+        assert private_again.json()["data"]["mock_judging_enabled"] is False
+    finally:
+        restored = client.patch(
+            f"/api/operator/contests/{contest_id}/settings",
+            headers=headers,
+            json={
+                "problem_access_after_end": "private",
+                "submission_access_after_end": "private",
+                "mock_judging_enabled": False,
+                "scoreboard_freeze_mode": "auto",
+            },
+        )
+        assert restored.status_code == 200
+
+
 def test_public_contest_resources_use_manual_ended_status_even_when_end_time_is_future():
     contest_id = first_contest_id()
     operator = staff_tokens("test4@zoj.com")
