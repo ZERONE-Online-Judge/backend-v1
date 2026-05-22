@@ -2278,6 +2278,119 @@ class DbStore:
             db.refresh(row)
             return _problem(row)
 
+    def copy_problem_to_division(
+        self,
+        contest_id: str,
+        source_problem_id: str,
+        target_division_id: str,
+        problem_code: str | None = None,
+        display_order: int | None = None,
+    ) -> Problem:
+        with self._session() as db:
+            source = db.get(ProblemRow, source_problem_id)
+            division = db.get(ContestDivisionRow, target_division_id)
+            if not source or source.contest_id != contest_id:
+                raise ValueError("source problem not found")
+            if not division or division.contest_id != contest_id:
+                raise ValueError("division not found")
+
+            target_problem_id = new_id()
+            next_display_order = display_order
+            if next_display_order is None:
+                next_display_order = (db.scalar(select(func.max(ProblemRow.display_order)).where(ProblemRow.contest_id == contest_id, ProblemRow.division_id == target_division_id)) or 0) + 1
+
+            target = ProblemRow(
+                problem_id=target_problem_id,
+                contest_id=contest_id,
+                division_id=target_division_id,
+                problem_code=(problem_code or source.problem_code).strip(),
+                title=source.title,
+                statement=source.statement,
+                time_limit_ms=source.time_limit_ms,
+                memory_limit_mb=source.memory_limit_mb,
+                display_order=next_display_order,
+                max_score=source.max_score,
+            )
+            db.add(target)
+            db.flush()
+
+            def copied_storage_key(storage_key: str) -> str:
+                source_marker = f"/problems/{source_problem_id}/"
+                target_marker = f"/problems/{target_problem_id}/"
+                if source_marker in storage_key:
+                    return storage_key.replace(source_marker, target_marker, 1)
+                filename = storage_key.rsplit("/", 1)[-1]
+                return f"contests/{contest_id}/problems/{target_problem_id}/copied/{new_id()}-{filename}"
+
+            copied_objects: dict[str, str] = {}
+
+            def copy_object(storage_key: str, content_type: str = "application/octet-stream") -> str:
+                if storage_key in copied_objects:
+                    return copied_objects[storage_key]
+                next_key = copied_storage_key(storage_key)
+                object_storage.write_bytes(next_key, object_storage.read_bytes(storage_key), content_type)
+                copied_objects[storage_key] = next_key
+                return next_key
+
+            source_assets = db.scalars(
+                select(ProblemAssetRow)
+                .where(ProblemAssetRow.contest_id == contest_id, ProblemAssetRow.problem_id == source_problem_id)
+                .order_by(ProblemAssetRow.created_at, ProblemAssetRow.asset_id)
+            ).all()
+            for asset in source_assets:
+                db.add(
+                    ProblemAssetRow(
+                        contest_id=contest_id,
+                        problem_id=target_problem_id,
+                        original_filename=asset.original_filename,
+                        storage_key=copy_object(asset.storage_key, asset.mime_type),
+                        mime_type=asset.mime_type,
+                        file_size=asset.file_size,
+                        sha256=asset.sha256,
+                        asset_status=asset.asset_status,
+                    )
+                )
+
+            source_sets = db.scalars(
+                select(TestcaseSetRow)
+                .where(TestcaseSetRow.problem_id == source_problem_id)
+                .order_by(TestcaseSetRow.version, TestcaseSetRow.testcase_set_id)
+            ).all()
+            for source_set in source_sets:
+                target_set = TestcaseSetRow(
+                    problem_id=target_problem_id,
+                    version=source_set.version,
+                    is_active=source_set.is_active,
+                )
+                db.add(target_set)
+                db.flush()
+                source_cases = db.scalars(
+                    select(TestcaseRow)
+                    .where(TestcaseRow.testcase_set_id == source_set.testcase_set_id)
+                    .order_by(TestcaseRow.display_order, TestcaseRow.testcase_id)
+                ).all()
+                for case in source_cases:
+                    db.add(
+                        TestcaseRow(
+                            testcase_set_id=target_set.testcase_set_id,
+                            display_order=case.display_order,
+                            input_storage_key=copy_object(case.input_storage_key, "text/plain"),
+                            output_storage_key=copy_object(case.output_storage_key, "text/plain"),
+                            input_sha256=case.input_sha256,
+                            output_sha256=case.output_sha256,
+                            time_limit_ms_override=case.time_limit_ms_override,
+                            memory_limit_mb_override=case.memory_limit_mb_override,
+                        )
+                    )
+
+            try:
+                db.commit()
+            except IntegrityError as error:
+                db.rollback()
+                raise ValueError("problem code already exists in this division") from error
+            db.refresh(target)
+            return _problem(target)
+
     def update_problem(self, contest_id: str, problem_id: str, **values) -> Problem | None:
         with self._session() as db:
             row = db.get(ProblemRow, problem_id)

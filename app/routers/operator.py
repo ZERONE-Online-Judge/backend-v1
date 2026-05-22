@@ -155,6 +155,13 @@ class ProblemCreateRequest(BaseModel):
     display_order: int
 
 
+class ProblemCopyRequest(BaseModel):
+    source_problem_id: str
+    target_division_id: str
+    problem_code: str | None = None
+    display_order: int | None = None
+
+
 class ProblemUpdateRequest(BaseModel):
     division_id: str | None = None
     problem_code: str | None = None
@@ -1087,6 +1094,26 @@ async def create_problem(contest_id: str, payload: ProblemCreateRequest, request
         )
     except ValueError:
         raise not_found("Contest division is not configured.")
+    return ok(request, problem.model_dump(mode="json"))
+
+
+@router.post("/operator/contests/{contest_id}/problems:copy")
+async def copy_problem(contest_id: str, payload: ProblemCopyRequest, request: Request):
+    require_contest_staff(request, contest_id)
+    _require_contest_mutation_open(contest_id)
+    try:
+        problem = store.copy_problem_to_division(
+            contest_id=contest_id,
+            source_problem_id=payload.source_problem_id,
+            target_division_id=payload.target_division_id,
+            problem_code=payload.problem_code,
+            display_order=payload.display_order,
+        )
+    except ValueError as error:
+        message = str(error)
+        if "not found" in message:
+            raise not_found(message)
+        raise AppError(422, "validation_error", message)
     return ok(request, problem.model_dump(mode="json"))
 
 
