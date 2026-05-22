@@ -227,6 +227,22 @@ class ContestQuestionAnswerRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
+class ContactInquiryRow(Base):
+    __tablename__ = "contact_inquiries"
+
+    contact_inquiry_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(255))
+    sender_name: Mapped[str] = mapped_column(String(120))
+    sender_email: Mapped[str] = mapped_column(String(255), index=True)
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    answer_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answered_by_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
 class StaffAccountRow(Base):
     __tablename__ = "staff_accounts"
 

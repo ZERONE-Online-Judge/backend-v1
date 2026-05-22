@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, Request
+from pydantic import BaseModel, EmailStr, Field
 
 from app.models import now_utc
 from app.settings import settings
@@ -9,6 +10,26 @@ from app.services.responses import ok, page
 from app.services.store import store
 
 router = APIRouter(tags=["public"])
+
+
+class ContactInquiryCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    sender_name: str = Field(min_length=1, max_length=120)
+    sender_email: EmailStr
+    body: str = Field(min_length=1, max_length=10000)
+
+
+def _service_master_emails() -> list[str]:
+    emails = []
+    seen = set()
+    for account in store.staff_accounts.values():
+        if not account.is_service_master:
+            continue
+        email = str(account.email).strip().lower()
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+    return emails
 
 
 @router.get("/public/home")
@@ -60,6 +81,36 @@ async def service_notice_detail(notice_id: str, request: Request):
     if not notice:
         raise not_found()
     return ok(request, notice.model_dump(mode="json"))
+
+
+@router.post("/public/contact-inquiries")
+async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: Request):
+    inquiry = store.create_contact_inquiry(
+        payload.title.strip(),
+        payload.sender_name.strip(),
+        str(payload.sender_email).strip(),
+        payload.body.strip(),
+    )
+    subject = f"[Zerone OJ] 서비스 문의 접수: {inquiry.title}"
+    body_text = "\n".join(
+        [
+            "서비스 문의가 접수되었습니다.",
+            "",
+            f"문의 ID: {inquiry.contact_inquiry_id}",
+            f"제목: {inquiry.title}",
+            f"이름: {inquiry.sender_name}",
+            f"이메일: {inquiry.sender_email}",
+            f"접수 시각: {inquiry.created_at.isoformat()}",
+            "",
+            "본문:",
+            inquiry.body,
+            "",
+            "서비스 관리자 페이지에서 답변을 등록하면 문의자에게 이메일이 발송됩니다.",
+        ]
+    )
+    for email in _service_master_emails():
+        store.enqueue_mail("contact_inquiry_created", email, subject, body_text)
+    return ok(request, inquiry.model_dump(mode="json"))
 
 
 @router.get("/public/judge-status")

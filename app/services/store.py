@@ -19,6 +19,7 @@ from app.models import (
     ContestQuestion,
     ContestQuestionAnswer,
     ContestResourceAccess,
+    ContactInquiry,
     ScoreboardFreezeMode,
     ContestStatus,
     JudgeJob,
@@ -46,6 +47,7 @@ from app.orm_models import (
     ContestQuestionAnswerRow,
     ContestQuestionRow,
     ContestRow,
+    ContactInquiryRow,
     GeneralSessionRow,
     BundleWarmQueueItemRow,
     JudgeJobRow,
@@ -372,6 +374,22 @@ def _mail(row: MailQueueItemRow) -> MailQueueItem:
     )
 
 
+def _contact_inquiry(row: ContactInquiryRow) -> ContactInquiry:
+    return ContactInquiry(
+        contact_inquiry_id=row.contact_inquiry_id,
+        title=row.title,
+        sender_name=row.sender_name,
+        sender_email=row.sender_email,
+        body=row.body,
+        status=row.status,
+        answer_body=row.answer_body,
+        answered_by_email=row.answered_by_email,
+        answered_at=_aware(row.answered_at) if row.answered_at else None,
+        created_at=_aware(row.created_at),
+        updated_at=_aware(row.updated_at),
+    )
+
+
 class DbStore:
     def __init__(self) -> None:
         create_schema()
@@ -478,6 +496,12 @@ class DbStore:
         with self._session() as db:
             rows = db.scalars(select(MailQueueItemRow)).all()
             return {row.mail_queue_id: _mail(row) for row in rows}
+
+    @property
+    def contact_inquiries(self) -> dict[str, ContactInquiry]:
+        with self._session() as db:
+            rows = db.scalars(select(ContactInquiryRow)).all()
+            return {row.contact_inquiry_id: _contact_inquiry(row) for row in rows}
 
     @property
     def otp_codes(self) -> dict[str, str]:
@@ -1634,6 +1658,8 @@ class DbStore:
         division: ContestDivisionRow,
         team: ParticipantTeamRow,
     ) -> int:
+        if team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX):
+            return 0
         content = participant_invite_mail(
             contest_title=contest.title,
             organization_name=contest.organization_name,
@@ -1709,7 +1735,14 @@ class DbStore:
             )
             participant_emails = db.scalars(
                 select(TeamMemberRow.email)
-                .where(TeamMemberRow.contest_id == contest_id)
+                .join(
+                    ParticipantTeamRow,
+                    TeamMemberRow.participant_team_id == ParticipantTeamRow.participant_team_id,
+                )
+                .where(
+                    TeamMemberRow.contest_id == contest_id,
+                    ~ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX),
+                )
                 .order_by(TeamMemberRow.email)
             ).all()
             notified: set[str] = set()
@@ -1898,6 +1931,35 @@ class DbStore:
             db.delete(row)
             db.commit()
             return True
+
+    def create_contact_inquiry(self, title: str, sender_name: str, sender_email: str, body: str) -> ContactInquiry:
+        with self._session() as db:
+            row = ContactInquiryRow(
+                title=title,
+                sender_name=sender_name,
+                sender_email=sender_email,
+                body=body,
+                status="pending",
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return _contact_inquiry(row)
+
+    def answer_contact_inquiry(self, inquiry_id: str, answer_body: str, answered_by_email: str) -> ContactInquiry | None:
+        with self._session() as db:
+            row = db.get(ContactInquiryRow, inquiry_id)
+            if not row:
+                return None
+            now = now_utc()
+            row.answer_body = answer_body
+            row.answered_by_email = answered_by_email
+            row.answered_at = now
+            row.updated_at = now
+            row.status = "answered"
+            db.commit()
+            db.refresh(row)
+            return _contact_inquiry(row)
 
     def update_contest_settings(self, contest_id: str, **values) -> Contest | None:
         allowed = {
@@ -2991,7 +3053,10 @@ class DbStore:
                     teams = db.scalars(
                         select(ParticipantTeamRow)
                         .options(selectinload(ParticipantTeamRow.members))
-                        .where(ParticipantTeamRow.contest_id == contest.contest_id)
+                        .where(
+                            ParticipantTeamRow.contest_id == contest.contest_id,
+                            ~ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX),
+                        )
                     ).all()
                     for team in teams:
                         division = db.get(ContestDivisionRow, team.division_id)

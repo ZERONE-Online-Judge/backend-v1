@@ -73,6 +73,10 @@ class ServiceNoticeUpdateRequest(BaseModel):
     emergency: bool | None = None
 
 
+class ContactInquiryAnswerRequest(BaseModel):
+    answer_body: str
+
+
 @router.get("/admin/dashboard")
 async def dashboard(request: Request):
     require_service_master(request)
@@ -213,6 +217,45 @@ async def delete_service_notice(notice_id: str, request: Request):
     if not deleted:
         raise AppError(404, "not_found", "Service notice was not found.")
     return ok(request, {"service_notice_id": notice_id, "deleted": True})
+
+
+@router.get("/admin/contact-inquiries")
+async def admin_contact_inquiries(request: Request):
+    require_service_master(request)
+    inquiries = [item.model_dump(mode="json") for item in store.contact_inquiries.values()]
+    inquiries.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return page(request, inquiries)
+
+
+@router.post("/admin/contact-inquiries/{inquiry_id}/answer")
+async def answer_contact_inquiry(inquiry_id: str, payload: ContactInquiryAnswerRequest, request: Request):
+    account = require_service_master(request)
+    answer_body = payload.answer_body.strip()
+    if not answer_body:
+        raise AppError(422, "validation_error", "Answer body is required.")
+    inquiry = store.answer_contact_inquiry(inquiry_id, answer_body, str(account.email))
+    if not inquiry:
+        raise not_found()
+    store.enqueue_mail(
+        "contact_inquiry_answered",
+        str(inquiry.sender_email),
+        f"[Zerone OJ] 문의 답변: {inquiry.title}",
+        "\n".join(
+            [
+                f"{inquiry.sender_name}님, 안녕하세요.",
+                "문의하신 내용에 대한 답변을 전달드립니다.",
+                "",
+                f"문의 제목: {inquiry.title}",
+                "",
+                "답변:",
+                answer_body,
+                "",
+                "문의 내용:",
+                inquiry.body,
+            ]
+        ),
+    )
+    return ok(request, inquiry.model_dump(mode="json"))
 
 
 @router.get("/admin/judge/dashboard")

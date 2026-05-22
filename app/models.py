@@ -255,6 +255,20 @@ class ContestQuestion(BaseModel):
     answers: list[ContestQuestionAnswer] = Field(default_factory=list)
 
 
+class ContactInquiry(BaseModel):
+    contact_inquiry_id: str = Field(default_factory=new_id)
+    title: str
+    sender_name: str
+    sender_email: EmailStr
+    body: str
+    status: str = "pending"
+    answer_body: str | None = None
+    answered_by_email: EmailStr | None = None
+    answered_at: datetime | None = None
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
+
+
 class MailQueueItem(BaseModel):
     mail_queue_id: str = Field(default_factory=new_id)
     mail_type: str

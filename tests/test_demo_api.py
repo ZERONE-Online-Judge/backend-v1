@@ -1417,6 +1417,72 @@ def test_public_contest_resources_can_be_viewed_without_participant_after_end():
         assert restored.status_code == 200
 
 
+def test_public_contact_inquiry_can_be_answered_by_service_master():
+    master = staff_tokens("test3@zoj.com")
+    created = client.post(
+        "/api/public/contact-inquiries",
+        json={
+            "title": "문의 제목",
+            "sender_name": "문의자",
+            "sender_email": "asker@example.com",
+            "body": "문의 본문입니다.",
+        },
+    )
+    assert created.status_code == 200
+    inquiry = created.json()["data"]
+    assert inquiry["status"] == "pending"
+    assert any(
+        item["mail_type"] == "contact_inquiry_created"
+        and "문의 제목" in item["subject"]
+        for item in client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"])).json()["data"]
+    )
+
+    listed = client.get(
+        "/api/admin/contact-inquiries",
+        headers=auth_headers(master["access_token"]),
+    )
+    assert listed.status_code == 200
+    assert any(item["contact_inquiry_id"] == inquiry["contact_inquiry_id"] for item in listed.json()["data"])
+
+    answered = client.post(
+        f"/api/admin/contact-inquiries/{inquiry['contact_inquiry_id']}/answer",
+        headers=auth_headers(master["access_token"]),
+        json={"answer_body": "답변 본문입니다."},
+    )
+    assert answered.status_code == 200
+    assert answered.json()["data"]["status"] == "answered"
+    mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
+    assert any(
+        item["mail_type"] == "contact_inquiry_answered"
+        and item["recipient_email"] == "asker@example.com"
+        and "답변 본문입니다." in item["body_text"]
+        for item in mail_queue.json()["data"]
+    )
+
+
+def test_operator_test_member_is_not_contest_mail_recipient():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    problem = next(item for item in store.problems.values() if item.contest_id == contest_id)
+    store.create_operator_test_submission(contest_id, problem.problem_id, "cpp17", "int main(){return 0;}")
+    title = f"운영자 테스트 제외 {uuid4()}"
+
+    created_notice = client.post(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=auth_headers(operator["access_token"]),
+        json={"title": title, "body": "메일 수신자 제외 확인", "visibility": "participants"},
+    )
+    assert created_notice.status_code == 200
+
+    matching = [
+        item
+        for item in store.mail_queue.values()
+        if item.mail_type == "contest_notice_created" and item.subject.endswith(title)
+    ]
+    assert matching
+    assert all(not str(item.recipient_email).startswith("operator-test+") for item in matching)
+
+
 def test_mock_judging_after_end_is_separate_from_public_submission_list():
     contest_id = first_contest_id()
     operator = staff_tokens("test4@zoj.com")
