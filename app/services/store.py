@@ -2134,6 +2134,10 @@ class DbStore:
                 TeamSessionRow.contest_id == contest_id,
                 TeamSessionRow.participant_team_id == participant_team_id,
             ).delete()
+            self._cancel_pending_participant_mail_rows(
+                db,
+                [member.email for member in row.members],
+            )
             db.delete(row)
             db.commit()
             return True, None
@@ -2899,7 +2903,7 @@ class DbStore:
                     MailQueueItemRow.mail_type == mail_type,
                     MailQueueItemRow.recipient_email == recipient_email,
                     MailQueueItemRow.subject == subject,
-                    MailQueueItemRow.status != "failed",
+                    MailQueueItemRow.status.in_(["pending", "sending", "sent"]),
                 )
                 .limit(1)
             )
@@ -2923,7 +2927,7 @@ class DbStore:
                         MailQueueItemRow.mail_type == mail_type,
                         MailQueueItemRow.recipient_email == recipient_email,
                         MailQueueItemRow.subject == subject,
-                        MailQueueItemRow.status != "failed",
+                        MailQueueItemRow.status.in_(["pending", "sending", "sent"]),
                     )
                     .order_by(MailQueueItemRow.created_at.desc())
                     .limit(1)
@@ -2940,6 +2944,24 @@ class DbStore:
             db.commit()
             db.refresh(row)
             return _mail(row)
+
+    def _cancel_pending_participant_mail_rows(self, db: Session, emails: list[str]) -> int:
+        normalized = sorted({email.strip().lower() for email in emails if email.strip()})
+        if not normalized:
+            return 0
+        rows = db.scalars(
+            select(MailQueueItemRow).where(
+                func.lower(MailQueueItemRow.recipient_email).in_(normalized),
+                MailQueueItemRow.status == "pending",
+                or_(
+                    MailQueueItemRow.mail_type == "participant_invited",
+                    MailQueueItemRow.mail_type.like("contest_reminder_%"),
+                ),
+            )
+        ).all()
+        for row in rows:
+            row.status = "canceled"
+        return len(rows)
 
     def enqueue_due_contest_reminders(self) -> int:
         reminder_windows = [

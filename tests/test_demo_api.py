@@ -1983,6 +1983,7 @@ def test_operator_deletes_participant_team_without_history():
     divisions = client.get(f"/api/operator/contests/{contest_id}/divisions", headers=auth_headers(operator["access_token"]))
     division_id = next(item for item in divisions.json()["data"] if item["code"] == "advanced")["division_id"]
     suffix = uuid4().hex[:8]
+    leader_email = f"delete-leader-{suffix}@zoj.com"
 
     created = client.post(
         f"/api/operator/contests/{contest_id}/participants",
@@ -1990,7 +1991,7 @@ def test_operator_deletes_participant_team_without_history():
         json={
             "team_name": f"Delete Team {suffix}",
             "division_id": division_id,
-            "leader": {"name": "Delete Leader", "email": f"delete-leader-{suffix}@zoj.com"},
+            "leader": {"name": "Delete Leader", "email": leader_email},
             "members": [],
         },
     )
@@ -2006,6 +2007,15 @@ def test_operator_deletes_participant_team_without_history():
 
     participants = client.get(f"/api/operator/contests/{contest_id}/participants", headers=auth_headers(operator["access_token"]))
     assert all(item["participant_team_id"] != team_id for item in participants.json()["data"])
+    mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(staff_tokens()["access_token"]))
+    deleted_team_mail = [
+        item
+        for item in mail_queue.json()["data"]
+        if item["recipient_email"] == leader_email
+        and item["mail_type"] in {"participant_invited", "contest_reminder_24h", "contest_reminder_1h", "contest_reminder_10m"}
+    ]
+    assert deleted_team_mail
+    assert all(item["status"] == "canceled" for item in deleted_team_mail)
 
 
 def test_operator_manages_team_members_and_revokes_member_sessions():
