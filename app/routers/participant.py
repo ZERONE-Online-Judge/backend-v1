@@ -141,8 +141,6 @@ def _allow_problem_view(request: Request, contest_id: str, division_id: str | No
         raise not_found()
     participant = _optional_participant(request, contest_id)
     if _is_ended(contest):
-        if participant and division_id and participant["division"].division_id != division_id:
-            raise not_found("Division is not available for this participant.")
         if _allow_after_end_resource(contest, contest.problem_access_after_end, participant):
             return participant, contest
         raise not_found()
@@ -159,8 +157,6 @@ def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str |
         raise not_found()
     participant = _optional_participant(request, contest_id)
     if _is_ended(contest):
-        if participant and division_id and participant["division"].division_id != division_id:
-            raise not_found("Division is not available for this participant.")
         if _allow_after_end_resource(contest, contest.scoreboard_access_after_end, participant):
             return participant, contest
         raise not_found()
@@ -458,8 +454,8 @@ async def submissions(
     division_id: str | None = None,
     problem_id: str | None = None,
 ):
-    participant, _ = _allow_submission_list_view(request, contest_id)
-    if not participant:
+    participant, contest = _allow_submission_list_view(request, contest_id)
+    if not participant or _is_ended(contest):
         items = []
         for submission in store.submissions.values():
             if submission.contest_id == contest_id and (not division_id or submission.division_id == division_id):
