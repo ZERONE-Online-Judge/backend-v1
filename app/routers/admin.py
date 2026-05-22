@@ -342,6 +342,7 @@ async def judge_submissions(
         active_set = next((item for item in testcase_sets.values() if item.problem_id == submission.problem_id and item.is_active), None)
         case_count = len(testcase_by_set.get(active_set.testcase_set_id, [])) if active_set else 0
         submission_payload = submission.model_dump(mode="json")
+        submission_payload["queue_position"] = job.queue_position if job and job.status == "pending" else None
         submission_payload["source_code_length"] = len((submission.source_code or "").encode("utf-8"))
         if not include_source:
             submission_payload["source_code"] = None
@@ -409,6 +410,7 @@ async def judge_submission_detail(submission_id: str, request: Request):
         {
             "submission": {
                 **submission.model_dump(mode="json"),
+                "queue_position": job.queue_position if job and job.status == "pending" else None,
                 "source_code_length": len((submission.source_code or "").encode("utf-8")),
             },
             "contest": {"contest_id": contest.contest_id, "title": contest.title} if contest else None,

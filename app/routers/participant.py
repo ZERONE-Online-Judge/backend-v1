@@ -183,6 +183,22 @@ def _allow_submission_list_view(request: Request, contest_id: str) -> tuple[dict
 
 def _participant_submission_payload(submission, include_source: bool) -> dict:
     item = submission.model_dump(mode="json")
+    pending_jobs = sorted(
+        (
+            candidate
+            for candidate in store.judge_jobs.values()
+            if candidate.status == "pending"
+        ),
+        key=lambda candidate: candidate.queue_position,
+    )
+    item["queue_position"] = next(
+        (
+            index
+            for index, candidate in enumerate(pending_jobs, start=1)
+            if candidate.submission_id == submission.submission_id
+        ),
+        None,
+    )
     source_code = item.get("source_code") or ""
     item["source_code_length"] = len(source_code.encode("utf-8"))
     progress_current = item.get("progress_current")

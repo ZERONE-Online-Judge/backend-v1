@@ -40,6 +40,25 @@ def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str 
     return items[start:end], next_cursor
 
 
+def _submission_queue_position(contest_id: str, submission_id: str) -> int | None:
+    pending_jobs = sorted(
+        (
+            job
+            for job in store.judge_jobs.values()
+            if job.contest_id == contest_id and job.status == "pending"
+        ),
+        key=lambda job: job.queue_position,
+    )
+    return next(
+        (
+            index
+            for index, job in enumerate(pending_jobs, start=1)
+            if job.submission_id == submission_id
+        ),
+        None,
+    )
+
+
 class TeamMemberPayload(BaseModel):
     name: str
     email: EmailStr
@@ -862,6 +881,18 @@ async def operator_submissions(
         for team in teams.values()
         for member in team.members
     }
+    pending_jobs = sorted(
+        (
+            job
+            for job in store.judge_jobs.values()
+            if job.contest_id == contest_id and job.status == "pending"
+        ),
+        key=lambda job: job.queue_position,
+    )
+    queue_rank_by_submission_id = {
+        job.submission_id: index
+        for index, job in enumerate(pending_jobs, start=1)
+    }
     items = []
     for submission in store.submissions.values():
         if submission.contest_id != contest_id:
@@ -876,6 +907,7 @@ async def operator_submissions(
         payload["team_name"] = team.team_name if team else None
         payload["member_name"] = member.name if member else None
         payload["member_email"] = str(member.email) if member else None
+        payload["queue_position"] = queue_rank_by_submission_id.get(submission.submission_id)
         payload["source_code_length"] = len((submission.source_code or "").encode("utf-8"))
         if not include_source:
             payload["source_code"] = None
@@ -904,6 +936,7 @@ async def operator_submission_detail(contest_id: str, submission_id: str, reques
     payload["team_name"] = team.team_name if team else None
     payload["member_name"] = member.name if member else None
     payload["member_email"] = str(member.email) if member else None
+    payload["queue_position"] = _submission_queue_position(contest_id, submission_id)
     payload["source_code_length"] = len((submission.source_code or "").encode("utf-8"))
     return ok(request, payload)
 
@@ -929,6 +962,7 @@ async def operator_wait_submission_status(
             raise not_found()
         if updated.status not in {"waiting", "preparing", "judging"}:
             payload = updated.model_dump(mode="json")
+            payload["queue_position"] = _submission_queue_position(contest_id, submission_id)
             payload["source_code"] = None
             return ok(request, payload)
         await asyncio.sleep(poll)
@@ -936,6 +970,7 @@ async def operator_wait_submission_status(
     if not latest:
         raise not_found()
     payload = latest.model_dump(mode="json")
+    payload["queue_position"] = _submission_queue_position(contest_id, submission_id)
     payload["source_code"] = None
     return ok(request, payload)
 
