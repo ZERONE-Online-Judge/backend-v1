@@ -36,6 +36,25 @@ def _node_with_activity(node: JudgeNode) -> dict:
     return payload
 
 
+def _pending_queue_ranks(jobs: dict | None = None) -> dict[str, int]:
+    pending_jobs = sorted(
+        (
+            job
+            for job in (jobs or store.judge_jobs).values()
+            if job.status == "pending"
+        ),
+        key=lambda job: job.queue_position,
+    )
+    return {
+        job.submission_id: index
+        for index, job in enumerate(pending_jobs, start=1)
+    }
+
+
+def _submission_queue_position(submission_id: str, jobs: dict | None = None) -> int | None:
+    return _pending_queue_ranks(jobs).get(submission_id)
+
+
 class ContestCreateRequest(BaseModel):
     title: str | None = None
     organization_name: str
@@ -330,6 +349,7 @@ async def judge_submissions(
     latest, next_cursor = _page_slice(latest_all, limit, cursor)
 
     job_by_submission_id = {job.submission_id: job for job in jobs.values()}
+    queue_rank_by_submission_id = _pending_queue_ranks(jobs)
     data = []
     for submission in latest:
         problem = problems.get(submission.problem_id)
@@ -342,7 +362,7 @@ async def judge_submissions(
         active_set = next((item for item in testcase_sets.values() if item.problem_id == submission.problem_id and item.is_active), None)
         case_count = len(testcase_by_set.get(active_set.testcase_set_id, [])) if active_set else 0
         submission_payload = submission.model_dump(mode="json")
-        submission_payload["queue_position"] = job.queue_position if job and job.status == "pending" else None
+        submission_payload["queue_position"] = queue_rank_by_submission_id.get(submission.submission_id)
         submission_payload["source_code_length"] = len((submission.source_code or "").encode("utf-8"))
         if not include_source:
             submission_payload["source_code"] = None
@@ -364,7 +384,7 @@ async def judge_submissions(
                 "judge_job": job.model_dump(mode="json") if job else None,
                 "judge_node": node.model_dump(mode="json") if node else None,
                 "active_testcase_count": case_count,
-                "queue_position": job.queue_position if job else None,
+                "queue_position": queue_rank_by_submission_id.get(submission.submission_id),
             }
         )
     return page(
@@ -405,12 +425,13 @@ async def judge_submission_detail(submission_id: str, request: Request):
     node = nodes.get(job.assigned_node_id) if job and job.assigned_node_id else None
     active_set = next((item for item in testcase_sets.values() if item.problem_id == submission.problem_id and item.is_active), None)
     case_count = len(testcase_by_set.get(active_set.testcase_set_id, [])) if active_set else 0
+    queue_position = _submission_queue_position(submission.submission_id, jobs)
     return ok(
         request,
         {
             "submission": {
                 **submission.model_dump(mode="json"),
-                "queue_position": job.queue_position if job and job.status == "pending" else None,
+                "queue_position": queue_position,
                 "source_code_length": len((submission.source_code or "").encode("utf-8")),
             },
             "contest": {"contest_id": contest.contest_id, "title": contest.title} if contest else None,
@@ -428,7 +449,7 @@ async def judge_submission_detail(submission_id: str, request: Request):
             "judge_job": job.model_dump(mode="json") if job else None,
             "judge_node": node.model_dump(mode="json") if node else None,
             "active_testcase_count": case_count,
-            "queue_position": job.queue_position if job else None,
+            "queue_position": queue_position,
         },
     )
 
@@ -453,6 +474,7 @@ async def judge_submission_status_wait(
             raise not_found()
         if updated.status not in {"waiting", "preparing", "judging"}:
             payload = updated.model_dump(mode="json")
+            payload["queue_position"] = _submission_queue_position(submission_id)
             payload["source_code"] = None
             return ok(request, payload)
         await asyncio.sleep(poll)
@@ -460,6 +482,7 @@ async def judge_submission_status_wait(
     if not latest:
         raise not_found()
     payload = latest.model_dump(mode="json")
+    payload["queue_position"] = _submission_queue_position(submission_id)
     payload["source_code"] = None
     return ok(request, payload)
 
