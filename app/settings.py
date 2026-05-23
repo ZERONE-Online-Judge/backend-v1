@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     judge_claim_poll_interval_seconds: float = 0.5
     judge_claim_max_wait_seconds: float = 25.0
     judge_claim_max_batch_size: int = 100
-    judge_claim_inline_testcase_max_bytes: int = 256 * 1024
+    judge_claim_inline_testcase_max_bytes: int = 2 * 1024 * 1024
     judge_lease_timeout_seconds: int = 120
     judge_node_active_window_seconds: int = 30
     judge_node_prune_after_hours: int = 24

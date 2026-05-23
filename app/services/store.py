@@ -3302,8 +3302,8 @@ class DbStore:
                                 output_text = None
                             item = {
                                 **_testcase(case).model_dump(mode="json"),
-                                "input_url": object_storage.presigned_get_url(case.input_storage_key),
-                                "output_url": object_storage.presigned_get_url(case.output_storage_key),
+                                "input_url": object_storage.internal_presigned_get_url(case.input_storage_key),
+                                "output_url": object_storage.internal_presigned_get_url(case.output_storage_key),
                             }
                             if input_text is not None and output_text is not None:
                                 item["input_text"] = input_text
@@ -3335,7 +3335,7 @@ class DbStore:
                                     {
                                         **_asset(asset).model_dump(mode="json"),
                                         "role": role,
-                                        "url": object_storage.presigned_get_url(asset.storage_key),
+                                        "url": object_storage.internal_presigned_get_url(asset.storage_key),
                                     }
                                 )
                     bundle_url = None
@@ -3347,7 +3347,7 @@ class DbStore:
                             testcase_rows,
                             package_assets,
                         )
-                        bundle_url = object_storage.presigned_get_url(bundle_key)
+                        bundle_url = object_storage.internal_presigned_get_url(bundle_key)
                     jobs.append(
                         {
                             **_job(row).model_dump(mode="json"),

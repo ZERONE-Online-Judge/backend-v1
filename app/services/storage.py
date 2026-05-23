@@ -3,6 +3,8 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 from urllib.parse import urlparse
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 from minio import Minio
 
@@ -26,6 +28,20 @@ class ObjectStorage:
         if self.backend == "minio":
             return self._browser_proxy_url(storage_key)
         return self._local_file_url(storage_key)
+
+    def internal_presigned_get_url(self, storage_key: str) -> str:
+        if self.backend != "minio":
+            return self._local_file_url(storage_key)
+        raw_url = self._client().presigned_get_object(
+            settings.object_storage_bucket,
+            storage_key,
+            expires=timedelta(seconds=settings.object_storage_presign_ttl_seconds),
+        )
+        public_base = settings.public_base_url.rstrip("/")
+        public_parts = urlsplit(public_base)
+        raw_parts = urlsplit(raw_url)
+        path = f"/minio{raw_parts.path}"
+        return urlunsplit((public_parts.scheme, public_parts.netloc, path, raw_parts.query, ""))
 
     def read_bytes(self, storage_key: str) -> bytes:
         if self.backend == "minio":
