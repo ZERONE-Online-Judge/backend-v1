@@ -108,6 +108,7 @@ class Contest(BaseModel):
     scoreboard_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
     submission_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
     board_access_after_end: ContestResourceAccess = ContestResourceAccess.PARTICIPANTS
+    board_write_after_end: bool = False
     notice_access_after_end: ContestResourceAccess = ContestResourceAccess.PUBLIC
     scoreboard_freeze_mode: ScoreboardFreezeMode = ScoreboardFreezeMode.AUTO
     mock_judging_enabled: bool = False

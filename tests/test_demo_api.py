@@ -264,6 +264,39 @@ def test_contest_notice_and_board_flow():
         json={"body": "질문자 전용 답변", "visibility": "questioner"},
     )
     assert answer.status_code == 200
+    participant_answer = client.post(
+        f"/api/contests/{contest_id}/boards/{question_id}/answers",
+        headers=auth_headers(participant["access_token"]),
+        json={"body": "삭제될 참가자 댓글"},
+    )
+    assert participant_answer.status_code == 200
+    participant_answer_id = participant_answer.json()["data"]["contest_answer_id"]
+    assert participant_answer.json()["data"]["visibility"] == "public"
+    assert participant_answer.json()["data"]["created_by_email"] == participant["member"]["email"]
+    hidden_answer = client.patch(
+        f"/api/operator/contests/{contest_id}/boards/{question_id}/answers/{participant_answer_id}",
+        headers=auth_headers(operator["access_token"]),
+        json={"visibility": "questioner"},
+    )
+    assert hidden_answer.status_code == 200
+    assert hidden_answer.json()["data"]["visibility"] == "questioner"
+    visible_answer = client.patch(
+        f"/api/operator/contests/{contest_id}/boards/{question_id}/answers/{participant_answer_id}",
+        headers=auth_headers(operator["access_token"]),
+        json={"visibility": "public"},
+    )
+    assert visible_answer.status_code == 200
+    deleted_answer = client.delete(
+        f"/api/operator/contests/{contest_id}/boards/{question_id}/answers/{participant_answer_id}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert deleted_answer.status_code == 200
+    participant_answer = client.post(
+        f"/api/contests/{contest_id}/boards/{question_id}/answers",
+        headers=auth_headers(participant["access_token"]),
+        json={"body": "참가자 댓글"},
+    )
+    assert participant_answer.status_code == 200
 
     participant_board = client.get(
         f"/api/contests/{contest_id}/boards",
@@ -272,6 +305,7 @@ def test_contest_notice_and_board_flow():
     assert participant_board.status_code == 200
     own_question = next(item for item in participant_board.json()["data"] if item["contest_question_id"] == question_id)
     assert own_question["answers"][0]["visibility"] == "questioner"
+    assert [item["body"] for item in own_question["answers"]] == ["질문자 전용 답변", "참가자 댓글"]
 
     deleted = client.delete(
         f"/api/operator/contests/{contest_id}/boards/{question_id}",
@@ -1375,6 +1409,8 @@ def test_public_contest_resources_can_be_viewed_without_participant_during_conte
 
 def test_public_contest_resources_can_be_viewed_without_participant_after_end():
     contest_id = first_contest_id()
+    _contest_id, participant = participant_login()
+    assert _contest_id == contest_id
     operator = staff_tokens("test4@zoj.com")
     headers = auth_headers(operator["access_token"])
     now = datetime.now(timezone.utc)
@@ -1390,6 +1426,7 @@ def test_public_contest_resources_can_be_viewed_without_participant_after_end():
             "scoreboard_access_after_end": "public",
             "submission_access_after_end": "public",
             "board_access_after_end": "public",
+            "board_write_after_end": False,
             "notice_access_after_end": "public",
         },
     )
@@ -1401,6 +1438,30 @@ def test_public_contest_resources_can_be_viewed_without_participant_after_end():
         assert client.get(f"/api/contests/{contest_id}/submissions").status_code == 200
         assert client.get(f"/api/contests/{contest_id}/boards").status_code == 200
         assert client.get(f"/api/contests/{contest_id}/notices").status_code == 200
+        blocked_question = client.post(
+            f"/api/contests/{contest_id}/boards",
+            headers=auth_headers(participant["access_token"]),
+            json={"title": "종료 후 질문", "body": "차단", "visibility": "public"},
+        )
+        assert blocked_question.status_code == 404
+        write_enabled = client.patch(
+            f"/api/operator/contests/{contest_id}/settings",
+            headers=headers,
+            json={"board_write_after_end": True},
+        )
+        assert write_enabled.status_code == 200
+        allowed_question = client.post(
+            f"/api/contests/{contest_id}/boards",
+            headers=auth_headers(participant["access_token"]),
+            json={"title": "종료 후 질문", "body": "허용", "visibility": "public"},
+        )
+        assert allowed_question.status_code == 200
+        allowed_answer = client.post(
+            f"/api/contests/{contest_id}/boards/{allowed_question.json()['data']['contest_question_id']}/answers",
+            headers=auth_headers(participant["access_token"]),
+            json={"body": "종료 후 댓글"},
+        )
+        assert allowed_answer.status_code == 200
     finally:
         restored = client.patch(
             f"/api/operator/contests/{contest_id}/settings",
@@ -1410,6 +1471,7 @@ def test_public_contest_resources_can_be_viewed_without_participant_after_end():
                 "scoreboard_access_after_end": "private",
                 "submission_access_after_end": "private",
                 "board_access_after_end": "participants",
+                "board_write_after_end": False,
                 "notice_access_after_end": "public",
                 "scoreboard_freeze_mode": "auto",
             },

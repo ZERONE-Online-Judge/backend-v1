@@ -68,6 +68,8 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN submission_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
                 if "board_access_after_end" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN board_access_after_end VARCHAR(32) DEFAULT 'participants' NOT NULL"))
+                if "board_write_after_end" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN board_write_after_end BOOLEAN DEFAULT 0 NOT NULL"))
                 if "notice_access_after_end" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN notice_access_after_end VARCHAR(32) DEFAULT 'public' NOT NULL"))
                 if "scoreboard_freeze_mode" not in columns:

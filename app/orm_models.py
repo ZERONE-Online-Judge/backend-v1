@@ -25,6 +25,7 @@ class ContestRow(Base):
     scoreboard_access_after_end: Mapped[str] = mapped_column(String(32), default="private")
     submission_access_after_end: Mapped[str] = mapped_column(String(32), default="private")
     board_access_after_end: Mapped[str] = mapped_column(String(32), default="participants")
+    board_write_after_end: Mapped[bool] = mapped_column(Boolean, default=False)
     notice_access_after_end: Mapped[str] = mapped_column(String(32), default="public")
     scoreboard_freeze_mode: Mapped[str] = mapped_column(String(32), default="auto")
     mock_judging_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

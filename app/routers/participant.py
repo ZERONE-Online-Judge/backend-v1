@@ -84,6 +84,10 @@ class QuestionCreateRequest(BaseModel):
     visibility: str = "public"
 
 
+class QuestionAnswerCreateRequest(BaseModel):
+    body: str = Field(min_length=1)
+
+
 def _is_ended(contest) -> bool:
     if contest.status == ContestStatus.SCHEDULE_TBD:
         return False
@@ -117,6 +121,12 @@ def _allow_after_end_resource(contest, access: ContestResourceAccess, participan
     if access == ContestResourceAccess.PARTICIPANTS:
         return participant is not None
     return False
+
+
+def _allow_board_write_after_end(contest, participant: dict | None) -> bool:
+    if not contest.board_write_after_end:
+        return False
+    return _allow_after_end_resource(contest, contest.board_access_after_end, participant)
 
 
 def _allow_started_resource(contest, access: ContestResourceAccess, participant: dict | None) -> bool:
@@ -492,7 +502,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
     contest = store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
-    if _is_ended(contest) and not _allow_after_end_resource(contest, contest.board_access_after_end, participant):
+    if _is_ended(contest) and not _allow_board_write_after_end(contest, participant):
         raise not_found()
     if payload.visibility not in {"public", "private"}:
         raise AppError(422, "validation_error", "Unsupported question visibility.")
@@ -522,6 +532,42 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
             notified.add(email)
             store.enqueue_mail("contest_question_created", email, subject, "\n".join(body_lines))
     return ok(request, question.model_dump(mode="json"))
+
+
+@router.post("/contests/{contest_id}/boards/{question_id}/answers")
+async def create_question_answer(
+    contest_id: str,
+    question_id: str,
+    payload: QuestionAnswerCreateRequest,
+    request: Request,
+):
+    participant = require_participant(request, contest_id)
+    contest = store.get_public_contest(contest_id)
+    if not contest:
+        raise not_found()
+    if _is_ended(contest) and not _allow_board_write_after_end(contest, participant):
+        raise not_found()
+
+    question = store.get_contest_question(contest_id, question_id)
+    if not question:
+        raise not_found()
+    if question.visibility == "private" and question.participant_team_id != participant["team"].participant_team_id:
+        raise not_found()
+
+    body = payload.body.strip()
+    if not body:
+        raise AppError(422, "validation_error", "Answer body is required.")
+
+    answer = store.create_answer(
+        contest_id,
+        question_id,
+        body,
+        "public",
+        str(participant["member"].email),
+    )
+    if not answer:
+        raise not_found()
+    return ok(request, answer.model_dump(mode="json"))
 
 
 @router.get("/contests/{contest_id}/submissions")

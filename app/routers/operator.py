@@ -92,6 +92,7 @@ class ContestSettingsUpdateRequest(BaseModel):
     scoreboard_access_after_end: ContestResourceAccess | None = None
     submission_access_after_end: ContestResourceAccess | None = None
     board_access_after_end: ContestResourceAccess | None = None
+    board_write_after_end: bool | None = None
     notice_access_after_end: ContestResourceAccess | None = None
     scoreboard_freeze_mode: ScoreboardFreezeMode | None = None
     mock_judging_enabled: bool | None = None
@@ -126,6 +127,10 @@ class ContestNoticeUpdateRequest(BaseModel):
 class ContestAnswerCreateRequest(BaseModel):
     body: str
     visibility: str = "public"
+
+
+class ContestAnswerUpdateRequest(BaseModel):
+    visibility: str | None = None
 
 
 class ContestQuestionUpdateRequest(BaseModel):
@@ -705,6 +710,27 @@ async def create_answer(contest_id: str, question_id: str, payload: ContestAnswe
         for email in recipient_emails:
             store.enqueue_mail("contest_question_answered", email, subject, "\n".join(body_lines))
     return ok(request, answer.model_dump(mode="json"))
+
+
+@router.patch("/operator/contests/{contest_id}/boards/{question_id}/answers/{answer_id}")
+async def update_answer(contest_id: str, question_id: str, answer_id: str, payload: ContestAnswerUpdateRequest, request: Request):
+    require_contest_staff(request, contest_id)
+    updates = payload.model_dump(exclude_unset=True)
+    if "visibility" in updates and updates["visibility"] not in {"public", "questioner"}:
+        raise AppError(422, "validation_error", "Unsupported answer visibility.")
+    answer = store.update_answer(contest_id, question_id, answer_id, **updates)
+    if not answer:
+        raise not_found()
+    return ok(request, answer.model_dump(mode="json"))
+
+
+@router.delete("/operator/contests/{contest_id}/boards/{question_id}/answers/{answer_id}")
+async def delete_answer(contest_id: str, question_id: str, answer_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    deleted = store.delete_answer(contest_id, question_id, answer_id)
+    if not deleted:
+        raise not_found()
+    return ok(request, {"contest_answer_id": answer_id, "deleted": True})
 
 
 @router.get("/operator/contests/{contest_id}/participants")

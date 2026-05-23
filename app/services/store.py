@@ -144,6 +144,7 @@ def _contest(row: ContestRow) -> Contest:
         scoreboard_access_after_end=ContestResourceAccess(scoreboard_access),
         submission_access_after_end=ContestResourceAccess(submission_access),
         board_access_after_end=ContestResourceAccess(row.board_access_after_end or "participants"),
+        board_write_after_end=bool(row.board_write_after_end),
         notice_access_after_end=ContestResourceAccess(row.notice_access_after_end or "public"),
         scoreboard_freeze_mode=ScoreboardFreezeMode(row.scoreboard_freeze_mode or "auto"),
         mock_judging_enabled=bool(row.mock_judging_enabled),
@@ -356,7 +357,13 @@ def _question(
         updated_at=_aware(row.updated_at),
         team_name=team.team_name if team else None,
         author_name=member.name if member else None,
-        answers=[_answer(answer) for answer in (answers if answers is not None else row.answers)],
+        answers=[
+            _answer(answer)
+            for answer in sorted(
+                answers if answers is not None else row.answers,
+                key=lambda answer: (answer.created_at, answer.contest_answer_id),
+            )
+        ],
     )
 
 
@@ -2109,6 +2116,29 @@ class DbStore:
             db.refresh(row)
             return _answer(row)
 
+    def update_answer(self, contest_id: str, question_id: str, answer_id: str, **values) -> ContestQuestionAnswer | None:
+        allowed = {"visibility"}
+        with self._session() as db:
+            row = db.get(ContestQuestionAnswerRow, answer_id)
+            if not row or row.contest_id != contest_id or row.contest_question_id != question_id:
+                return None
+            for key, value in values.items():
+                if key in allowed and value is not None:
+                    setattr(row, key, value)
+            row.updated_at = now_utc()
+            db.commit()
+            db.refresh(row)
+            return _answer(row)
+
+    def delete_answer(self, contest_id: str, question_id: str, answer_id: str) -> bool:
+        with self._session() as db:
+            row = db.get(ContestQuestionAnswerRow, answer_id)
+            if not row or row.contest_id != contest_id or row.contest_question_id != question_id:
+                return False
+            db.delete(row)
+            db.commit()
+            return True
+
     def get_contest_question(self, contest_id: str, question_id: str) -> ContestQuestion | None:
         with self._session() as db:
             row = db.scalar(
@@ -2222,6 +2252,7 @@ class DbStore:
             "scoreboard_access_after_end",
             "submission_access_after_end",
             "board_access_after_end",
+            "board_write_after_end",
             "notice_access_after_end",
             "scoreboard_freeze_mode",
             "mock_judging_enabled",
