@@ -81,6 +81,15 @@ GENERAL_OTP_SCOPE = "__general__"
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
 
 
+def is_internal_mail_recipient(email: str | None) -> bool:
+    normalized = (email or "").strip().lower()
+    return (
+        not normalized
+        or normalized.endswith("@local.zoj")
+        or normalized.startswith("operator-test+")
+    )
+
+
 def _aware(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
@@ -457,6 +466,7 @@ class DbStore:
     @property
     def judge_nodes(self) -> dict[str, JudgeNode]:
         with self._session() as db:
+            self._prune_stale_judge_nodes(db)
             rows = db.scalars(select(JudgeNodeRow)).all()
             return {row.judge_node_id: _node(row) for row in rows}
 
@@ -968,10 +978,23 @@ class DbStore:
             return self._issue_staff_session(db, account)
 
     def _has_general_login_identity(self, db: Session, email: str) -> bool:
+        if is_internal_mail_recipient(email):
+            return False
         account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
         if account:
             return True
-        member = db.scalar(select(TeamMemberRow.team_member_id).where(TeamMemberRow.email == email).limit(1))
+        member = db.scalar(
+            select(TeamMemberRow.team_member_id)
+            .join(
+                ParticipantTeamRow,
+                TeamMemberRow.participant_team_id == ParticipantTeamRow.participant_team_id,
+            )
+            .where(
+                TeamMemberRow.email == email,
+                ~ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX),
+            )
+            .limit(1)
+        )
         return member is not None
 
     def create_general_otp(self, email: str) -> str | None:
@@ -1669,6 +1692,8 @@ class DbStore:
         )
         queued_count = 0
         for member in team.members:
+            if is_internal_mail_recipient(member.email):
+                continue
             if self._mail_exists(db, "participant_invited", member.email, content.subject):
                 continue
             db.add(
@@ -1748,7 +1773,7 @@ class DbStore:
             notified: set[str] = set()
             for email in participant_emails:
                 normalized = email.strip().lower()
-                if not normalized or normalized in notified:
+                if is_internal_mail_recipient(normalized) or normalized in notified:
                     continue
                 notified.add(normalized)
                 db.add(
@@ -1896,7 +1921,7 @@ class DbStore:
             seen = set()
             for email in rows:
                 normalized = email.strip().lower()
-                if not normalized or normalized in seen:
+                if is_internal_mail_recipient(normalized) or normalized in seen:
                     continue
                 seen.add(normalized)
                 emails.append(normalized)
@@ -2025,6 +2050,8 @@ class DbStore:
             return _division(row)
 
     def get_team_by_email(self, contest_id: str, team_member_email: str) -> ParticipantTeam | None:
+        if is_internal_mail_recipient(team_member_email):
+            return None
         with self._session() as db:
             member = db.scalar(
                 select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, TeamMemberRow.email == team_member_email)
@@ -2263,6 +2290,7 @@ class DbStore:
             if not row:
                 return None
             if email is not None and email != row.email:
+                old_email = row.email
                 exists = db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, func.lower(TeamMemberRow.email) == email.lower()))
                 if exists:
                     raise ValueError(f"participant email already registered: {email.lower()}")
@@ -2270,6 +2298,7 @@ class DbStore:
                 if staff_conflicts:
                     raise ValueError(f"participant email cannot be operator/staff account: {staff_conflicts[0]}")
                 row.email = email
+                self._cancel_pending_participant_mail_rows(db, [old_email])
             if name is not None:
                 row.name = name
             db.commit()
@@ -2986,6 +3015,7 @@ class DbStore:
         dedupe: bool = False,
     ) -> MailQueueItem:
         with self._session() as db:
+            internal_recipient = is_internal_mail_recipient(recipient_email)
             if dedupe and self._mail_exists(db, mail_type, recipient_email, subject):
                 existing = db.scalar(
                     select(MailQueueItemRow)
@@ -3005,6 +3035,7 @@ class DbStore:
                 subject=subject,
                 body_text=body_text,
                 body_html=body_html or render_basic_html(subject, body_text),
+                status="canceled" if internal_recipient else "pending",
             )
             db.add(row)
             db.commit()
@@ -3018,11 +3049,7 @@ class DbStore:
         rows = db.scalars(
             select(MailQueueItemRow).where(
                 func.lower(MailQueueItemRow.recipient_email).in_(normalized),
-                MailQueueItemRow.status == "pending",
-                or_(
-                    MailQueueItemRow.mail_type == "participant_invited",
-                    MailQueueItemRow.mail_type.like("contest_reminder_%"),
-                ),
+                MailQueueItemRow.status.in_(["pending", "sending"]),
             )
         ).all()
         for row in rows:
@@ -3073,6 +3100,8 @@ class DbStore:
                         )
                         mail_type = f"contest_reminder_{code}"
                         for member in team.members:
+                            if is_internal_mail_recipient(member.email):
+                                continue
                             if self._mail_exists(db, mail_type, member.email, content.subject):
                                 continue
                             db.add(
@@ -3103,6 +3132,8 @@ class DbStore:
             db.commit()
 
     def create_otp(self, contest_id: str, email: str) -> str:
+        if is_internal_mail_recipient(email):
+            raise ValueError("team member not registered")
         team = self.get_team_by_email(contest_id, email)
         if not team:
             raise ValueError("team member not registered")
@@ -3158,6 +3189,7 @@ class DbStore:
 
     def register_node(self, node_name: str, node_secret: str, total_slots: int) -> JudgeNode:
         with self._session() as db:
+            self._prune_stale_judge_nodes(db)
             row = db.scalar(select(JudgeNodeRow).where(JudgeNodeRow.node_name == node_name))
             if row:
                 if not verify_password(node_secret, row.node_secret_hash):
@@ -3174,6 +3206,7 @@ class DbStore:
 
     def verify_node_secret(self, node_id: str, node_secret: str) -> bool | None:
         with self._session() as db:
+            self._prune_stale_judge_nodes(db)
             row = db.get(JudgeNodeRow, node_id)
             if not row:
                 return None
@@ -3181,6 +3214,7 @@ class DbStore:
 
     def update_node_heartbeat(self, node_id: str, node_secret: str, total_slots: int, free_slots: int, running_job_count: int) -> JudgeNode | None:
         with self._session() as db:
+            self._prune_stale_judge_nodes(db)
             row = db.get(JudgeNodeRow, node_id)
             if not row:
                 return None
@@ -3197,6 +3231,7 @@ class DbStore:
 
     def claim_jobs(self, node_id: str, node_secret: str, max_count: int) -> list[dict] | None:
         with self._session() as db:
+            self._prune_stale_judge_nodes(db)
             node = db.get(JudgeNodeRow, node_id)
             if not node:
                 return None
@@ -3483,6 +3518,43 @@ class DbStore:
                 submission.progress_current = None
                 submission.progress_total = None
 
+    def _prune_stale_judge_nodes(self, db: Session) -> int:
+        cutoff = now_utc() - timedelta(hours=max(1, settings.judge_node_prune_after_hours))
+        rows = db.scalars(select(JudgeNodeRow)).all()
+        stale_rows = [
+            row
+            for row in rows
+            if _aware(row.last_heartbeat_at) < cutoff
+        ]
+        if not stale_rows:
+            return 0
+
+        now = now_utc()
+        removed = 0
+        for node in stale_rows:
+            assigned_jobs = db.scalars(
+                select(JudgeJobRow).where(JudgeJobRow.assigned_node_id == node.judge_node_id)
+            ).all()
+            for job in assigned_jobs:
+                if job.status in {JudgeJobStatus.RUNNING.value, JudgeJobStatus.ASSIGNED.value}:
+                    job.status = JudgeJobStatus.PENDING.value
+                    submission = db.get(SubmissionRow, job.submission_id)
+                    if submission and submission.status in {SubmissionStatus.PREPARING.value, SubmissionStatus.JUDGING.value}:
+                        submission.status = SubmissionStatus.WAITING.value
+                        submission.status_updated_at = now
+                        submission.compile_message = None
+                        submission.judge_message = None
+                        submission.failed_testcase_order = None
+                        submission.progress_current = None
+                        submission.progress_total = None
+                job.assigned_node_id = None
+                job.lease_token = None
+                job.leased_at = None
+            db.delete(node)
+            removed += 1
+        db.commit()
+        return removed
+
     def update_judge_progress(
         self,
         job_id: str,
@@ -3568,7 +3640,15 @@ class DbStore:
     def pending_mail(self, limit: int = 20) -> list[MailQueueItem]:
         with self._session() as db:
             rows = db.scalars(select(MailQueueItemRow).where(MailQueueItemRow.status == "pending").order_by(MailQueueItemRow.created_at).limit(limit)).all()
-            return [_mail(row) for row in rows]
+            sendable_rows = []
+            for row in rows:
+                if is_internal_mail_recipient(row.recipient_email):
+                    row.status = "canceled"
+                    continue
+                sendable_rows.append(row)
+            if len(sendable_rows) != len(rows):
+                db.commit()
+            return [_mail(row) for row in sendable_rows]
 
     def mark_mail_status(self, mail_queue_id: str, status: str) -> MailQueueItem | None:
         with self._session() as db:

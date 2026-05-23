@@ -4,7 +4,7 @@ from pathlib import Path
 import smtplib
 
 from app.settings import settings
-from app.services.store import store
+from app.services.store import is_internal_mail_recipient, store
 
 LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "logos" / "wordmark-logo.png"
 
@@ -42,6 +42,10 @@ async def main() -> None:
     while True:
         store.enqueue_due_contest_reminders()
         for item in store.pending_mail(settings.mail_worker_batch_size):
+            if is_internal_mail_recipient(str(item.recipient_email)):
+                store.mark_mail_status(item.mail_queue_id, "canceled")
+                print(f"[mail-worker] canceled internal recipient {item.mail_type} to {item.recipient_email}")
+                continue
             store.mark_mail_status(item.mail_queue_id, "sending")
             try:
                 send_mail(item.recipient_email, item.subject, item.body_text, item.body_html)

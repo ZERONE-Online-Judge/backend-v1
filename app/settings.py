@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     judge_claim_max_batch_size: int = 100
     judge_lease_timeout_seconds: int = 120
     judge_node_active_window_seconds: int = 30
+    judge_node_prune_after_hours: int = 24
     feature_submission_runtime_metrics: bool = True
     feature_public_scoreboard_penalty: bool = True
     feature_emergency_notice_auto: bool = True
