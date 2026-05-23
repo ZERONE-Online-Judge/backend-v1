@@ -27,12 +27,22 @@ def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str 
     return items[start:end], next_cursor
 
 
-def _node_with_activity(node: JudgeNode) -> dict:
+def _node_with_activity(node: JudgeNode, jobs: dict | None = None) -> dict:
     active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
     heartbeat_age = max(0, int((now_utc() - node.last_heartbeat_at).total_seconds()))
+    actual_running = len(
+        [
+            job
+            for job in (jobs or store.judge_jobs).values()
+            if job.status == "running" and job.assigned_node_id == node.judge_node_id
+        ]
+    )
     payload = node.model_dump(mode="json")
     payload["is_active"] = node.last_heartbeat_at >= active_since
     payload["heartbeat_age_seconds"] = heartbeat_age
+    payload["reported_running_job_count"] = node.running_job_count
+    payload["actual_running_job_count"] = actual_running
+    payload["running_job_count_mismatch"] = node.running_job_count != actual_running
     return payload
 
 
@@ -99,7 +109,8 @@ class ContactInquiryAnswerRequest(BaseModel):
 @router.get("/admin/dashboard")
 async def dashboard(request: Request):
     require_service_master(request)
-    node_payloads = [_node_with_activity(node) for node in store.judge_nodes.values()]
+    jobs = store.judge_jobs
+    node_payloads = [_node_with_activity(node, jobs) for node in store.judge_nodes.values()]
     return ok(
         request,
         {
@@ -286,8 +297,9 @@ async def judge_dashboard(
     cursor: str | None = None,
 ):
     require_service_master(request)
-    node_payloads = [_node_with_activity(node) for node in store.judge_nodes.values()]
     jobs = list(store.judge_jobs.values())
+    jobs_by_id = {job.judge_job_id: job for job in jobs}
+    node_payloads = [_node_with_activity(node, jobs_by_id) for node in store.judge_nodes.values()]
     queue_payload: list[dict] = []
     queue_page = {"limit": max(1, min(limit, 300)), "next_cursor": None}
     if include_queue:

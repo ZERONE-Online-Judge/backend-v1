@@ -3287,11 +3287,27 @@ class DbStore:
                         ).all()
                         testcases = []
                         for case in testcase_rows:
+                            input_text = None
+                            output_text = None
+                            inline_limit = max(0, settings.judge_claim_inline_testcase_max_bytes)
+                            try:
+                                if inline_limit > 0:
+                                    input_bytes = object_storage.read_bytes(case.input_storage_key)
+                                    output_bytes = object_storage.read_bytes(case.output_storage_key)
+                                    if len(input_bytes) <= inline_limit and len(output_bytes) <= inline_limit:
+                                        input_text = input_bytes.decode("utf-8-sig")
+                                        output_text = output_bytes.decode("utf-8-sig")
+                            except Exception:
+                                input_text = None
+                                output_text = None
                             item = {
                                 **_testcase(case).model_dump(mode="json"),
                                 "input_url": object_storage.presigned_get_url(case.input_storage_key),
                                 "output_url": object_storage.presigned_get_url(case.output_storage_key),
                             }
+                            if input_text is not None and output_text is not None:
+                                item["input_text"] = input_text
+                                item["output_text"] = output_text
                             testcases.append(item)
                     submission.status = SubmissionStatus.PREPARING.value
                     submission.status_updated_at = now_utc()
