@@ -1236,7 +1236,11 @@ async def delete_problem_asset(contest_id: str, problem_id: str, asset_id: str, 
 async def testcase_sets(contest_id: str, problem_id: str, request: Request):
     require_contest_staff(request, contest_id)
     try:
-        items = store.testcase_sets_for_problem(contest_id, problem_id)
+        items = store.testcase_sets_for_problem(
+            contest_id,
+            problem_id,
+            include_file_sizes=True,
+        )
     except ValueError:
         raise not_found()
     return page(request, items)

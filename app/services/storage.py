@@ -57,6 +57,22 @@ class ObjectStorage:
     def read_text(self, storage_key: str) -> str:
         return self.read_bytes(storage_key).decode("utf-8")
 
+    def size_bytes(self, storage_key: str) -> int | None:
+        if self.backend == "minio":
+            try:
+                stat = self._client().stat_object(
+                    settings.object_storage_bucket,
+                    storage_key,
+                )
+            except Exception:
+                return None
+            return int(stat.size)
+        path = Path(settings.local_object_storage_root) / storage_key
+        try:
+            return path.stat().st_size
+        except FileNotFoundError:
+            return None
+
     def write_bytes(self, storage_key: str, content: bytes, content_type: str = "application/octet-stream") -> None:
         if self.backend == "minio":
             self._client().put_object(

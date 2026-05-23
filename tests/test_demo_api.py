@@ -1075,6 +1075,14 @@ def test_operator_creates_verified_testcase_set_from_in_out_files():
     assert data["verified_count"] == 1
     assert data["testcase_set"]["is_active"] is True
     assert data["testcases"][0]["input_storage_key"] == input_key
+    listed = client.get(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/testcase-sets",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert listed.status_code == 200
+    listed_case = listed.json()["data"][-1]["testcases"][0]
+    assert listed_case["input_size_bytes"] == 2
+    assert listed_case["output_size_bytes"] == 3
 
     bad_checker = "import sys\nassert False, 'bad checker must not be accepted'\n"
     bad_checker_key = f"contests/{contest_id}/problems/{problem['problem_id']}/package-files/checker/{suffix}-bad-checker.py"

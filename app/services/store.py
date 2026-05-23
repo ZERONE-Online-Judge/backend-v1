@@ -233,7 +233,12 @@ def _testcase_set(row: TestcaseSetRow) -> TestcaseSet:
     )
 
 
-def _testcase(row: TestcaseRow) -> Testcase:
+def _testcase(
+    row: TestcaseRow,
+    *,
+    input_size_bytes: int | None = None,
+    output_size_bytes: int | None = None,
+) -> Testcase:
     return Testcase(
         testcase_id=row.testcase_id,
         testcase_set_id=row.testcase_set_id,
@@ -242,6 +247,8 @@ def _testcase(row: TestcaseRow) -> Testcase:
         output_storage_key=row.output_storage_key,
         input_sha256=row.input_sha256,
         output_sha256=row.output_sha256,
+        input_size_bytes=input_size_bytes,
+        output_size_bytes=output_size_bytes,
         time_limit_ms_override=row.time_limit_ms_override,
         memory_limit_mb_override=row.memory_limit_mb_override,
         created_at=_aware(row.created_at),
@@ -3030,19 +3037,48 @@ class DbStore:
                         pass
             return item
 
-    def testcase_sets_for_problem(self, contest_id: str, problem_id: str) -> list[dict]:
+    def testcase_sets_for_problem(
+        self,
+        contest_id: str,
+        problem_id: str,
+        *,
+        include_file_sizes: bool = False,
+    ) -> list[dict]:
         with self._session() as db:
             problem = db.get(ProblemRow, problem_id)
             if not problem or problem.contest_id != contest_id:
                 raise ValueError("problem not found")
-            sets = db.scalars(select(TestcaseSetRow).where(TestcaseSetRow.problem_id == problem_id).order_by(TestcaseSetRow.version)).all()
+            sets = db.scalars(
+                select(TestcaseSetRow)
+                .where(TestcaseSetRow.problem_id == problem_id)
+                .order_by(TestcaseSetRow.version)
+            ).all()
             result = []
             for testcase_set in sets:
-                cases = db.scalars(select(TestcaseRow).where(TestcaseRow.testcase_set_id == testcase_set.testcase_set_id).order_by(TestcaseRow.display_order)).all()
+                cases = db.scalars(
+                    select(TestcaseRow)
+                    .where(TestcaseRow.testcase_set_id == testcase_set.testcase_set_id)
+                    .order_by(TestcaseRow.display_order)
+                ).all()
+                if include_file_sizes:
+                    testcases = [
+                        _testcase(
+                            case,
+                            input_size_bytes=object_storage.size_bytes(
+                                case.input_storage_key
+                            ),
+                            output_size_bytes=object_storage.size_bytes(
+                                case.output_storage_key
+                            ),
+                        ).model_dump(mode="json")
+                        for case in cases
+                    ]
+                else:
+                    testcases = [_testcase(case).model_dump(mode="json") for case in cases]
                 result.append(
                     {
                         **_testcase_set(testcase_set).model_dump(mode="json"),
-                        "testcases": [_testcase(case).model_dump(mode="json") for case in cases],
+                        "testcases": testcases,
                     }
                 )
             return result

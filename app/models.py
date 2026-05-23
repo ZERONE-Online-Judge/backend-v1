@@ -168,6 +168,8 @@ class Testcase(BaseModel):
     output_storage_key: str
     input_sha256: str
     output_sha256: str
+    input_size_bytes: int | None = None
+    output_size_bytes: int | None = None
     time_limit_ms_override: int | None = None
     memory_limit_mb_override: int | None = None
     created_at: datetime = Field(default_factory=now_utc)
