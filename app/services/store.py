@@ -330,6 +330,8 @@ def _answer(
     row: ContestQuestionAnswerRow,
     created_by_name: str | None = None,
     created_by_role: str | None = None,
+    created_by_team_name: str | None = None,
+    created_by_division_name: str | None = None,
 ) -> ContestQuestionAnswer:
     return ContestQuestionAnswer(
         contest_answer_id=row.contest_answer_id,
@@ -340,6 +342,8 @@ def _answer(
         created_by_email=row.created_by_email,
         created_by_name=created_by_name,
         created_by_role=created_by_role,
+        created_by_team_name=created_by_team_name,
+        created_by_division_name=created_by_division_name,
         created_at=_aware(row.created_at),
         updated_at=_aware(row.updated_at),
     )
@@ -350,10 +354,6 @@ def _answer_for_view(row: ContestQuestionAnswerRow, db) -> ContestQuestionAnswer
     if not email:
         return _answer(row)
 
-    staff = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-    if staff:
-        return _answer(row, staff.display_name, "operator")
-
     member = db.scalar(
         select(TeamMemberRow).where(
             TeamMemberRow.contest_id == row.contest_id,
@@ -361,7 +361,19 @@ def _answer_for_view(row: ContestQuestionAnswerRow, db) -> ContestQuestionAnswer
         )
     )
     if member:
-        return _answer(row, member.name, "participant")
+        team = db.get(ParticipantTeamRow, member.participant_team_id)
+        division = db.get(ContestDivisionRow, team.division_id) if team else None
+        return _answer(
+            row,
+            member.name,
+            "participant",
+            team.team_name if team else None,
+            division.name if division else None,
+        )
+
+    staff = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
+    if staff:
+        return _answer(row, staff.display_name, "operator")
 
     return _answer(row)
 
@@ -370,6 +382,7 @@ def _question(
     row: ContestQuestionRow,
     team: ParticipantTeamRow | None = None,
     member: TeamMemberRow | None = None,
+    division: ContestDivisionRow | None = None,
     answers: list[ContestQuestionAnswerRow] | None = None,
     answer_mapper=None,
 ) -> ContestQuestion:
@@ -385,6 +398,7 @@ def _question(
         created_at=_aware(row.created_at),
         updated_at=_aware(row.updated_at),
         team_name=team.team_name if team else None,
+        division_name=division.name if division else None,
         author_name=member.name if member else None,
         author_email=member.email if member else None,
         answers=[
@@ -394,6 +408,24 @@ def _question(
                 key=lambda answer: (answer.created_at, answer.contest_answer_id),
             )
         ],
+    )
+
+
+def _question_for_view(
+    row: ContestQuestionRow,
+    db,
+    answers: list[ContestQuestionAnswerRow] | None = None,
+) -> ContestQuestion:
+    team = db.get(ParticipantTeamRow, row.participant_team_id)
+    member = db.get(TeamMemberRow, row.team_member_id)
+    division = db.get(ContestDivisionRow, team.division_id) if team else None
+    return _question(
+        row,
+        team=team,
+        member=member,
+        division=division,
+        answers=answers,
+        answer_mapper=lambda answer: _answer_for_view(answer, db),
     )
 
 
@@ -745,12 +777,7 @@ class DbStore:
             rows = db.scalars(select(ContestQuestionRow).options(selectinload(ContestQuestionRow.answers))).all()
             items = {}
             for row in rows:
-                items[row.contest_question_id] = _question(
-                    row,
-                    db.get(ParticipantTeamRow, row.participant_team_id),
-                    db.get(TeamMemberRow, row.team_member_id),
-                    answer_mapper=lambda answer: _answer_for_view(answer, db),
-                )
+                items[row.contest_question_id] = _question_for_view(row, db)
             return items
 
     @property
@@ -2088,13 +2115,7 @@ class DbStore:
                     if operator or answer.visibility == "public" or row.participant_team_id == participant_team_id:
                         visible_answers.append(answer)
                 visible_questions.append(
-                    _question(
-                        row,
-                        db.get(ParticipantTeamRow, row.participant_team_id),
-                        db.get(TeamMemberRow, row.team_member_id),
-                        visible_answers,
-                        lambda answer: _answer_for_view(answer, db),
-                    )
+                    _question_for_view(row, db, visible_answers)
                 )
             return visible_questions
 
@@ -2113,7 +2134,7 @@ class DbStore:
             db.add(row)
             db.commit()
             db.refresh(row)
-            return _question(row, db.get(ParticipantTeamRow, row.participant_team_id), db.get(TeamMemberRow, row.team_member_id))
+            return _question_for_view(row, db)
 
     def update_question(self, contest_id: str, question_id: str, **values) -> ContestQuestion | None:
         allowed = {"visibility"}
@@ -2127,7 +2148,7 @@ class DbStore:
             row.updated_at = now_utc()
             db.commit()
             db.refresh(row)
-            return _question(row, db.get(ParticipantTeamRow, row.participant_team_id), db.get(TeamMemberRow, row.team_member_id))
+            return _question_for_view(row, db)
 
     def delete_question(self, contest_id: str, question_id: str) -> bool:
         with self._session() as db:
@@ -2190,12 +2211,7 @@ class DbStore:
             )
             if not row:
                 return None
-            return _question(
-                row,
-                db.get(ParticipantTeamRow, row.participant_team_id),
-                db.get(TeamMemberRow, row.team_member_id),
-                answer_mapper=lambda answer: _answer_for_view(answer, db),
-            )
+            return _question_for_view(row, db)
 
     def participant_team_member_emails(self, contest_id: str, participant_team_id: str) -> list[str]:
         with self._session() as db:

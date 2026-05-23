@@ -227,6 +227,9 @@ def test_contest_notice_and_board_flow():
     )
     assert question.status_code == 200
     question_id = question.json()["data"]["contest_question_id"]
+    assert question.json()["data"]["author_name"] == participant["member"]["name"]
+    assert question.json()["data"]["team_name"] == participant["team"]["team_name"]
+    assert question.json()["data"]["division_name"] == participant["division"]["name"]
 
     public_board = client.get(f"/api/contests/{contest_id}/boards")
     assert public_board.status_code == 200
@@ -264,6 +267,10 @@ def test_contest_notice_and_board_flow():
         json={"body": "질문자 전용 답변", "visibility": "questioner"},
     )
     assert answer.status_code == 200
+    assert answer.json()["data"]["created_by_role"] == "operator"
+    assert answer.json()["data"]["created_by_name"] == operator["staff"]["display_name"]
+    assert answer.json()["data"]["created_by_team_name"] is None
+    assert answer.json()["data"]["created_by_division_name"] is None
     participant_answer = client.post(
         f"/api/contests/{contest_id}/boards/{question_id}/answers",
         headers=auth_headers(participant["access_token"]),
@@ -273,6 +280,10 @@ def test_contest_notice_and_board_flow():
     participant_answer_id = participant_answer.json()["data"]["contest_answer_id"]
     assert participant_answer.json()["data"]["visibility"] == "public"
     assert participant_answer.json()["data"]["created_by_email"] == participant["member"]["email"]
+    assert participant_answer.json()["data"]["created_by_role"] == "participant"
+    assert participant_answer.json()["data"]["created_by_name"] == participant["member"]["name"]
+    assert participant_answer.json()["data"]["created_by_team_name"] == participant["team"]["team_name"]
+    assert participant_answer.json()["data"]["created_by_division_name"] == participant["division"]["name"]
     hidden_answer = client.patch(
         f"/api/operator/contests/{contest_id}/boards/{question_id}/answers/{participant_answer_id}",
         headers=auth_headers(operator["access_token"]),
@@ -297,6 +308,7 @@ def test_contest_notice_and_board_flow():
         json={"body": "참가자 댓글"},
     )
     assert participant_answer.status_code == 200
+    assert participant_answer.json()["data"]["created_by_role"] == "participant"
 
     participant_board = client.get(
         f"/api/contests/{contest_id}/boards",
@@ -304,8 +316,14 @@ def test_contest_notice_and_board_flow():
     )
     assert participant_board.status_code == 200
     own_question = next(item for item in participant_board.json()["data"] if item["contest_question_id"] == question_id)
+    assert own_question["author_email"] == participant["member"]["email"]
+    assert own_question["team_name"] == participant["team"]["team_name"]
+    assert own_question["division_name"] == participant["division"]["name"]
     assert own_question["answers"][0]["visibility"] == "questioner"
     assert [item["body"] for item in own_question["answers"]] == ["질문자 전용 답변", "참가자 댓글"]
+    assert [item["created_by_role"] for item in own_question["answers"]] == ["operator", "participant"]
+    assert own_question["answers"][1]["created_by_team_name"] == participant["team"]["team_name"]
+    assert own_question["answers"][1]["created_by_division_name"] == participant["division"]["name"]
 
     deleted = client.delete(
         f"/api/operator/contests/{contest_id}/boards/{question_id}",

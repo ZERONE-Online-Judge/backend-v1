@@ -239,6 +239,8 @@ class ContestQuestionAnswer(BaseModel):
     created_by_email: EmailStr | None = None
     created_by_name: str | None = None
     created_by_role: str | None = None
+    created_by_team_name: str | None = None
+    created_by_division_name: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 
@@ -254,6 +256,7 @@ class ContestQuestion(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
     team_name: str | None = None
+    division_name: str | None = None
     author_name: str | None = None
     author_email: EmailStr | None = None
     answers: list[ContestQuestionAnswer] = Field(default_factory=list)
