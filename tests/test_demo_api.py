@@ -2220,6 +2220,7 @@ def test_judge_claim_uses_database_queue():
         json={"language": "cpp17", "source_code": "int main(){return 0;}"},
     )
     assert submission.status_code == 200
+    submission_id = submission.json()["data"]["submission_id"]
 
     node = client.post(
         "/api/internal/judge/nodes/register",
@@ -2228,12 +2229,8 @@ def test_judge_claim_uses_database_queue():
     assert node.status_code == 200
     node_id = node.json()["data"]["judge_node_id"]
 
-    claim = client.post(
-        f"/api/internal/judge/nodes/{node_id}/assignments:claim",
-        json={"node_secret": "demo", "max_count": 1},
-    )
-    assert claim.status_code == 200
-    assert claim.json()["data"]["jobs"][0]["submission"]["division_id"] == advanced_division["division_id"]
+    claimed = claim_jobs_until(node_id, "demo", [submission_id])[submission_id]
+    assert claimed["submission"]["division_id"] == advanced_division["division_id"]
 
 
 def test_judge_node_secret_is_required_for_claim_and_result():
