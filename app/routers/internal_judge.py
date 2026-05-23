@@ -53,6 +53,11 @@ class ProgressRequest(BaseModel):
     progress_total: int | None = None
 
 
+class LeaseRenewRequest(BaseModel):
+    node_secret: str
+    lease_token: str
+
+
 @router.post("/internal/judge/nodes/register")
 async def register_node(payload: RegisterNodeRequest, request: Request):
     try:
@@ -155,3 +160,21 @@ async def report_progress(job_id: str, payload: ProgressRequest, request: Reques
         raise not_found()
     submission, job = result
     return ok(request, {"accepted": True, "submission": submission.model_dump(mode="json"), "job": job.model_dump(mode="json")})
+
+
+@router.post("/internal/judge/jobs/{job_id}/lease:renew")
+async def renew_lease(job_id: str, payload: LeaseRenewRequest, request: Request):
+    try:
+        job = await asyncio.to_thread(
+            store.renew_judge_lease,
+            job_id,
+            payload.node_secret,
+            payload.lease_token,
+        )
+    except ValueError as error:
+        if "lease mismatch" in str(error):
+            raise AppError(409, "lease_conflict", "Lease token mismatch.")
+        raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
+    if not job:
+        raise not_found()
+    return ok(request, {"accepted": True, "job": job.model_dump(mode="json")})

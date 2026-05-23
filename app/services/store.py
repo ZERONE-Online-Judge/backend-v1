@@ -3611,6 +3611,30 @@ class DbStore:
             db.refresh(job)
             return _submission(submission), _job(job)
 
+    def renew_judge_lease(
+        self,
+        job_id: str,
+        node_secret: str,
+        lease_token: str,
+    ) -> JudgeJob | None:
+        with self._session() as db:
+            job = db.get(JudgeJobRow, job_id)
+            if not job:
+                return None
+            if not job.assigned_node_id:
+                raise ValueError("node secret mismatch")
+            node = db.get(JudgeNodeRow, job.assigned_node_id)
+            if not node or not verify_password(node_secret, node.node_secret_hash):
+                raise ValueError("node secret mismatch")
+            if job.lease_token != lease_token:
+                raise ValueError("lease mismatch")
+            if job.status != JudgeJobStatus.RUNNING.value:
+                return _job(job)
+            job.leased_at = now_utc()
+            db.commit()
+            db.refresh(job)
+            return _job(job)
+
     def report_judge_result(
         self,
         job_id: str,
