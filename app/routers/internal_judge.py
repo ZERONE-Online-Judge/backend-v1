@@ -24,6 +24,7 @@ class HeartbeatRequest(BaseModel):
     total_slots: int
     free_slots: int
     running_job_count: int
+    agent_version: str | None = None
 
 
 class ClaimRequest(BaseModel):
@@ -55,7 +56,13 @@ class ProgressRequest(BaseModel):
 @router.post("/internal/judge/nodes/register")
 async def register_node(payload: RegisterNodeRequest, request: Request):
     try:
-        node = await asyncio.to_thread(store.register_node, payload.node_name, payload.node_secret, payload.total_slots)
+        node = await asyncio.to_thread(
+            store.register_node,
+            payload.node_name,
+            payload.node_secret,
+            payload.total_slots,
+            payload.agent_version,
+        )
     except ValueError:
         raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
     return ok(request, {"judge_node_id": node.judge_node_id, "heartbeat_interval_seconds": 2})
@@ -71,6 +78,7 @@ async def heartbeat(node_id: str, payload: HeartbeatRequest, request: Request):
             payload.total_slots,
             payload.free_slots,
             payload.running_job_count,
+            payload.agent_version,
         )
     except ValueError:
         raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")

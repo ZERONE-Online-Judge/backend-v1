@@ -293,6 +293,7 @@ def _node(row: JudgeNodeRow) -> JudgeNode:
         total_slots=row.total_slots,
         free_slots=row.free_slots,
         running_job_count=row.running_job_count,
+        agent_version=row.agent_version,
         last_heartbeat_at=_aware(row.last_heartbeat_at),
         schedulable=row.schedulable,
     )
@@ -3187,7 +3188,7 @@ class DbStore:
             return 0
         return max(1, math.ceil(remaining))
 
-    def register_node(self, node_name: str, node_secret: str, total_slots: int) -> JudgeNode:
+    def register_node(self, node_name: str, node_secret: str, total_slots: int, agent_version: str = "unknown") -> JudgeNode:
         with self._session() as db:
             self._prune_stale_judge_nodes(db)
             row = db.scalar(select(JudgeNodeRow).where(JudgeNodeRow.node_name == node_name))
@@ -3196,9 +3197,16 @@ class DbStore:
                     raise ValueError("node secret mismatch")
                 row.total_slots = total_slots
                 row.free_slots = total_slots
+                row.agent_version = agent_version or "unknown"
                 row.last_heartbeat_at = now_utc()
             else:
-                row = JudgeNodeRow(node_name=node_name, node_secret_hash=hash_password(node_secret), total_slots=total_slots, free_slots=total_slots)
+                row = JudgeNodeRow(
+                    node_name=node_name,
+                    node_secret_hash=hash_password(node_secret),
+                    total_slots=total_slots,
+                    free_slots=total_slots,
+                    agent_version=agent_version or "unknown",
+                )
                 db.add(row)
             db.commit()
             db.refresh(row)
@@ -3212,7 +3220,15 @@ class DbStore:
                 return None
             return verify_password(node_secret, row.node_secret_hash)
 
-    def update_node_heartbeat(self, node_id: str, node_secret: str, total_slots: int, free_slots: int, running_job_count: int) -> JudgeNode | None:
+    def update_node_heartbeat(
+        self,
+        node_id: str,
+        node_secret: str,
+        total_slots: int,
+        free_slots: int,
+        running_job_count: int,
+        agent_version: str | None = None,
+    ) -> JudgeNode | None:
         with self._session() as db:
             self._prune_stale_judge_nodes(db)
             row = db.get(JudgeNodeRow, node_id)
@@ -3224,6 +3240,8 @@ class DbStore:
             row.total_slots = total_slots
             row.free_slots = free_slots
             row.running_job_count = running_job_count
+            if agent_version:
+                row.agent_version = agent_version
             row.last_heartbeat_at = now_utc()
             db.commit()
             db.refresh(row)

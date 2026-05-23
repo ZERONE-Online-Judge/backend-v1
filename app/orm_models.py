@@ -319,6 +319,7 @@ class JudgeNodeRow(Base):
     total_slots: Mapped[int] = mapped_column(Integer, default=10)
     free_slots: Mapped[int] = mapped_column(Integer, default=10)
     running_job_count: Mapped[int] = mapped_column(Integer, default=0)
+    agent_version: Mapped[str] = mapped_column(String(64), default="unknown")
     last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     schedulable: Mapped[bool] = mapped_column(Boolean, default=True)
 

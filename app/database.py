@@ -71,3 +71,8 @@ def create_schema() -> None:
             if "body_html" not in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE mail_queue ADD COLUMN body_html TEXT"))
+        if "judge_nodes" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("judge_nodes")}
+            if "agent_version" not in columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE judge_nodes ADD COLUMN agent_version VARCHAR(64) DEFAULT 'unknown' NOT NULL"))

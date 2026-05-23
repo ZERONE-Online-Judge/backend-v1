@@ -286,6 +286,7 @@ class JudgeNode(BaseModel):
     total_slots: int = 10
     free_slots: int = 10
     running_job_count: int = 0
+    agent_version: str = "unknown"
     last_heartbeat_at: datetime = Field(default_factory=now_utc)
     schedulable: bool = True
 
