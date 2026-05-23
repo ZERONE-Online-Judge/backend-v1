@@ -336,32 +336,31 @@ async def judge_submissions(
     division_id: str | None = None,
 ):
     require_service_master(request)
-    contests = store.contests
-    problems = store.problems
-    divisions = store.divisions
-    teams = store.teams
-    jobs = store.judge_jobs
-    nodes = store.judge_nodes
-    testcase_sets = store.testcase_sets
-    testcases = store.testcases
-
-    testcase_by_set: dict[str, list] = {}
-    for testcase in testcases.values():
-        testcase_by_set.setdefault(testcase.testcase_set_id, []).append(testcase)
-    for bucket in testcase_by_set.values():
-        bucket.sort(key=lambda item: item.display_order)
-
-    latest_all = [
-        submission
-        for submission in store.submissions.values()
-        if (not contest_id or submission.contest_id == contest_id)
-        and (not division_id or submission.division_id == division_id)
-    ]
-    latest_all.sort(key=lambda item: item.submitted_at, reverse=True)
-    latest, next_cursor = _page_slice(latest_all, limit, cursor)
-
-    job_by_submission_id = {job.submission_id: job for job in jobs.values()}
-    queue_rank_by_submission_id = _pending_queue_ranks(jobs)
+    latest, next_cursor, total_count = store.list_submissions(
+        contest_id=contest_id,
+        division_id=division_id,
+        include_source=include_source,
+        limit=limit,
+        cursor=cursor,
+    )
+    submission_ids = [submission.submission_id for submission in latest]
+    job_by_submission_id = store.judge_jobs_by_submission_ids(submission_ids)
+    contests = store.contests_by_ids([submission.contest_id for submission in latest])
+    problems = store.problems_by_ids([submission.problem_id for submission in latest])
+    divisions = store.divisions_by_ids([submission.division_id for submission in latest])
+    teams = store.teams_by_ids([submission.participant_team_id for submission in latest])
+    nodes = store.judge_nodes_by_ids(
+        [
+            job.assigned_node_id
+            for job in job_by_submission_id.values()
+            if job.assigned_node_id
+        ]
+    )
+    queue_rank_by_submission_id = store.pending_queue_ranks(contest_id=contest_id)
+    source_lengths = store.submission_source_lengths(submission_ids)
+    testcase_counts = store.active_testcase_counts_by_problem_ids(
+        list({submission.problem_id for submission in latest})
+    )
     data = []
     for submission in latest:
         problem = problems.get(submission.problem_id)
@@ -371,11 +370,10 @@ async def judge_submissions(
         member = next((item for item in (team.members if team else []) if item.team_member_id == submission.team_member_id), None)
         job = job_by_submission_id.get(submission.submission_id)
         node = nodes.get(job.assigned_node_id) if job and job.assigned_node_id else None
-        active_set = next((item for item in testcase_sets.values() if item.problem_id == submission.problem_id and item.is_active), None)
-        case_count = len(testcase_by_set.get(active_set.testcase_set_id, [])) if active_set else 0
+        case_count = testcase_counts.get(submission.problem_id, 0)
         submission_payload = submission.model_dump(mode="json")
         submission_payload["queue_position"] = queue_rank_by_submission_id.get(submission.submission_id)
-        submission_payload["source_code_length"] = len((submission.source_code or "").encode("utf-8"))
+        submission_payload["source_code_length"] = source_lengths.get(submission.submission_id, 0)
         if not include_source:
             submission_payload["source_code"] = None
         data.append(
@@ -404,7 +402,7 @@ async def judge_submissions(
         data,
         next_cursor=next_cursor,
         limit=max(1, min(limit, 300)),
-        total_count=len(latest_all),
+        total_count=total_count,
         current_cursor=cursor,
     )
 
@@ -412,13 +410,13 @@ async def judge_submissions(
 @router.get("/admin/judge/submissions/{submission_id}")
 async def judge_submission_detail(submission_id: str, request: Request):
     require_service_master(request)
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id)
     if not submission:
         raise not_found()
-    contests = store.contests
-    problems = store.problems
-    divisions = store.divisions
-    teams = store.teams
+    contests = store.contests_by_ids([submission.contest_id])
+    problems = store.problems_by_ids([submission.problem_id])
+    divisions = store.divisions_by_ids([submission.division_id])
+    teams = store.teams_by_ids([submission.participant_team_id])
     jobs = store.judge_jobs
     nodes = store.judge_nodes
     testcase_sets = store.testcase_sets
@@ -474,14 +472,14 @@ async def judge_submission_status_wait(
     poll_interval_seconds: float = 0.25,
 ):
     require_service_master(request)
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id, include_source=False)
     if not submission:
         raise not_found()
     wait_budget = max(0.0, min(wait_seconds, 10.0))
     poll = max(0.1, min(poll_interval_seconds, 1.0))
     loops = max(1, int(wait_budget / poll))
     for _ in range(loops):
-        updated = store.submissions.get(submission_id)
+        updated = store.get_submission(submission_id, include_source=False)
         if not updated:
             raise not_found()
         if updated.status not in {"waiting", "preparing", "judging"}:
@@ -490,7 +488,7 @@ async def judge_submission_status_wait(
             payload["source_code"] = None
             return ok(request, payload)
         await asyncio.sleep(poll)
-    latest = store.submissions.get(submission_id)
+    latest = store.get_submission(submission_id, include_source=False)
     if not latest:
         raise not_found()
     payload = latest.model_dump(mode="json")

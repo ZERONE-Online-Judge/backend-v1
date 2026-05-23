@@ -8,7 +8,7 @@ import secrets
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, load_only, selectinload
 
 from app.database import SessionLocal, create_schema
 from app.settings import settings
@@ -247,7 +247,7 @@ def _testcase(row: TestcaseRow) -> Testcase:
     )
 
 
-def _submission(row: SubmissionRow) -> Submission:
+def _submission(row: SubmissionRow, include_source: bool = True) -> Submission:
     return Submission(
         submission_id=row.submission_id,
         contest_id=row.contest_id,
@@ -256,7 +256,7 @@ def _submission(row: SubmissionRow) -> Submission:
         participant_team_id=row.participant_team_id,
         team_member_id=row.team_member_id,
         language=row.language,
-        source_code=row.source_code,
+        source_code=row.source_code if include_source else "",
         status=SubmissionStatus(row.status),
         submitted_at=_aware(row.submitted_at),
         status_updated_at=_aware(row.status_updated_at),
@@ -457,6 +457,225 @@ class DbStore:
         with self._session() as db:
             rows = db.scalars(select(SubmissionRow)).all()
             return {row.submission_id: _submission(row) for row in rows}
+
+    def get_submission(self, submission_id: str, *, include_source: bool = True) -> Submission | None:
+        base = select(SubmissionRow).where(SubmissionRow.submission_id == submission_id)
+        if not include_source:
+            base = base.options(
+                load_only(
+                    SubmissionRow.submission_id,
+                    SubmissionRow.contest_id,
+                    SubmissionRow.division_id,
+                    SubmissionRow.problem_id,
+                    SubmissionRow.participant_team_id,
+                    SubmissionRow.team_member_id,
+                    SubmissionRow.language,
+                    SubmissionRow.status,
+                    SubmissionRow.submitted_at,
+                    SubmissionRow.status_updated_at,
+                    SubmissionRow.awarded_score,
+                    SubmissionRow.compile_message,
+                    SubmissionRow.judge_message,
+                    SubmissionRow.failed_testcase_order,
+                    SubmissionRow.progress_current,
+                    SubmissionRow.progress_total,
+                    SubmissionRow.runtime_ms,
+                    SubmissionRow.memory_kb,
+                )
+            )
+        with self._session() as db:
+            row = db.scalar(base)
+            return _submission(row, include_source=include_source) if row else None
+
+    def contests_by_ids(self, contest_ids: list[str]) -> dict[str, Contest]:
+        ids = list(dict.fromkeys(contest_ids))
+        if not ids:
+            return {}
+        with self._session() as db:
+            rows = db.scalars(select(ContestRow).where(ContestRow.contest_id.in_(ids))).all()
+            return {row.contest_id: _contest(row) for row in rows}
+
+    def divisions_by_ids(self, division_ids: list[str]) -> dict[str, ContestDivision]:
+        ids = list(dict.fromkeys(division_ids))
+        if not ids:
+            return {}
+        with self._session() as db:
+            rows = db.scalars(select(ContestDivisionRow).where(ContestDivisionRow.division_id.in_(ids))).all()
+            return {row.division_id: _division(row) for row in rows}
+
+    def problems_by_ids(self, problem_ids: list[str]) -> dict[str, Problem]:
+        ids = list(dict.fromkeys(problem_ids))
+        if not ids:
+            return {}
+        with self._session() as db:
+            rows = db.scalars(select(ProblemRow).where(ProblemRow.problem_id.in_(ids))).all()
+            return {row.problem_id: _problem(row) for row in rows}
+
+    def teams_by_ids(self, participant_team_ids: list[str]) -> dict[str, ParticipantTeam]:
+        ids = list(dict.fromkeys(participant_team_ids))
+        if not ids:
+            return {}
+        with self._session() as db:
+            rows = db.scalars(
+                select(ParticipantTeamRow)
+                .options(selectinload(ParticipantTeamRow.members))
+                .where(ParticipantTeamRow.participant_team_id.in_(ids))
+            ).all()
+            return {row.participant_team_id: _team(row) for row in rows}
+
+    def judge_nodes_by_ids(self, judge_node_ids: list[str]) -> dict[str, JudgeNode]:
+        ids = list(dict.fromkeys(judge_node_ids))
+        if not ids:
+            return {}
+        with self._session() as db:
+            rows = db.scalars(select(JudgeNodeRow).where(JudgeNodeRow.judge_node_id.in_(ids))).all()
+            return {row.judge_node_id: _node(row) for row in rows}
+
+    def count_submissions(self, *, contest_id: str | None = None, division_id: str | None = None) -> int:
+        filters = []
+        if contest_id:
+            filters.append(SubmissionRow.contest_id == contest_id)
+        if division_id:
+            filters.append(SubmissionRow.division_id == division_id)
+        stmt = select(func.count()).select_from(SubmissionRow)
+        if filters:
+            stmt = stmt.where(*filters)
+        with self._session() as db:
+            return int(db.scalar(stmt) or 0)
+
+    def count_judge_jobs(self, *, contest_id: str | None = None, status: str | None = None) -> int:
+        filters = []
+        if contest_id:
+            filters.append(JudgeJobRow.contest_id == contest_id)
+        if status:
+            filters.append(JudgeJobRow.status == status)
+        stmt = select(func.count()).select_from(JudgeJobRow)
+        if filters:
+            stmt = stmt.where(*filters)
+        with self._session() as db:
+            return int(db.scalar(stmt) or 0)
+
+    def list_submissions(
+        self,
+        *,
+        contest_id: str | None = None,
+        division_id: str | None = None,
+        problem_id: str | None = None,
+        participant_team_id: str | None = None,
+        exclude_operator_tests: bool = False,
+        include_source: bool = False,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> tuple[list[Submission], str | None, int]:
+        safe_limit = max(1, min(limit, 300))
+        try:
+            offset = max(0, int(cursor or "0"))
+        except ValueError:
+            offset = 0
+        filters = []
+        if contest_id:
+            filters.append(SubmissionRow.contest_id == contest_id)
+        if division_id:
+            filters.append(SubmissionRow.division_id == division_id)
+        if problem_id:
+            filters.append(SubmissionRow.problem_id == problem_id)
+        if participant_team_id:
+            filters.append(SubmissionRow.participant_team_id == participant_team_id)
+        if exclude_operator_tests:
+            operator_team_ids = select(ParticipantTeamRow.participant_team_id).where(
+                ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX)
+            )
+            if contest_id:
+                operator_team_ids = operator_team_ids.where(ParticipantTeamRow.contest_id == contest_id)
+            filters.append(SubmissionRow.participant_team_id.not_in(operator_team_ids))
+
+        base = select(SubmissionRow)
+        count_stmt = select(func.count()).select_from(SubmissionRow)
+        if filters:
+            base = base.where(*filters)
+            count_stmt = count_stmt.where(*filters)
+        if not include_source:
+            base = base.options(
+                load_only(
+                    SubmissionRow.submission_id,
+                    SubmissionRow.contest_id,
+                    SubmissionRow.division_id,
+                    SubmissionRow.problem_id,
+                    SubmissionRow.participant_team_id,
+                    SubmissionRow.team_member_id,
+                    SubmissionRow.language,
+                    SubmissionRow.status,
+                    SubmissionRow.submitted_at,
+                    SubmissionRow.status_updated_at,
+                    SubmissionRow.awarded_score,
+                    SubmissionRow.compile_message,
+                    SubmissionRow.judge_message,
+                    SubmissionRow.failed_testcase_order,
+                    SubmissionRow.progress_current,
+                    SubmissionRow.progress_total,
+                    SubmissionRow.runtime_ms,
+                    SubmissionRow.memory_kb,
+                )
+            )
+        with self._session() as db:
+            total_count = int(db.scalar(count_stmt) or 0)
+            rows = db.scalars(
+                base.order_by(SubmissionRow.submitted_at.desc(), SubmissionRow.submission_id.desc())
+                .offset(offset)
+                .limit(safe_limit)
+            ).all()
+            next_offset = offset + safe_limit
+            next_cursor = str(next_offset) if next_offset < total_count else None
+            return [_submission(row, include_source=include_source) for row in rows], next_cursor, total_count
+
+    def judge_jobs_by_submission_ids(self, submission_ids: list[str]) -> dict[str, JudgeJob]:
+        if not submission_ids:
+            return {}
+        with self._session() as db:
+            rows = db.scalars(
+                select(JudgeJobRow)
+                .where(JudgeJobRow.submission_id.in_(submission_ids))
+                .order_by(JudgeJobRow.created_at.desc())
+            ).all()
+            jobs: dict[str, JudgeJob] = {}
+            for row in rows:
+                if row.submission_id not in jobs:
+                    jobs[row.submission_id] = _job(row)
+            return jobs
+
+    def submission_source_lengths(self, submission_ids: list[str]) -> dict[str, int]:
+        if not submission_ids:
+            return {}
+        with self._session() as db:
+            rows = db.execute(
+                select(SubmissionRow.submission_id, func.length(SubmissionRow.source_code))
+                .where(SubmissionRow.submission_id.in_(submission_ids))
+            ).all()
+            return {str(submission_id): int(length or 0) for submission_id, length in rows}
+
+    def pending_queue_ranks(self, contest_id: str | None = None) -> dict[str, int]:
+        filters = [JudgeJobRow.status == "pending"]
+        if contest_id:
+            filters.append(JudgeJobRow.contest_id == contest_id)
+        with self._session() as db:
+            rows = db.scalars(
+                select(JudgeJobRow)
+                .where(*filters)
+                .order_by(JudgeJobRow.queue_position)
+            ).all()
+            return {row.submission_id: index for index, row in enumerate(rows, start=1)}
+
+    def active_testcase_counts_by_problem_ids(self, problem_ids: list[str]) -> dict[str, int]:
+        if not problem_ids:
+            return {}
+        with self._session() as db:
+            rows = db.execute(
+                select(TestcaseSetRow.problem_id, func.count(TestcaseRow.testcase_id))
+                .join(TestcaseRow, TestcaseRow.testcase_set_id == TestcaseSetRow.testcase_set_id)
+                .where(TestcaseSetRow.problem_id.in_(problem_ids), TestcaseSetRow.is_active.is_(True))
+                .group_by(TestcaseSetRow.problem_id)
+            ).all()
+            return {str(problem_id): int(count) for problem_id, count in rows}
 
     @property
     def judge_jobs(self) -> dict[str, JudgeJob]:

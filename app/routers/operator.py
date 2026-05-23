@@ -41,22 +41,7 @@ def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str 
 
 
 def _submission_queue_position(contest_id: str, submission_id: str) -> int | None:
-    pending_jobs = sorted(
-        (
-            job
-            for job in store.judge_jobs.values()
-            if job.contest_id == contest_id and job.status == "pending"
-        ),
-        key=lambda job: job.queue_position,
-    )
-    return next(
-        (
-            index
-            for index, job in enumerate(pending_jobs, start=1)
-            if job.submission_id == submission_id
-        ),
-        None,
-    )
+    return store.pending_queue_ranks(contest_id=contest_id).get(submission_id)
 
 
 class TeamMemberPayload(BaseModel):
@@ -411,8 +396,8 @@ async def operator_dashboard(contest_id: str, request: Request):
             "contest": contest.model_dump(mode="json"),
             "divisions": [division.model_dump(mode="json") for division in store.contest_divisions(contest_id)],
             "participant_count": len([team for team in store.teams.values() if team.contest_id == contest_id]),
-            "submission_count": len([s for s in store.submissions.values() if s.contest_id == contest_id]),
-            "pending_jobs": len([j for j in store.judge_jobs.values() if j.contest_id == contest_id and j.status == "pending"]),
+            "submission_count": store.count_submissions(contest_id=contest_id),
+            "pending_jobs": store.count_judge_jobs(contest_id=contest_id, status="pending"),
             "operators": [account.model_dump(mode="json") for account in store.contest_operator_accounts(contest_id)],
             "participant_count_by_division": {
                 division.division_id: len(
@@ -875,32 +860,24 @@ async def operator_submissions(
     problem_id: str | None = None,
 ):
     require_contest_staff(request, contest_id)
-    teams = {team.participant_team_id: team for team in store.teams.values() if team.contest_id == contest_id}
+    submissions, next_cursor, total_count = store.list_submissions(
+        contest_id=contest_id,
+        division_id=division_id,
+        problem_id=problem_id,
+        include_source=include_source,
+        limit=limit,
+        cursor=cursor,
+    )
+    teams = store.teams_by_ids([submission.participant_team_id for submission in submissions])
     members = {
         member.team_member_id: member
         for team in teams.values()
         for member in team.members
     }
-    pending_jobs = sorted(
-        (
-            job
-            for job in store.judge_jobs.values()
-            if job.contest_id == contest_id and job.status == "pending"
-        ),
-        key=lambda job: job.queue_position,
-    )
-    queue_rank_by_submission_id = {
-        job.submission_id: index
-        for index, job in enumerate(pending_jobs, start=1)
-    }
+    queue_rank_by_submission_id = store.pending_queue_ranks(contest_id=contest_id)
+    source_lengths = store.submission_source_lengths([submission.submission_id for submission in submissions])
     items = []
-    for submission in store.submissions.values():
-        if submission.contest_id != contest_id:
-            continue
-        if division_id and submission.division_id != division_id:
-            continue
-        if problem_id and submission.problem_id != problem_id:
-            continue
+    for submission in submissions:
         payload = submission.model_dump(mode="json")
         team = teams.get(submission.participant_team_id)
         member = members.get(submission.team_member_id)
@@ -908,18 +885,16 @@ async def operator_submissions(
         payload["member_name"] = member.name if member else None
         payload["member_email"] = str(member.email) if member else None
         payload["queue_position"] = queue_rank_by_submission_id.get(submission.submission_id)
-        payload["source_code_length"] = len((submission.source_code or "").encode("utf-8"))
+        payload["source_code_length"] = source_lengths.get(submission.submission_id, 0)
         if not include_source:
             payload["source_code"] = None
         items.append(payload)
-    items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
-    sliced, next_cursor = _page_slice(items, limit, cursor)
     return page(
         request,
-        sliced,
+        items,
         next_cursor=next_cursor,
         limit=max(1, min(limit, 300)),
-        total_count=len(items),
+        total_count=total_count,
         current_cursor=cursor,
     )
 
@@ -927,10 +902,10 @@ async def operator_submissions(
 @router.get("/operator/contests/{contest_id}/submissions/{submission_id}")
 async def operator_submission_detail(contest_id: str, submission_id: str, request: Request):
     require_contest_staff(request, contest_id)
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id)
     if not submission or submission.contest_id != contest_id:
         raise not_found()
-    team = store.teams.get(submission.participant_team_id)
+    team = store.teams_by_ids([submission.participant_team_id]).get(submission.participant_team_id)
     member = next((item for item in (team.members if team else []) if item.team_member_id == submission.team_member_id), None)
     payload = submission.model_dump(mode="json")
     payload["team_name"] = team.team_name if team else None
@@ -950,14 +925,14 @@ async def operator_wait_submission_status(
     poll_interval_seconds: float = 0.25,
 ):
     require_contest_staff(request, contest_id)
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id, include_source=False)
     if not submission or submission.contest_id != contest_id:
         raise not_found()
     wait_budget = max(0.0, min(wait_seconds, 10.0))
     poll = max(0.1, min(poll_interval_seconds, 1.0))
     loops = max(1, int(wait_budget / poll))
     for _ in range(loops):
-        updated = store.submissions.get(submission_id)
+        updated = store.get_submission(submission_id, include_source=False)
         if not updated:
             raise not_found()
         if updated.status not in {"waiting", "preparing", "judging"}:
@@ -966,7 +941,7 @@ async def operator_wait_submission_status(
             payload["source_code"] = None
             return ok(request, payload)
         await asyncio.sleep(poll)
-    latest = store.submissions.get(submission_id)
+    latest = store.get_submission(submission_id, include_source=False)
     if not latest:
         raise not_found()
     payload = latest.model_dump(mode="json")
@@ -992,7 +967,7 @@ async def create_operator_test_submission(contest_id: str, problem_id: str, payl
 @router.get("/operator/contests/{contest_id}/test-submissions/{submission_id}")
 async def operator_test_submission_detail(contest_id: str, submission_id: str, request: Request):
     require_contest_staff(request, contest_id)
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id)
     if not submission or submission.contest_id != contest_id:
         raise not_found()
     return ok(request, submission.model_dump(mode="json"))
@@ -1007,20 +982,20 @@ async def operator_wait_test_submission_status(
     poll_interval_seconds: float = 0.25,
 ):
     require_contest_staff(request, contest_id)
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id)
     if not submission or submission.contest_id != contest_id:
         raise not_found()
     wait_budget = max(0.0, min(wait_seconds, 10.0))
     poll = max(0.1, min(poll_interval_seconds, 1.0))
     loops = max(1, int(wait_budget / poll))
     for _ in range(loops):
-        updated = store.submissions.get(submission_id)
+        updated = store.get_submission(submission_id)
         if not updated:
             raise not_found()
         if updated.status not in {"waiting", "preparing", "judging"}:
             return ok(request, updated.model_dump(mode="json"))
         await asyncio.sleep(poll)
-    latest = store.submissions.get(submission_id)
+    latest = store.get_submission(submission_id)
     if not latest:
         raise not_found()
     return ok(request, latest.model_dump(mode="json"))

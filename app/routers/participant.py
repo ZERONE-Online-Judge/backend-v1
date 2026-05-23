@@ -181,26 +181,18 @@ def _allow_submission_list_view(request: Request, contest_id: str) -> tuple[dict
     raise not_found()
 
 
-def _participant_submission_payload(submission, include_source: bool) -> dict:
+def _participant_submission_payload(
+    submission,
+    include_source: bool,
+    queue_position: int | None = None,
+    source_code_length: int | None = None,
+) -> dict:
     item = submission.model_dump(mode="json")
-    pending_jobs = sorted(
-        (
-            candidate
-            for candidate in store.judge_jobs.values()
-            if candidate.status == "pending"
-        ),
-        key=lambda candidate: candidate.queue_position,
-    )
-    item["queue_position"] = next(
-        (
-            index
-            for index, candidate in enumerate(pending_jobs, start=1)
-            if candidate.submission_id == submission.submission_id
-        ),
-        None,
-    )
+    item["queue_position"] = queue_position
+    if item["queue_position"] is None:
+        item["queue_position"] = store.pending_queue_ranks().get(submission.submission_id)
     source_code = item.get("source_code") or ""
-    item["source_code_length"] = len(source_code.encode("utf-8"))
+    item["source_code_length"] = source_code_length if source_code_length is not None else len(source_code.encode("utf-8"))
     progress_current = item.get("progress_current")
     progress_total = item.get("progress_total")
     item["progress_percent"] = None
@@ -427,7 +419,7 @@ async def wait_mock_submission_status(
     wait_seconds: float = 2.0,
     poll_interval_seconds: float = 0.25,
 ):
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id, include_source=False)
     if not submission or submission.contest_id != contest_id or not _is_operator_test_submission(submission):
         raise not_found()
     problem = store.problems.get(submission.problem_id)
@@ -442,13 +434,16 @@ async def wait_mock_submission_status(
     poll = max(0.1, min(poll_interval_seconds, 1.0))
     loops = max(1, int(wait_budget / poll))
     for _ in range(loops):
-        updated = store.submissions.get(submission_id)
+        updated = store.get_submission(submission_id, include_source=False)
         if not updated:
             raise not_found()
         if updated.status not in {"waiting", "preparing", "judging"}:
-            return ok(request, _mock_submission_payload(updated))
+            full = store.get_submission(submission_id)
+            if not full:
+                raise not_found()
+            return ok(request, _mock_submission_payload(full))
         await asyncio.sleep(poll)
-    latest = store.submissions.get(submission_id)
+    latest = store.get_submission(submission_id)
     if not latest:
         raise not_found()
     return ok(request, _mock_submission_payload(latest))
@@ -540,39 +535,59 @@ async def submissions(
     problem_id: str | None = None,
 ):
     participant, contest = _allow_submission_list_view(request, contest_id)
+    queue_ranks = store.pending_queue_ranks(contest_id=contest_id)
     if not participant or _is_ended(contest):
-        items = []
-        for submission in store.submissions.values():
-            if submission.contest_id == contest_id and (not division_id or submission.division_id == division_id):
-                if _is_operator_test_submission(submission):
-                    continue
-                if problem_id and submission.problem_id != problem_id:
-                    continue
-                items.append(_participant_submission_payload(submission, include_source=False))
-        items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
-        sliced, next_cursor = _page_slice(items, limit, cursor)
+        submissions, next_cursor, total_count = store.list_submissions(
+            contest_id=contest_id,
+            division_id=division_id,
+            problem_id=problem_id,
+            exclude_operator_tests=True,
+            include_source=False,
+            limit=limit,
+            cursor=cursor,
+        )
+        source_lengths = store.submission_source_lengths([submission.submission_id for submission in submissions])
+        items = [
+            _participant_submission_payload(
+                submission,
+                include_source=False,
+                queue_position=queue_ranks.get(submission.submission_id),
+                source_code_length=source_lengths.get(submission.submission_id),
+            )
+            for submission in submissions
+        ]
         return page(
             request,
-            sliced,
+            items,
             next_cursor=next_cursor,
             limit=max(1, min(limit, 300)),
-            total_count=len(items),
+            total_count=total_count,
             current_cursor=cursor,
         )
+    submissions, next_cursor, total_count = store.list_submissions(
+        contest_id=contest_id,
+        problem_id=problem_id,
+        participant_team_id=participant["team"].participant_team_id,
+        include_source=include_source,
+        limit=limit,
+        cursor=cursor,
+    )
+    source_lengths = store.submission_source_lengths([submission.submission_id for submission in submissions])
     items = [
-        _participant_submission_payload(s, include_source=include_source)
-        for s in store.submissions.values()
-        if s.contest_id == contest_id and s.participant_team_id == participant["team"].participant_team_id
-        and (not problem_id or s.problem_id == problem_id)
+        _participant_submission_payload(
+            submission,
+            include_source=include_source,
+            queue_position=queue_ranks.get(submission.submission_id),
+            source_code_length=source_lengths.get(submission.submission_id),
+        )
+        for submission in submissions
     ]
-    items.sort(key=lambda item: item.get("submitted_at", ""), reverse=True)
-    sliced, next_cursor = _page_slice(items, limit, cursor)
     return page(
         request,
-        sliced,
+        items,
         next_cursor=next_cursor,
         limit=max(1, min(limit, 300)),
-        total_count=len(items),
+        total_count=total_count,
         current_cursor=cursor,
     )
 
@@ -580,7 +595,7 @@ async def submissions(
 @router.get("/contests/{contest_id}/submissions/{submission_id}")
 async def submission_detail(contest_id: str, submission_id: str, request: Request):
     participant = _require_contest_participant(request, contest_id)
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id)
     if not submission or submission.contest_id != contest_id or submission.participant_team_id != participant["team"].participant_team_id:
         raise not_found()
     return ok(request, _participant_submission_payload(submission, include_source=True))
@@ -595,20 +610,23 @@ async def wait_submission_status(
     poll_interval_seconds: float = 0.25,
 ):
     participant = _require_contest_participant(request, contest_id)
-    submission = store.submissions.get(submission_id)
+    submission = store.get_submission(submission_id, include_source=False)
     if not submission or submission.contest_id != contest_id or submission.participant_team_id != participant["team"].participant_team_id:
         raise not_found()
     wait_budget = max(0.0, min(wait_seconds, 10.0))
     poll = max(0.1, min(poll_interval_seconds, 1.0))
     loops = max(1, int(wait_budget / poll))
     for _ in range(loops):
-        updated = store.submissions.get(submission_id)
+        updated = store.get_submission(submission_id, include_source=False)
         if not updated:
             raise not_found()
         if updated.status not in {"waiting", "preparing", "judging"}:
-            return ok(request, _participant_submission_payload(updated, include_source=True))
+            full = store.get_submission(submission_id)
+            if not full:
+                raise not_found()
+            return ok(request, _participant_submission_payload(full, include_source=True))
         await asyncio.sleep(poll)
-    latest = store.submissions.get(submission_id)
+    latest = store.get_submission(submission_id)
     if not latest:
         raise not_found()
     return ok(request, _participant_submission_payload(latest, include_source=True))

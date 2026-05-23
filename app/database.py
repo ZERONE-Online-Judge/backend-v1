@@ -27,6 +27,14 @@ def create_schema() -> None:
     from app import orm_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_submitted_id ON submissions (submitted_at DESC, submission_id DESC)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_contest_submitted_id ON submissions (contest_id, submitted_at DESC, submission_id DESC)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_contest_division_submitted_id ON submissions (contest_id, division_id, submitted_at DESC, submission_id DESC)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_contest_team_submitted_id ON submissions (contest_id, participant_team_id, submitted_at DESC, submission_id DESC)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_contest_problem_submitted_id ON submissions (contest_id, problem_id, submitted_at DESC, submission_id DESC)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_judge_jobs_contest_status_queue ON judge_jobs (contest_id, status, queue_position)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_judge_jobs_submission_created ON judge_jobs (submission_id, created_at DESC)"))
     if settings.database_url.startswith("sqlite"):
         inspector = inspect(engine)
         if "judge_jobs" in inspector.get_table_names():
