@@ -44,6 +44,11 @@ def _create_index_if_missing(index_name: str, table_name: str, columns: list[str
         op.create_index(index_name, table_name, columns)
 
 
+def _drop_index_if_exists(index_name: str, table_name: str) -> None:
+    if _has_index(table_name, index_name):
+        op.drop_index(index_name, table_name=table_name)
+
+
 def upgrade() -> None:
     _add_column_if_missing(
         "contests",
@@ -52,6 +57,22 @@ def upgrade() -> None:
     _add_column_if_missing(
         "contests",
         sa.Column("mock_judging_progress_visible", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
+
+    if not _has_table("judge_agent_logs"):
+        op.create_table(
+            "judge_agent_logs",
+            sa.Column("judge_agent_log_id", sa.String(length=36), primary_key=True),
+            sa.Column("judge_node_id", sa.String(length=36), nullable=False),
+            sa.Column("node_name", sa.String(length=120), nullable=False),
+            sa.Column("level", sa.String(length=16), nullable=False, server_default="info"),
+            sa.Column("message", sa.Text(), nullable=False),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        )
+    _create_index_if_missing(
+        "idx_judge_agent_logs_node_created",
+        "judge_agent_logs",
+        ["judge_node_id", "created_at", "judge_agent_log_id"],
     )
 
     if not _has_table("operational_audit_logs"):
@@ -92,9 +113,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("idx_operational_audit_actor_created", table_name="operational_audit_logs")
-    op.drop_index("idx_operational_audit_contest_created", table_name="operational_audit_logs")
-    op.drop_index("idx_operational_audit_scope_created", table_name="operational_audit_logs")
-    op.drop_table("operational_audit_logs")
-    op.drop_column("contests", "mock_judging_progress_visible")
-    op.drop_column("contests", "participant_progress_visible")
+    _drop_index_if_exists("idx_operational_audit_actor_created", "operational_audit_logs")
+    _drop_index_if_exists("idx_operational_audit_contest_created", "operational_audit_logs")
+    _drop_index_if_exists("idx_operational_audit_scope_created", "operational_audit_logs")
+    if _has_table("operational_audit_logs"):
+        op.drop_table("operational_audit_logs")
+    _drop_index_if_exists("idx_judge_agent_logs_node_created", "judge_agent_logs")
+    if _has_table("judge_agent_logs"):
+        op.drop_table("judge_agent_logs")
+    if _has_column("contests", "mock_judging_progress_visible"):
+        op.drop_column("contests", "mock_judging_progress_visible")
+    if _has_column("contests", "participant_progress_visible"):
+        op.drop_column("contests", "participant_progress_visible")

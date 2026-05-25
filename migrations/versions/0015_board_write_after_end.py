@@ -15,12 +15,19 @@ branch_labels = None
 depends_on = None
 
 
+def _has_column(table_name: str, column_name: str) -> bool:
+    bind = op.get_bind()
+    return column_name in {column["name"] for column in sa.inspect(bind).get_columns(table_name)}
+
+
 def upgrade() -> None:
-    op.add_column(
-        "contests",
-        sa.Column("board_write_after_end", sa.Boolean(), nullable=False, server_default=sa.false()),
-    )
+    if not _has_column("contests", "board_write_after_end"):
+        op.add_column(
+            "contests",
+            sa.Column("board_write_after_end", sa.Boolean(), nullable=False, server_default=sa.false()),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("contests", "board_write_after_end")
+    if _has_column("contests", "board_write_after_end"):
+        op.drop_column("contests", "board_write_after_end")
