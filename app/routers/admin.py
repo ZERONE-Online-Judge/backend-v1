@@ -326,6 +326,28 @@ async def judge_dashboard(
     )
 
 
+@router.get("/admin/judge/nodes/{node_id}/logs")
+async def judge_node_logs(
+    node_id: str,
+    request: Request,
+    limit: int = 200,
+    cursor: str | None = None,
+):
+    require_service_master(request)
+    result = store.list_judge_agent_logs(node_id, limit=limit, cursor=cursor)
+    if result is None:
+        raise not_found()
+    logs, next_cursor, total_count = result
+    return page(
+        request,
+        [item.model_dump(mode="json") for item in logs],
+        next_cursor=next_cursor,
+        limit=max(1, min(limit, 500)),
+        total_count=total_count,
+        current_cursor=cursor,
+    )
+
+
 @router.get("/admin/judge/submissions")
 async def judge_submissions(
     request: Request,

@@ -58,6 +58,16 @@ class LeaseRenewRequest(BaseModel):
     lease_token: str
 
 
+class AgentLogItem(BaseModel):
+    level: str = "info"
+    message: str
+
+
+class AgentLogsRequest(BaseModel):
+    node_secret: str
+    logs: list[AgentLogItem]
+
+
 @router.post("/internal/judge/nodes/register")
 async def register_node(payload: RegisterNodeRequest, request: Request):
     try:
@@ -90,6 +100,22 @@ async def heartbeat(node_id: str, payload: HeartbeatRequest, request: Request):
     if not node:
         raise not_found()
     return ok(request, node.model_dump(mode="json"))
+
+
+@router.post("/internal/judge/nodes/{node_id}/logs")
+async def append_node_logs(node_id: str, payload: AgentLogsRequest, request: Request):
+    try:
+        accepted = await asyncio.to_thread(
+            store.append_judge_agent_logs,
+            node_id,
+            payload.node_secret,
+            [item.model_dump() for item in payload.logs],
+        )
+    except ValueError:
+        raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
+    if accepted is None:
+        raise not_found()
+    return ok(request, {"accepted": accepted})
 
 
 @router.post("/internal/judge/nodes/{node_id}/assignments:claim")

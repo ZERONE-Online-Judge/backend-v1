@@ -2367,6 +2367,46 @@ def test_judge_node_secret_is_required_for_claim_and_result():
     assert result_denied.json()["error"]["code"] == "node_secret_invalid"
 
 
+def test_service_master_can_view_judge_agent_logs():
+    master = staff_tokens("test3@zoj.com")
+    node_secret = f"log-secret-{uuid4().hex[:6]}"
+    node = client.post(
+        "/api/internal/judge/nodes/register",
+        json={"node_name": f"log-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 1},
+    )
+    assert node.status_code == 200
+    node_id = node.json()["data"]["judge_node_id"]
+
+    denied = client.post(
+        f"/api/internal/judge/nodes/{node_id}/logs",
+        json={"node_secret": "wrong", "logs": [{"level": "info", "message": "should not be stored"}]},
+    )
+    assert denied.status_code == 403
+
+    appended = client.post(
+        f"/api/internal/judge/nodes/{node_id}/logs",
+        json={
+            "node_secret": node_secret,
+            "logs": [
+                {"level": "info", "message": "[judge-agent] claimed job"},
+                {"level": "error", "message": "[judge-agent] heartbeat failed"},
+            ],
+        },
+    )
+    assert appended.status_code == 200
+    assert appended.json()["data"]["accepted"] == 2
+
+    logs = client.get(
+        f"/api/admin/judge/nodes/{node_id}/logs",
+        headers=auth_headers(master["access_token"]),
+    )
+    assert logs.status_code == 200
+    messages = [item["message"] for item in logs.json()["data"]]
+    assert "[judge-agent] heartbeat failed" in messages
+    assert "[judge-agent] claimed job" in messages
+    assert logs.json()["page"]["total_count"] >= 2
+
+
 def test_submission_progress_is_updated_during_judging():
     contest_id, login = participant_login()
     advanced_division = login["division"]

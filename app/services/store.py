@@ -6,7 +6,7 @@ import json
 import math
 import secrets
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only, selectinload
 
@@ -22,6 +22,7 @@ from app.models import (
     ContactInquiry,
     ScoreboardFreezeMode,
     ContestStatus,
+    JudgeAgentLog,
     JudgeJob,
     JudgeJobStatus,
     JudgeNode,
@@ -50,6 +51,7 @@ from app.orm_models import (
     ContactInquiryRow,
     GeneralSessionRow,
     BundleWarmQueueItemRow,
+    JudgeAgentLogRow,
     JudgeJobRow,
     JudgeNodeRow,
     MailQueueItemRow,
@@ -304,6 +306,17 @@ def _node(row: JudgeNodeRow) -> JudgeNode:
         agent_version=row.agent_version,
         last_heartbeat_at=_aware(row.last_heartbeat_at),
         schedulable=row.schedulable,
+    )
+
+
+def _agent_log(row: JudgeAgentLogRow) -> JudgeAgentLog:
+    return JudgeAgentLog(
+        judge_agent_log_id=row.judge_agent_log_id,
+        judge_node_id=row.judge_node_id,
+        node_name=row.node_name,
+        level=row.level,
+        message=row.message,
+        created_at=_aware(row.created_at),
     )
 
 
@@ -606,6 +619,37 @@ class DbStore:
         with self._session() as db:
             rows = db.scalars(select(JudgeNodeRow).where(JudgeNodeRow.judge_node_id.in_(ids))).all()
             return {row.judge_node_id: _node(row) for row in rows}
+
+    def list_judge_agent_logs(
+        self,
+        node_id: str,
+        *,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> tuple[list[JudgeAgentLog], str | None, int] | None:
+        safe_limit = max(1, min(limit, 500))
+        try:
+            offset = max(0, int(cursor or "0"))
+        except ValueError:
+            offset = 0
+        with self._session() as db:
+            node = db.get(JudgeNodeRow, node_id)
+            if not node:
+                return None
+            count_stmt = select(func.count()).select_from(JudgeAgentLogRow).where(
+                JudgeAgentLogRow.judge_node_id == node_id
+            )
+            total_count = int(db.scalar(count_stmt) or 0)
+            rows = db.scalars(
+                select(JudgeAgentLogRow)
+                .where(JudgeAgentLogRow.judge_node_id == node_id)
+                .order_by(JudgeAgentLogRow.created_at.desc(), JudgeAgentLogRow.judge_agent_log_id.desc())
+                .offset(offset)
+                .limit(safe_limit)
+            ).all()
+            next_offset = offset + safe_limit
+            next_cursor = str(next_offset) if next_offset < total_count else None
+            return [_agent_log(row) for row in rows], next_cursor, total_count
 
     def count_submissions(self, *, contest_id: str | None = None, division_id: str | None = None) -> int:
         filters = []
@@ -3561,6 +3605,53 @@ class DbStore:
             if not row:
                 return None
             return verify_password(node_secret, row.node_secret_hash)
+
+    def append_judge_agent_logs(
+        self,
+        node_id: str,
+        node_secret: str,
+        logs: list[dict],
+        *,
+        keep_per_node: int = 5000,
+    ) -> int | None:
+        if not logs:
+            return 0
+        with self._session() as db:
+            node = db.get(JudgeNodeRow, node_id)
+            if not node:
+                return None
+            if not verify_password(node_secret, node.node_secret_hash):
+                raise ValueError("node secret mismatch")
+            accepted = 0
+            for item in logs[-300:]:
+                message = str(item.get("message") or "").strip("\r\n")
+                if not message:
+                    continue
+                level = str(item.get("level") or "info").strip().lower()[:16] or "info"
+                db.add(
+                    JudgeAgentLogRow(
+                        judge_node_id=node.judge_node_id,
+                        node_name=node.node_name,
+                        level=level,
+                        message=message[-8000:],
+                    )
+                )
+                accepted += 1
+            db.flush()
+            stale_ids = db.scalars(
+                select(JudgeAgentLogRow.judge_agent_log_id)
+                .where(JudgeAgentLogRow.judge_node_id == node_id)
+                .order_by(JudgeAgentLogRow.created_at.desc(), JudgeAgentLogRow.judge_agent_log_id.desc())
+                .offset(max(1, keep_per_node))
+            ).all()
+            if stale_ids:
+                db.execute(
+                    delete(JudgeAgentLogRow).where(
+                        JudgeAgentLogRow.judge_agent_log_id.in_(stale_ids)
+                    )
+                )
+            db.commit()
+            return accepted
 
     def update_node_heartbeat(
         self,

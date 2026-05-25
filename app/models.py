@@ -300,6 +300,15 @@ class JudgeNode(BaseModel):
     schedulable: bool = True
 
 
+class JudgeAgentLog(BaseModel):
+    judge_agent_log_id: str = Field(default_factory=new_id)
+    judge_node_id: str
+    node_name: str
+    level: str = "info"
+    message: str
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 def demo_times() -> tuple[datetime, datetime, datetime]:
     start = now_utc() - timedelta(hours=1)
     end = now_utc() + timedelta(hours=3)

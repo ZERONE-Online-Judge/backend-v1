@@ -325,6 +325,17 @@ class JudgeNodeRow(Base):
     schedulable: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class JudgeAgentLogRow(Base):
+    __tablename__ = "judge_agent_logs"
+
+    judge_agent_log_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    judge_node_id: Mapped[str] = mapped_column(String(36), index=True)
+    node_name: Mapped[str] = mapped_column(String(120), index=True)
+    level: Mapped[str] = mapped_column(String(16), default="info", index=True)
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
 class OtpCodeRow(Base):
     __tablename__ = "otp_codes"
 
