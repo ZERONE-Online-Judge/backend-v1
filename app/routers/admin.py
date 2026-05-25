@@ -8,6 +8,7 @@ from app.models import ContestStatus, JudgeNode, now_utc
 from app.settings import settings
 from app.services.authz import require_service_master
 from app.services.errors import AppError, not_found
+from app.services.mail_templates import render_branded_email
 from app.services.responses import ok, page
 from app.services.store import store
 
@@ -157,7 +158,7 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
         store.enqueue_mail(
             "contest_operator_assigned",
             str(payload.operator_email),
-            f"[Zerone OJ] {contest.title} operator assignment",
+            f"[ZOJ] {contest.title} operator assignment",
             "\n".join(
                 [
                     f"You have been assigned as an operator for {contest.title}.",
@@ -197,7 +198,7 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
         store.enqueue_mail(
             "contest_operator_assigned",
             str(payload.email),
-            f"[Zerone OJ] {contest.title} operator assignment",
+            f"[ZOJ] {contest.title} operator assignment",
             "\n".join(
                 [
                     f"You have been assigned as an operator for {contest.title}.",
@@ -269,7 +270,7 @@ async def answer_contact_inquiry(inquiry_id: str, payload: ContactInquiryAnswerR
     store.enqueue_mail(
         "contact_inquiry_answered",
         str(inquiry.sender_email),
-        f"[Zerone OJ] 문의 답변: {inquiry.title}",
+        f"[ZOJ] 문의 답변: {inquiry.title}",
         "\n".join(
             [
                 f"{inquiry.sender_name}님, 안녕하세요.",
@@ -277,12 +278,29 @@ async def answer_contact_inquiry(inquiry_id: str, payload: ContactInquiryAnswerR
                 "",
                 f"문의 제목: {inquiry.title}",
                 "",
-                "답변:",
+                "새 답변:",
                 answer_body,
                 "",
                 "문의 내용:",
                 inquiry.body,
             ]
+        ),
+        render_branded_email(
+            title=f"문의 답변: {inquiry.title}",
+            preheader="문의하신 내용에 대한 답변을 전달드립니다.",
+            body=[
+                f"{inquiry.sender_name}님, 안녕하세요.",
+                "문의하신 내용에 대한 답변을 전달드립니다.",
+            ],
+            meta=[
+                ("문의 제목", inquiry.title),
+                ("답변자", str(account.email)),
+                ("답변 시각", inquiry.answered_at.isoformat() if inquiry.answered_at else "-"),
+            ],
+            sections=[
+                ("새 답변", answer_body),
+                ("문의 본문", inquiry.body),
+            ],
         ),
     )
     return ok(request, inquiry.model_dump(mode="json"))

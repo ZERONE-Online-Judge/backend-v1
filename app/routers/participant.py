@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, now_utc
 from app.services.authz import bearer_token, require_participant
 from app.services.errors import AppError, authentication_required, invalid_state, not_found
+from app.services.mail_templates import absolute_url, render_branded_email
 from app.services.responses import ok, page
 from app.services.store import OPERATOR_TEST_TEAM_PREFIX, store
 from app.services.storage import object_storage
@@ -513,16 +514,20 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
             for account in store.contest_operator_accounts(contest_id)
             if not account.is_service_master
         ]
-        subject = f"[Zerone OJ] 새 질문 · {contest.title}"
+        subject = f"[ZOJ] 새 질문 · {contest.title}"
+        question_url = absolute_url(f"/operator/contests/{contest_id}/board?questionId={question.contest_question_id}")
         body_lines = [
-            f"Contest: {contest.title}",
-            f"Division: {participant['division'].name}",
-            f"Team: {participant['team'].team_name}",
-            f"Author: {participant['member'].name} <{participant['member'].email}>",
-            f"Visibility: {question.visibility}",
-            f"Title: {question.title}",
+            f"대회: {contest.title}",
+            f"유형: {participant['division'].name}",
+            f"팀: {participant['team'].team_name}",
+            f"작성자: {participant['member'].name} <{participant['member'].email}>",
+            f"공개 범위: {question.visibility}",
+            f"제목: {question.title}",
             "",
+            "질문 본문:",
             question.body,
+            "",
+            f"바로가기: {question_url}",
         ]
         notified = set()
         for account in operator_accounts:
@@ -530,7 +535,28 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
             if not email or email in notified:
                 continue
             notified.add(email)
-            store.enqueue_mail("contest_question_created", email, subject, "\n".join(body_lines))
+            store.enqueue_mail(
+                "contest_question_created",
+                email,
+                subject,
+                "\n".join(body_lines),
+                render_branded_email(
+                    title="새 질문이 등록되었습니다",
+                    preheader=question.title,
+                    body=[f"{contest.title}에 새 질문이 등록되었습니다."],
+                    meta=[
+                        ("대회", contest.title),
+                        ("유형", participant["division"].name),
+                        ("팀", participant["team"].team_name),
+                        ("작성자", f"{participant['member'].name} <{participant['member'].email}>"),
+                        ("공개 범위", question.visibility),
+                        ("제목", question.title),
+                    ],
+                    sections=[("질문 본문", question.body)],
+                    button_label="질문 확인하기",
+                    button_url=question_url,
+                ),
+            )
     return ok(request, question.model_dump(mode="json"))
 
 

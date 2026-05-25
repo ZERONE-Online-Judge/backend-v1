@@ -14,6 +14,7 @@ from pydantic import BaseModel, EmailStr
 from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import require_contest_staff, require_staff
 from app.services.errors import AppError, not_found
+from app.services.mail_templates import absolute_url, render_branded_email
 from app.services.package_builder import PackageBuildError, build_problem_package, package_role
 from app.services.responses import ok, page
 from app.settings import settings
@@ -538,7 +539,7 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
         store.notify_contest_operators(
             contest_id,
             "contest_settings_updated",
-            f"[Zerone OJ] {updated.title} settings updated",
+            f"[ZOJ] {updated.title} settings updated",
             "\n".join(
                 [
                     f"Contest: {updated.title}",
@@ -575,7 +576,7 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
         store.enqueue_mail(
             "contest_operator_assigned",
             str(payload.email),
-            f"[Zerone OJ] {contest.title} operator assignment",
+            f"[ZOJ] {contest.title} operator assignment",
             "\n".join(
                 [
                     f"Contest: {contest.title}",
@@ -698,17 +699,40 @@ async def create_answer(contest_id: str, question_id: str, payload: ContestAnswe
     contest = store.contests.get(contest_id)
     if question and contest:
         recipient_emails = store.participant_team_member_emails(contest_id, question.participant_team_id)
-        subject = f"[Zerone OJ] 질문 답변 등록 · {contest.title}"
+        subject = f"[ZOJ] 질문 답변 등록 · {contest.title}"
+        question_url = absolute_url(f"/contests/{contest_id}/board?questionId={question.contest_question_id}")
         body_lines = [
-            f"Contest: {contest.title}",
-            f"Question title: {question.title}",
-            f"Answer visibility: {answer.visibility}",
-            f"Answered by: {account.display_name} <{account.email}>",
+            f"대회: {contest.title}",
+            f"질문 제목: {question.title}",
+            f"답변 공개 범위: {answer.visibility}",
+            f"답변자: {account.display_name} <{account.email}>",
             "",
+            "답변 본문:",
             answer.body,
+            "",
+            f"바로가기: {question_url}",
         ]
         for email in recipient_emails:
-            store.enqueue_mail("contest_question_answered", email, subject, "\n".join(body_lines))
+            store.enqueue_mail(
+                "contest_question_answered",
+                email,
+                subject,
+                "\n".join(body_lines),
+                render_branded_email(
+                    title="질문에 답변이 등록되었습니다",
+                    preheader=question.title,
+                    body=[f"{contest.title} 질문에 답변이 등록되었습니다."],
+                    meta=[
+                        ("대회", contest.title),
+                        ("질문 제목", question.title),
+                        ("공개 범위", answer.visibility),
+                        ("답변자", f"{account.display_name} <{account.email}>"),
+                    ],
+                    sections=[("답변 본문", answer.body), ("질문 본문", question.body)],
+                    button_label="답변 확인하기",
+                    button_url=question_url,
+                ),
+            )
     return ok(request, answer.model_dump(mode="json"))
 
 

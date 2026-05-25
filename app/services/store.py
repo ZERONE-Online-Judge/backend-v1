@@ -1261,7 +1261,7 @@ class DbStore:
             self.enqueue_mail(
                 mail_type="staff_otp",
                 recipient_email=email,
-                subject="[Zerone OJ] Staff login verification code",
+                subject="[ZOJ] Staff login verification code",
                 body_text=f"Your staff login verification code is {code}. It expires in {settings.otp_ttl_seconds // 60} minutes.",
             )
             return code
@@ -1292,7 +1292,7 @@ class DbStore:
             self.enqueue_mail(
                 mail_type="general_password_otp",
                 recipient_email=email,
-                subject="[Zerone OJ] Admin login verification code",
+                subject="[ZOJ] Admin login verification code",
                 body_text=f"관리자 로그인 인증번호는 {code} 입니다. {settings.otp_ttl_seconds // 60}분 안에 입력하세요.",
             )
             return code
@@ -1358,7 +1358,7 @@ class DbStore:
             self.enqueue_mail(
                 mail_type="general_otp",
                 recipient_email=email,
-                subject="[Zerone OJ] Login verification code",
+                subject="[ZOJ] Login verification code",
                 body_text=f"인증번호는 {code} 입니다. {settings.otp_ttl_seconds // 60}분 안에 입력하세요.",
             )
             return code
@@ -2334,7 +2334,14 @@ class DbStore:
             if not row:
                 return None
             now = now_utc()
-            row.answer_body = answer_body
+            previous_answer = (row.answer_body or "").strip()
+            answer_header = f"[{now.isoformat()}] {answered_by_email}"
+            next_answer = f"{answer_header}\n{answer_body}"
+            row.answer_body = (
+                f"{previous_answer}\n\n---\n\n{next_answer}"
+                if previous_answer
+                else next_answer
+            )
             row.answered_by_email = answered_by_email
             row.answered_at = now
             row.updated_at = now

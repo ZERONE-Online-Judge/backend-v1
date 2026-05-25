@@ -35,6 +35,7 @@ def render_branded_email(
     button_label: str | None = None,
     button_url: str | None = None,
     meta: list[tuple[str, str]] | None = None,
+    sections: list[tuple[str, str]] | None = None,
 ) -> str:
     body_html = "".join(
         f'<p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.7">{escape(line)}</p>'
@@ -54,6 +55,17 @@ def render_branded_email(
             </tr>
             """
         meta_html += "</table>"
+    section_html = ""
+    if sections:
+        for label, value in sections:
+            if not value.strip():
+                continue
+            section_html += f"""
+            <div style="margin:18px 0 0;border:1px solid #cbd5e1;border-radius:9px;overflow:hidden;background:#f8fafc">
+              <div style="background:#eef2ff;border-bottom:1px solid #cbd5e1;padding:10px 13px;color:#4338ca;font-size:12px;font-weight:900;line-height:1.4">{escape(label)}</div>
+              <div style="white-space:pre-wrap;padding:14px 13px;color:#0f172a;font-size:14px;line-height:1.7;font-weight:700">{escape(value.strip())}</div>
+            </div>
+            """
     button_html = ""
     if button_label and button_url:
         button_html = f"""
@@ -86,6 +98,7 @@ def render_branded_email(
                 <h1 style="margin:0 0 16px;color:#0f172a;font-size:24px;line-height:1.35;letter-spacing:0;font-weight:900">{escape(title)}</h1>
                 {body_html}
                 {meta_html}
+                {section_html}
                 {button_html}
               </td>
             </tr>
@@ -111,8 +124,12 @@ def render_basic_html(subject: str, body_text: str) -> str:
     )
 
 
+def labeled_text_section(label: str, value: str) -> list[str]:
+    return [f"{label}:", value.strip()]
+
+
 def participant_invite_mail(*, contest_title: str, organization_name: str, team_name: str, division_name: str, contest_url: str) -> MailContent:
-    subject = f"[Zerone OJ] {contest_title} 대회에 초대되었습니다"
+    subject = f"[ZOJ] {contest_title} 대회에 초대되었습니다"
     body = [
         f"{team_name} 팀이 {contest_title} 대회에 참가팀으로 등록되었습니다.",
         "아래 버튼에서 대회 페이지로 이동한 뒤, 등록된 이메일로 로그인하면 문제와 공지, 제출 현황을 확인할 수 있습니다.",
@@ -139,7 +156,7 @@ def participant_invite_mail(*, contest_title: str, organization_name: str, team_
 
 
 def contest_reminder_mail(*, contest_title: str, organization_name: str, team_name: str, division_name: str, starts_at: datetime, remaining_label: str, contest_url: str) -> MailContent:
-    subject = f"[Zerone OJ] {contest_title} 시작 {remaining_label} 전 안내"
+    subject = f"[ZOJ] {contest_title} 시작 {remaining_label} 전 안내"
     starts_at_text = format_korean_datetime(starts_at)
     body = [
         f"{contest_title} 시작이 {remaining_label} 남았습니다.",
@@ -177,7 +194,7 @@ def contest_notice_mail(
     pinned: bool,
     emergency: bool,
 ) -> MailContent:
-    subject = f"[Zerone OJ] {contest_title} 공지: {notice_title}"
+    subject = f"[ZOJ] {contest_title} 공지: {notice_title}"
     labels = []
     if pinned:
         labels.append("고정")
@@ -186,7 +203,6 @@ def contest_notice_mail(
     notice_type = " · ".join(labels) if labels else "공지"
     body = [
         f"{contest_title}에 새 공지가 등록되었습니다.",
-        notice_body.strip(),
     ]
     meta = [
         ("대회", contest_title),
@@ -199,6 +215,7 @@ def contest_notice_mail(
             *body,
             "",
             f"구분: {notice_type}",
+            *labeled_text_section("공지 본문", notice_body),
             f"바로가기: {notice_url}",
         ]
     )
@@ -210,6 +227,7 @@ def contest_notice_mail(
             preheader=f"{contest_title} 새 공지",
             body=body,
             meta=meta,
+            sections=[("공지 본문", notice_body)],
             button_label="공지 확인하기",
             button_url=notice_url,
         ),

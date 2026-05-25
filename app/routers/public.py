@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 from app.models import now_utc
 from app.settings import settings
 from app.services.errors import not_found
+from app.services.mail_templates import render_branded_email
 from app.services.responses import ok, page
 from app.services.store import store
 
@@ -91,7 +92,7 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
         str(payload.sender_email).strip(),
         payload.body.strip(),
     )
-    subject = f"[Zerone OJ] 서비스 문의 접수: {inquiry.title}"
+    subject = f"[ZOJ] 서비스 문의 접수: {inquiry.title}"
     body_text = "\n".join(
         [
             "서비스 문의가 접수되었습니다.",
@@ -102,14 +103,35 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
             f"이메일: {inquiry.sender_email}",
             f"접수 시각: {inquiry.created_at.isoformat()}",
             "",
-            "본문:",
+            "문의 본문:",
             inquiry.body,
             "",
             "서비스 관리자 페이지에서 답변을 등록하면 문의자에게 이메일이 발송됩니다.",
         ]
     )
     for email in _service_master_emails():
-        store.enqueue_mail("contact_inquiry_created", email, subject, body_text)
+        store.enqueue_mail(
+            "contact_inquiry_created",
+            email,
+            subject,
+            body_text,
+            render_branded_email(
+                title="서비스 문의가 접수되었습니다",
+                preheader=inquiry.title,
+                body=[
+                    "서비스 문의가 접수되었습니다.",
+                    "서비스 관리자 페이지에서 답변을 등록하면 문의자에게 이메일이 발송됩니다.",
+                ],
+                meta=[
+                    ("문의 ID", inquiry.contact_inquiry_id),
+                    ("제목", inquiry.title),
+                    ("이름", inquiry.sender_name),
+                    ("이메일", str(inquiry.sender_email)),
+                    ("접수 시각", inquiry.created_at.isoformat()),
+                ],
+                sections=[("문의 본문", inquiry.body)],
+            ),
+        )
     return ok(request, inquiry.model_dump(mode="json"))
 
 

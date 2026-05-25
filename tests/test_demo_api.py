@@ -217,6 +217,7 @@ def test_contest_notice_and_board_flow():
         and item["recipient_email"] == "test2@zoj.com"
         and "공지" in item["subject"]
         and "공지 확인하기" in item["body_html"]
+        and "공지 본문" in item["body_html"]
         for item in mail_queue.json()["data"]
     )
 
@@ -226,6 +227,14 @@ def test_contest_notice_and_board_flow():
         json={"title": "비공개 질문", "body": "질문 내용", "visibility": "private"},
     )
     assert question.status_code == 200
+    question_mail = [
+        item
+        for item in client.get("/api/admin/mail-queue", headers=auth_headers(staff_tokens()["access_token"])).json()["data"]
+        if item["mail_type"] == "contest_question_created"
+        and "비공개 질문" in item["body_text"]
+    ]
+    assert question_mail
+    assert any("질문 본문" in (item["body_html"] or "") for item in question_mail)
     question_id = question.json()["data"]["contest_question_id"]
     assert question.json()["data"]["author_name"] == participant["member"]["name"]
     assert question.json()["data"]["team_name"] == participant["team"]["team_name"]
@@ -267,6 +276,15 @@ def test_contest_notice_and_board_flow():
         json={"body": "질문자 전용 답변", "visibility": "questioner"},
     )
     assert answer.status_code == 200
+    answer_mail = [
+        item
+        for item in client.get("/api/admin/mail-queue", headers=auth_headers(staff_tokens()["access_token"])).json()["data"]
+        if item["mail_type"] == "contest_question_answered"
+        and "질문자 전용 답변" in item["body_text"]
+    ]
+    assert answer_mail
+    assert any("답변 본문" in (item["body_html"] or "") for item in answer_mail)
+    assert any("질문 본문" in (item["body_html"] or "") for item in answer_mail)
     assert answer.json()["data"]["created_by_role"] == "operator"
     assert answer.json()["data"]["created_by_name"] == operator["staff"]["display_name"]
     assert answer.json()["data"]["created_by_team_name"] is None
@@ -1522,6 +1540,7 @@ def test_public_contact_inquiry_can_be_answered_by_service_master():
     assert any(
         item["mail_type"] == "contact_inquiry_created"
         and "문의 제목" in item["subject"]
+        and "문의 본문" in item["body_html"]
         for item in client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"])).json()["data"]
     )
 
@@ -1539,11 +1558,24 @@ def test_public_contact_inquiry_can_be_answered_by_service_master():
     )
     assert answered.status_code == 200
     assert answered.json()["data"]["status"] == "answered"
+    assert "답변 본문입니다." in answered.json()["data"]["answer_body"]
+    answered_again = client.post(
+        f"/api/admin/contact-inquiries/{inquiry['contact_inquiry_id']}/answer",
+        headers=auth_headers(master["access_token"]),
+        json={"answer_body": "추가 답변입니다."},
+    )
+    assert answered_again.status_code == 200
+    accumulated_answer = answered_again.json()["data"]["answer_body"]
+    assert "답변 본문입니다." in accumulated_answer
+    assert "추가 답변입니다." in accumulated_answer
+    assert accumulated_answer.count("---") >= 1
     mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
     assert any(
         item["mail_type"] == "contact_inquiry_answered"
         and item["recipient_email"] == "asker@example.com"
         and "답변 본문입니다." in item["body_text"]
+        and "새 답변" in item["body_html"]
+        and "문의 본문" in item["body_html"]
         for item in mail_queue.json()["data"]
     )
 
