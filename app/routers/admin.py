@@ -286,6 +286,40 @@ async def admin_audit_logs(
     )
 
 
+@router.get("/admin/access-logs")
+async def admin_access_logs(
+    request: Request,
+    account_scope: str | None = None,
+    contest_id: str | None = None,
+    email: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+):
+    require_service_master(request)
+    safe_scope = account_scope if account_scope in {"general", "participant"} else None
+    logs, next_cursor, total_count = store.list_access_logs(
+        account_scope=safe_scope,
+        contest_id=contest_id or None,
+        email=email or None,
+        limit=limit,
+        cursor=cursor,
+    )
+    return page(
+        request,
+        [item.model_dump(mode="json") for item in logs],
+        next_cursor=next_cursor,
+        limit=max(1, min(limit, 300)),
+        total_count=total_count,
+        current_cursor=cursor,
+    )
+
+
+@router.get("/admin/access-log-stats")
+async def admin_access_log_stats(request: Request, contest_id: str | None = None):
+    require_service_master(request)
+    return ok(request, store.access_log_stats(contest_id=contest_id or None))
+
+
 @router.post("/admin/contact-inquiries/{inquiry_id}/answer")
 async def answer_contact_inquiry(inquiry_id: str, payload: ContactInquiryAnswerRequest, request: Request):
     account = require_service_master(request)

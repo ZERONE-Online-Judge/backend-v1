@@ -18,7 +18,7 @@ from app.settings import settings
 app = FastAPI(title="Zerone Online Judge API", version="0.1.0")
 
 AUDITED_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
-AUDIT_BODY_MAX_BYTES = 64 * 1024
+AUDIT_BODY_MAX_BYTES = 256 * 1024
 AUDIT_REDACTED_KEYS = {
     "access_token",
     "node_secret",
@@ -27,7 +27,7 @@ AUDIT_REDACTED_KEYS = {
     "source_code",
     "token",
 }
-AUDIT_TRUNCATE_STRING_LENGTH = 240
+AUDIT_TRUNCATE_STRING_LENGTH = 4000
 ID_SEGMENT_PATTERN = re.compile(
     r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.IGNORECASE,
@@ -172,6 +172,51 @@ def _audit_existing_values(path: str) -> dict[str, Any] | None:
     return None
 
 
+def _audit_path_entities(path: str) -> dict[str, str]:
+    patterns = [
+        (r"^/api/operator/contests/([^/]+)/settings$", ["contest_id"]),
+        (r"^/api/operator/contests/([^/]+)/divisions/([^/]+)$", ["contest_id", "division_id"]),
+        (r"^/api/operator/contests/([^/]+)/operators/([^/]+)$", ["contest_id", "operator_email"]),
+        (r"^/api/operator/contests/([^/]+)/notices/([^/]+)$", ["contest_id", "notice_id"]),
+        (r"^/api/operator/contests/([^/]+)/boards/([^/]+)$", ["contest_id", "question_id"]),
+        (
+            r"^/api/operator/contests/([^/]+)/boards/([^/]+)/answers/([^/]+)$",
+            ["contest_id", "question_id", "answer_id"],
+        ),
+        (r"^/api/operator/contests/([^/]+)/participants/([^/]+)$", ["contest_id", "participant_team_id"]),
+        (
+            r"^/api/operator/contests/([^/]+)/participants/([^/]+)/members/([^/]+)(?:/sessions:revoke)?$",
+            ["contest_id", "participant_team_id", "team_member_id"],
+        ),
+        (r"^/api/operator/contests/([^/]+)/problems/([^/]+)$", ["contest_id", "problem_id"]),
+        (
+            r"^/api/operator/contests/([^/]+)/problems/([^/]+)/test-submissions$",
+            ["contest_id", "problem_id"],
+        ),
+        (
+            r"^/api/operator/contests/([^/]+)/problems/([^/]+)/assets/([^/]+)$",
+            ["contest_id", "problem_id", "asset_id"],
+        ),
+        (
+            r"^/api/operator/contests/([^/]+)/problems/([^/]+)/testcase-sets/([^/]+)$",
+            ["contest_id", "problem_id", "testcase_set_id"],
+        ),
+        (
+            r"^/api/operator/contests/([^/]+)/problems/([^/]+)/testcase-sets/([^/]+)/testcases/([^/]+)$",
+            ["contest_id", "problem_id", "testcase_set_id", "testcase_id"],
+        ),
+        (r"^/api/admin/contests/([^/]+)/operators$", ["contest_id"]),
+        (r"^/api/admin/contests/([^/]+)/divisions$", ["contest_id"]),
+        (r"^/api/admin/service-notices/([^/]+)$", ["service_notice_id"]),
+        (r"^/api/admin/contact-inquiries/([^/]+)/answer$", ["contact_inquiry_id"]),
+    ]
+    for pattern, keys in patterns:
+        match = re.match(pattern, path)
+        if match:
+            return dict(zip(keys, match.groups(), strict=False))
+    return {}
+
+
 async def _audit_request_payload(request: Request) -> tuple[Request, dict[str, Any]]:
     content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     content_length = int(request.headers.get("content-length") or "0")
@@ -211,6 +256,7 @@ async def operational_audit_middleware(request: Request, call_next):
     payload_details: dict[str, Any] = {}
     if request.method.upper() in AUDITED_METHODS and scope:
         request, payload_details = await _audit_request_payload(request)
+        payload_details["entities"] = _audit_path_entities(path)
         payload_details["changes"] = _audit_changes(
             payload_details.get("body"),
             _audit_existing_values(path),

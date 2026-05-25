@@ -485,6 +485,40 @@ def test_operator_and_admin_mutations_are_audited():
     )
 
 
+def test_access_logs_and_stats_are_visible():
+    contest_id, participant = participant_login("test2@zoj.com")
+    master = staff_tokens("test3@zoj.com")
+    master_headers = auth_headers(master["access_token"])
+
+    admin_logs = client.get(
+        f"/api/admin/access-logs?contest_id={contest_id}",
+        headers=master_headers,
+    )
+    assert admin_logs.status_code == 200
+    admin_entries = admin_logs.json()["data"]
+    assert any(
+        entry["event_type"] == "participant_login"
+        and entry["contest_id"] == contest_id
+        and entry["email"] == participant["member"]["email"]
+        and entry["team_name"] == participant["team"]["team_name"]
+        for entry in admin_entries
+    )
+
+    operator_logs = client.get(
+        f"/api/operator/contests/{contest_id}/access-logs",
+        headers=master_headers,
+    )
+    assert operator_logs.status_code == 200
+    assert operator_logs.json()["page"]["total_count"] >= 1
+
+    stats = client.get(
+        f"/api/operator/contests/{contest_id}/access-log-stats",
+        headers=master_headers,
+    )
+    assert stats.status_code == 200
+    assert stats.json()["data"]["success_count"] >= 1
+
+
 def test_admin_service_notice_management():
     admin = staff_tokens("test3@zoj.com")
     created = client.post(

@@ -329,6 +329,27 @@ class OperationalAuditLog(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 
+class AccessLog(BaseModel):
+    access_log_id: str = Field(default_factory=new_id)
+    event_type: str
+    account_scope: str
+    email: EmailStr | None = None
+    display_name: str | None = None
+    contest_id: str | None = None
+    contest_title: str | None = None
+    participant_team_id: str | None = None
+    team_name: str | None = None
+    team_member_id: str | None = None
+    member_name: str | None = None
+    actor_role: str | None = None
+    session_id: str | None = None
+    client_ip: str | None = None
+    user_agent: str | None = None
+    request_id: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 def demo_times() -> tuple[datetime, datetime, datetime]:
     start = now_utc() - timedelta(hours=1)
     end = now_utc() + timedelta(hours=3)

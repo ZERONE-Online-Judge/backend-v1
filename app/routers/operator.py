@@ -444,6 +444,41 @@ async def operator_audit_logs(
     )
 
 
+@router.get("/operator/contests/{contest_id}/access-logs")
+async def operator_access_logs(
+    contest_id: str,
+    request: Request,
+    email: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+):
+    require_contest_staff(request, contest_id)
+    if contest_id not in store.contests:
+        raise not_found()
+    logs, next_cursor, total_count = store.list_access_logs(
+        contest_id=contest_id,
+        email=email or None,
+        limit=limit,
+        cursor=cursor,
+    )
+    return page(
+        request,
+        [item.model_dump(mode="json") for item in logs],
+        next_cursor=next_cursor,
+        limit=max(1, min(limit, 300)),
+        total_count=total_count,
+        current_cursor=cursor,
+    )
+
+
+@router.get("/operator/contests/{contest_id}/access-log-stats")
+async def operator_access_log_stats(contest_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    if contest_id not in store.contests:
+        raise not_found()
+    return ok(request, store.access_log_stats(contest_id=contest_id))
+
+
 @router.get("/operator/contests/{contest_id}/divisions")
 async def divisions(contest_id: str, request: Request):
     require_contest_staff(request, contest_id)

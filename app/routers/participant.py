@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, EmailStr, Field
 
 from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, now_utc
+from app.services.access_logging import write_access_log
 from app.services.authz import bearer_token, require_participant
 from app.services.errors import AppError, authentication_required, invalid_state, not_found
 from app.services.mail_templates import absolute_url, render_branded_email
@@ -269,6 +270,14 @@ async def verify_otp(contest_id: str, payload: OtpVerifyRequest, request: Reques
             payload.force_new_session,
         )
     except SessionConflictError as exc:
+        write_access_log(
+            request,
+            event_type="session_conflict",
+            account_scope="participant",
+            email=str(payload.email),
+            contest_id=contest_id,
+            details=exc.details,
+        )
         raise AppError(
             409,
             "session_conflict",
@@ -276,8 +285,29 @@ async def verify_otp(contest_id: str, payload: OtpVerifyRequest, request: Reques
             exc.details,
         )
     if not verified:
+        write_access_log(
+            request,
+            event_type="login_failed",
+            account_scope="participant",
+            email=str(payload.email),
+            contest_id=contest_id,
+        )
         raise AppError(401, "invalid_credentials", "Invalid OTP.")
     team, member, division, access_token = verified
+    write_access_log(
+        request,
+        event_type="participant_login",
+        account_scope="participant",
+        email=str(payload.email),
+        display_name=member.name,
+        contest_id=contest_id,
+        participant_team_id=team.participant_team_id,
+        team_name=team.team_name,
+        team_member_id=member.team_member_id,
+        member_name=member.name,
+        actor_role="participant",
+        details={"force_new_session": payload.force_new_session},
+    )
     return ok(
         request,
         {
@@ -296,6 +326,19 @@ async def participant_me(contest_id: str, request: Request):
     session = store.get_participant_by_access_token(contest_id, token) if token else None
     if not session:
         raise AppError(401, "authentication_required", "Participant access token is required.")
+    write_access_log(
+        request,
+        event_type="participant_session_check",
+        account_scope="participant",
+        email=session["member"].email,
+        display_name=session["member"].name,
+        contest_id=contest_id,
+        participant_team_id=session["team"].participant_team_id,
+        team_name=session["team"].team_name,
+        team_member_id=session["member"].team_member_id,
+        member_name=session["member"].name,
+        actor_role="participant",
+    )
     return ok(
         request,
         {

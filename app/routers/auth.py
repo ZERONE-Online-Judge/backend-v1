@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, EmailStr
 
 from app.settings import settings
+from app.services.access_logging import general_role, write_access_log
 from app.services.errors import AppError
 from app.services.authz import bearer_token, require_staff
 from app.services.responses import ok
@@ -139,6 +140,13 @@ async def general_otp_verify(payload: GeneralOtpVerifyRequest, request: Request)
             payload.force_new_session,
         )
     except SessionConflictError as exc:
+        write_access_log(
+            request,
+            event_type="session_conflict",
+            account_scope="general",
+            email=str(payload.email),
+            details=exc.details,
+        )
         raise AppError(
             409,
             "session_conflict",
@@ -146,7 +154,23 @@ async def general_otp_verify(payload: GeneralOtpVerifyRequest, request: Request)
             exc.details,
         )
     if not session:
+        write_access_log(
+            request,
+            event_type="login_failed",
+            account_scope="general",
+            email=str(payload.email),
+        )
         raise AppError(401, "invalid_credentials", "Invalid email or verification code.")
+    account = session.get("account", {})
+    write_access_log(
+        request,
+        event_type="general_login",
+        account_scope="general",
+        email=account.get("email") or str(payload.email),
+        display_name=account.get("display_name"),
+        actor_role=general_role(session),
+        details={"force_new_session": payload.force_new_session},
+    )
     return ok(request, session)
 
 
@@ -184,19 +208,52 @@ async def general_refresh(payload: GeneralRefreshRequest, request: Request):
     refreshed = store.refresh_general_session(payload.refresh_token)
     if not refreshed:
         raise AppError(401, "invalid_credentials", "Invalid refresh token.")
+    account = refreshed.get("account", {})
+    write_access_log(
+        request,
+        event_type="general_refresh",
+        account_scope="general",
+        email=account.get("email"),
+        display_name=account.get("display_name"),
+        actor_role=general_role(refreshed),
+    )
     return ok(request, refreshed)
 
 
 @router.post("/auth/general/logout")
 async def general_logout(payload: GeneralLogoutRequest, request: Request):
-    revoked = store.revoke_general_session(bearer_token(request), payload.refresh_token)
+    token = bearer_token(request)
+    session = store.get_general_by_access_token(token) if token else None
+    revoked = store.revoke_general_session(token, payload.refresh_token)
+    if revoked:
+        account = session.get("account", {}) if session else {}
+        write_access_log(
+            request,
+            event_type="logout",
+            account_scope="general",
+            email=account.get("email"),
+            display_name=account.get("display_name"),
+            actor_role=general_role(session),
+        )
     return ok(request, {"revoked": revoked})
 
 
 @router.api_route("/auth/general/logout", methods=["GET", "DELETE"])
 @router.api_route("/auth/logout", methods=["GET", "POST", "DELETE"])
 async def general_logout_compat(request: Request):
-    revoked = store.revoke_general_session(bearer_token(request), None)
+    token = bearer_token(request)
+    session = store.get_general_by_access_token(token) if token else None
+    revoked = store.revoke_general_session(token, None)
+    if revoked:
+        account = session.get("account", {}) if session else {}
+        write_access_log(
+            request,
+            event_type="logout",
+            account_scope="general",
+            email=account.get("email"),
+            display_name=account.get("display_name"),
+            actor_role=general_role(session),
+        )
     return ok(request, {"revoked": revoked})
 
 
@@ -210,6 +267,19 @@ async def general_participant_session(contest_id: str, request: Request):
     if not verified:
         raise AppError(403, "scope_denied", "This account is not registered as a participant for the contest.")
     team, member, division, access_token = verified
+    write_access_log(
+        request,
+        event_type="participant_session_issued",
+        account_scope="participant",
+        email=session["account"]["email"],
+        display_name=session["account"].get("display_name"),
+        contest_id=contest_id,
+        participant_team_id=team.participant_team_id,
+        team_name=team.team_name,
+        team_member_id=member.team_member_id,
+        member_name=member.name,
+        actor_role="participant",
+    )
     return ok(
         request,
         {

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, load_only, selectinload
 from app.database import SessionLocal, create_schema
 from app.settings import settings
 from app.models import (
+    AccessLog,
     Contest,
     ContestDivision,
     ContestNotice,
@@ -44,6 +45,7 @@ from app.models import (
     now_utc,
 )
 from app.orm_models import (
+    AccessLogRow,
     ContestDivisionRow,
     ContestNoticeRow,
     ContestQuestionAnswerRow,
@@ -348,6 +350,45 @@ def _audit_log(row: OperationalAuditLogRow) -> OperationalAuditLog:
         actor_name=row.actor_name,
         actor_role=row.actor_role,
         contest_id=row.contest_id,
+        client_ip=row.client_ip,
+        user_agent=row.user_agent,
+        request_id=row.request_id,
+        details=details,
+        created_at=_aware(row.created_at),
+    )
+
+
+def _audit_log_with_contest(row: OperationalAuditLogRow, contest_titles: dict[str, str]) -> OperationalAuditLog:
+    item = _audit_log(row)
+    if item.contest_id and "contest_title" not in item.details:
+        title = contest_titles.get(item.contest_id)
+        if title:
+            item.details = {**item.details, "contest_title": title}
+    return item
+
+
+def _access_log(row: AccessLogRow) -> AccessLog:
+    try:
+        details = json.loads(row.details or "{}")
+    except json.JSONDecodeError:
+        details = {}
+    if not isinstance(details, dict):
+        details = {}
+
+    return AccessLog(
+        access_log_id=row.access_log_id,
+        event_type=row.event_type,
+        account_scope=row.account_scope,
+        email=row.email,
+        display_name=row.display_name,
+        contest_id=row.contest_id,
+        contest_title=row.contest_title,
+        participant_team_id=row.participant_team_id,
+        team_name=row.team_name,
+        team_member_id=row.team_member_id,
+        member_name=row.member_name,
+        actor_role=row.actor_role,
+        session_id=row.session_id,
         client_ip=row.client_ip,
         user_agent=row.user_agent,
         request_id=row.request_id,
@@ -760,9 +801,169 @@ class DbStore:
                 .offset(offset)
                 .limit(safe_limit)
             ).all()
+            contest_ids = sorted({row.contest_id for row in rows if row.contest_id})
+            contest_titles = {}
+            if contest_ids:
+                contest_rows = db.scalars(
+                    select(ContestRow).where(ContestRow.contest_id.in_(contest_ids))
+                ).all()
+                contest_titles = {row.contest_id: row.title for row in contest_rows}
             next_offset = offset + safe_limit
             next_cursor = str(next_offset) if next_offset < total_count else None
-            return [_audit_log(row) for row in rows], next_cursor, total_count
+            return [_audit_log_with_contest(row, contest_titles) for row in rows], next_cursor, total_count
+
+    def append_access_log(
+        self,
+        *,
+        event_type: str,
+        account_scope: str,
+        email: str | None = None,
+        display_name: str | None = None,
+        contest_id: str | None = None,
+        contest_title: str | None = None,
+        participant_team_id: str | None = None,
+        team_name: str | None = None,
+        team_member_id: str | None = None,
+        member_name: str | None = None,
+        actor_role: str | None = None,
+        session_id: str | None = None,
+        client_ip: str | None = None,
+        user_agent: str | None = None,
+        request_id: str | None = None,
+        details: dict | None = None,
+    ) -> AccessLog:
+        row = AccessLogRow(
+            event_type=event_type,
+            account_scope=account_scope,
+            email=email.strip().lower() if email else None,
+            display_name=display_name,
+            contest_id=contest_id,
+            contest_title=contest_title,
+            participant_team_id=participant_team_id,
+            team_name=team_name,
+            team_member_id=team_member_id,
+            member_name=member_name,
+            actor_role=actor_role,
+            session_id=session_id,
+            client_ip=client_ip,
+            user_agent=user_agent,
+            request_id=request_id,
+            details=json.dumps(details or {}, ensure_ascii=False, default=str),
+            created_at=now_utc(),
+        )
+        with self._session() as db:
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return _access_log(row)
+
+    def list_access_logs(
+        self,
+        *,
+        account_scope: str | None = None,
+        contest_id: str | None = None,
+        email: str | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> tuple[list[AccessLog], str | None, int]:
+        safe_limit = max(1, min(limit, 300))
+        try:
+            offset = max(0, int(cursor or "0"))
+        except ValueError:
+            offset = 0
+        filters = []
+        if account_scope:
+            filters.append(AccessLogRow.account_scope == account_scope)
+        if contest_id:
+            filters.append(AccessLogRow.contest_id == contest_id)
+        if email:
+            filters.append(AccessLogRow.email == email.strip().lower())
+
+        base = select(AccessLogRow)
+        count_stmt = select(func.count()).select_from(AccessLogRow)
+        if filters:
+            base = base.where(*filters)
+            count_stmt = count_stmt.where(*filters)
+        with self._session() as db:
+            total_count = int(db.scalar(count_stmt) or 0)
+            rows = db.scalars(
+                base.order_by(AccessLogRow.created_at.desc(), AccessLogRow.access_log_id.desc())
+                .offset(offset)
+                .limit(safe_limit)
+            ).all()
+            next_offset = offset + safe_limit
+            next_cursor = str(next_offset) if next_offset < total_count else None
+            return [_access_log(row) for row in rows], next_cursor, total_count
+
+    def access_log_stats(self, *, contest_id: str | None = None) -> dict:
+        since = now_utc() - timedelta(hours=24)
+        filters = [AccessLogRow.created_at >= since]
+        if contest_id:
+            filters.append(AccessLogRow.contest_id == contest_id)
+
+        with self._session() as db:
+            total_count = int(db.scalar(select(func.count()).select_from(AccessLogRow).where(*filters)) or 0)
+            success_count = int(
+                db.scalar(
+                    select(func.count()).select_from(AccessLogRow).where(
+                        *filters,
+                        AccessLogRow.event_type.in_(
+                            [
+                                "general_login",
+                                "participant_login",
+                                "participant_session_issued",
+                                "general_refresh",
+                                "participant_session_check",
+                            ]
+                        ),
+                    )
+                )
+                or 0
+            )
+            failed_count = int(
+                db.scalar(select(func.count()).select_from(AccessLogRow).where(*filters, AccessLogRow.event_type == "login_failed"))
+                or 0
+            )
+            conflict_count = int(
+                db.scalar(select(func.count()).select_from(AccessLogRow).where(*filters, AccessLogRow.event_type == "session_conflict"))
+                or 0
+            )
+            unique_account_count = int(
+                db.scalar(select(func.count(func.distinct(AccessLogRow.email))).where(*filters, AccessLogRow.email.is_not(None)))
+                or 0
+            )
+            active_filters = [
+                TeamSessionRow.revoked_at.is_(None),
+                TeamSessionRow.expires_at > now_utc(),
+            ]
+            if contest_id:
+                active_filters.append(TeamSessionRow.contest_id == contest_id)
+                active_session_count = int(
+                    db.scalar(select(func.count()).select_from(TeamSessionRow).where(*active_filters)) or 0
+                )
+            else:
+                active_team_count = int(
+                    db.scalar(select(func.count()).select_from(TeamSessionRow).where(*active_filters)) or 0
+                )
+                active_general_count = int(
+                    db.scalar(
+                        select(func.count()).select_from(GeneralSessionRow).where(
+                            GeneralSessionRow.revoked_at.is_(None),
+                            GeneralSessionRow.refresh_expires_at > now_utc(),
+                        )
+                    )
+                    or 0
+                )
+                active_session_count = active_team_count + active_general_count
+            return {
+                "window_hours": 24,
+                "total_count": total_count,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "conflict_count": conflict_count,
+                "unique_account_count": unique_account_count,
+                "active_session_count": active_session_count,
+            }
 
     def count_submissions(self, *, contest_id: str | None = None, division_id: str | None = None) -> int:
         filters = []

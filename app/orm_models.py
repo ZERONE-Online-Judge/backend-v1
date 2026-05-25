@@ -358,6 +358,29 @@ class OperationalAuditLogRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
+class AccessLogRow(Base):
+    __tablename__ = "access_logs"
+
+    access_log_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    account_scope: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    contest_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    contest_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    participant_team_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    team_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    team_member_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    member_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    details: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
 class OtpCodeRow(Base):
     __tablename__ = "otp_codes"
 
