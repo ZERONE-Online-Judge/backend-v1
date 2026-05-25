@@ -61,7 +61,10 @@ def reset_demo_contest_window():
 
 
 def staff_tokens(email: str = "test3@zoj.com") -> dict:
-    response = client.post("/api/auth/general/otp/verify", json={"email": email, "otp_code": ""})
+    response = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": email, "otp_code": "", "force_new_session": True},
+    )
     assert response.status_code == 200
     operator_session = response.json()["data"].get("operator_session")
     assert operator_session
@@ -116,7 +119,7 @@ def participant_login(email: str = "test2@zoj.com") -> tuple[str, dict]:
     contest_id = first_contest_id()
     response = client.post(
         f"/api/contests/{contest_id}/participant-login/otp/verify",
-        json={"email": email, "otp_code": ""},
+        json={"email": email, "otp_code": "", "force_new_session": True},
     )
     assert response.status_code == 200
     return contest_id, response.json()["data"]
@@ -136,7 +139,10 @@ def test_public_home():
 
 
 def test_service_master_general_otp_login_success():
-    response = client.post("/api/auth/general/otp/verify", json={"email": "test3@zoj.com", "otp_code": ""})
+    response = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": "test3@zoj.com", "otp_code": "", "force_new_session": True},
+    )
     assert response.status_code == 200
     session = response.json()["data"]
     assert session["access_token"]
@@ -163,12 +169,42 @@ def test_operator_general_otp_login_success():
     assert request.status_code == 200
 
     code = store.otp_codes["test4@zoj.com"]
-    verify = client.post("/api/auth/general/otp/verify", json={"email": "test4@zoj.com", "otp_code": code})
+    verify = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": "test4@zoj.com", "otp_code": code, "force_new_session": True},
+    )
     assert verify.status_code == 200
     assert verify.json()["data"]["operator_session"]["default_redirect"] == "/operator"
     assert verify.json()["data"]["operator_session"]["access_token"] == verify.json()["data"]["access_token"]
     contests = client.get("/api/operator/contests", headers=auth_headers(verify.json()["data"]["access_token"]))
     assert contests.status_code == 200
+
+
+def test_general_login_requires_confirmation_when_session_exists():
+    first = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": "test4@zoj.com", "otp_code": "", "force_new_session": True},
+    )
+    assert first.status_code == 200
+    first_token = first.json()["data"]["access_token"]
+
+    conflict = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": "test4@zoj.com", "otp_code": ""},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "session_conflict"
+    assert conflict.json()["error"]["details"]["active_session_count"] >= 1
+
+    replaced = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": "test4@zoj.com", "otp_code": "", "force_new_session": True},
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["data"]["access_token"] != first_token
+
+    old_session = client.get("/api/auth/general/me", headers=auth_headers(first_token))
+    assert old_session.status_code == 401
 
 
 def test_general_otp_request_is_rate_limited_for_staff_account():
@@ -1421,12 +1457,42 @@ def test_participant_login_returns_registered_division():
 
     response = client.post(
         f"/api/contests/{contest_id}/participant-login/otp/verify",
-        json={"email": "test2@zoj.com", "otp_code": ""},
+        json={"email": "test2@zoj.com", "otp_code": "", "force_new_session": True},
     )
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["division"]["code"] == "advanced"
     assert data["team"]["division_id"] == data["division"]["division_id"]
+
+
+def test_participant_login_requires_confirmation_when_session_exists():
+    contest_id = client.get("/api/public/contests").json()["data"][0]["contest_id"]
+    first = client.post(
+        f"/api/contests/{contest_id}/participant-login/otp/verify",
+        json={"email": "test2@zoj.com", "otp_code": "", "force_new_session": True},
+    )
+    assert first.status_code == 200
+    first_token = first.json()["data"]["access_token"]
+
+    conflict = client.post(
+        f"/api/contests/{contest_id}/participant-login/otp/verify",
+        json={"email": "test2@zoj.com", "otp_code": ""},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "session_conflict"
+
+    replaced = client.post(
+        f"/api/contests/{contest_id}/participant-login/otp/verify",
+        json={"email": "test2@zoj.com", "otp_code": "", "force_new_session": True},
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["data"]["access_token"] != first_token
+
+    old_session = client.get(
+        f"/api/contests/{contest_id}/participant-session/me",
+        headers=auth_headers(first_token),
+    )
+    assert old_session.status_code == 401
 
 
 def test_participant_otp_request_is_rate_limited():
@@ -1837,7 +1903,7 @@ def test_general_participant_can_view_participant_notice_before_start():
 
     general = client.post(
         "/api/auth/general/otp/verify",
-        json={"email": "test2@zoj.com", "otp_code": ""},
+        json={"email": "test2@zoj.com", "otp_code": "", "force_new_session": True},
     )
     assert general.status_code == 200
 
@@ -2646,7 +2712,12 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     operator = staff_tokens("test4@zoj.com")
     master = staff_tokens()
     division_id = login["division"]["division_id"]
-    problem = operator_problem(contest_id, division_id)
+    problems = client.get(
+        f"/api/operator/contests/{contest_id}/problems",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert problems.status_code == 200
+    problem = next(item for item in problems.json()["data"] if item["division_id"] == division_id)
     source_code = f"print({uuid4().hex[:6]!r})"
 
     created = client.post(

@@ -5,7 +5,7 @@ from app.settings import settings
 from app.services.errors import AppError
 from app.services.authz import bearer_token, require_staff
 from app.services.responses import ok
-from app.services.store import store
+from app.services.store import SessionConflictError, store
 
 router = APIRouter(tags=["auth"])
 
@@ -39,6 +39,7 @@ class GeneralOtpRequest(BaseModel):
 class GeneralOtpVerifyRequest(BaseModel):
     email: EmailStr
     otp_code: str = ""
+    force_new_session: bool = False
 
 
 class GeneralLoginMethodRequest(BaseModel):
@@ -131,7 +132,19 @@ async def general_otp_request(payload: GeneralOtpRequest, request: Request):
 
 @router.post("/auth/general/otp/verify")
 async def general_otp_verify(payload: GeneralOtpVerifyRequest, request: Request):
-    session = store.verify_general_otp(str(payload.email), payload.otp_code)
+    try:
+        session = store.verify_general_otp(
+            str(payload.email),
+            payload.otp_code,
+            payload.force_new_session,
+        )
+    except SessionConflictError as exc:
+        raise AppError(
+            409,
+            "session_conflict",
+            "이미 다른 브라우저 또는 기기에서 로그인 중입니다.",
+            exc.details,
+        )
     if not session:
         raise AppError(401, "invalid_credentials", "Invalid email or verification code.")
     return ok(request, session)

@@ -8,7 +8,7 @@ from app.services.authz import bearer_token, require_participant
 from app.services.errors import AppError, authentication_required, invalid_state, not_found
 from app.services.mail_templates import absolute_url, render_branded_email
 from app.services.responses import ok, page
-from app.services.store import OPERATOR_TEST_TEAM_PREFIX, store
+from app.services.store import OPERATOR_TEST_TEAM_PREFIX, SessionConflictError, store
 from app.services.storage import object_storage
 from app.settings import settings
 
@@ -72,6 +72,7 @@ class OtpRequest(BaseModel):
 class OtpVerifyRequest(BaseModel):
     email: EmailStr
     otp_code: str = ""
+    force_new_session: bool = False
 
 
 class SubmissionCreateRequest(BaseModel):
@@ -260,7 +261,20 @@ async def request_otp(contest_id: str, payload: OtpRequest, request: Request):
 
 @router.post("/contests/{contest_id}/participant-login/otp/verify")
 async def verify_otp(contest_id: str, payload: OtpVerifyRequest, request: Request):
-    verified = store.verify_otp(contest_id, str(payload.email), payload.otp_code)
+    try:
+        verified = store.verify_otp(
+            contest_id,
+            str(payload.email),
+            payload.otp_code,
+            payload.force_new_session,
+        )
+    except SessionConflictError as exc:
+        raise AppError(
+            409,
+            "session_conflict",
+            "이미 다른 브라우저 또는 기기에서 로그인 중입니다.",
+            exc.details,
+        )
     if not verified:
         raise AppError(401, "invalid_credentials", "Invalid OTP.")
     team, member, division, access_token = verified

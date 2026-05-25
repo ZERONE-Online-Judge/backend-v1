@@ -85,6 +85,11 @@ GENERAL_OTP_SCOPE = "__general__"
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
 
 
+class SessionConflictError(Exception):
+    def __init__(self, details: dict) -> None:
+        self.details = details
+
+
 def is_internal_mail_recipient(email: str | None) -> bool:
     normalized = (email or "").strip().lower()
     return (
@@ -1567,7 +1572,58 @@ class DbStore:
             result["operator_session"]["refresh_token"] = refresh_token
         return result
 
-    def verify_general_otp(self, email: str, otp_code: str) -> dict | None:
+    def _active_general_session_rows(self, db: Session, email: str) -> list[GeneralSessionRow]:
+        return db.scalars(
+            select(GeneralSessionRow)
+            .where(
+                func.lower(GeneralSessionRow.email) == email.lower(),
+                GeneralSessionRow.revoked_at.is_(None),
+                GeneralSessionRow.refresh_expires_at > now_utc(),
+            )
+            .order_by(GeneralSessionRow.issued_at.desc())
+        ).all()
+
+    def _active_team_session_rows_for_email(self, db: Session, email: str) -> list[TeamSessionRow]:
+        member_ids = select(TeamMemberRow.team_member_id).where(func.lower(TeamMemberRow.email) == email.lower())
+        return db.scalars(
+            select(TeamSessionRow)
+            .where(
+                TeamSessionRow.team_member_id.in_(member_ids),
+                TeamSessionRow.revoked_at.is_(None),
+                TeamSessionRow.expires_at > now_utc(),
+            )
+            .order_by(TeamSessionRow.issued_at.desc())
+        ).all()
+
+    def _active_login_session_summary(self, db: Session, email: str) -> dict | None:
+        general_sessions = self._active_general_session_rows(db, email)
+        team_sessions = self._active_team_session_rows_for_email(db, email)
+        active_count = len(general_sessions) + len(team_sessions)
+        if active_count == 0:
+            return None
+
+        candidates = [*general_sessions, *team_sessions]
+        latest = max(
+            candidates,
+            key=lambda row: _aware(row.last_seen_at) or _aware(row.issued_at),
+        )
+        latest_at = _aware(latest.last_seen_at) or _aware(latest.issued_at)
+        return {
+            "active_session_count": active_count,
+            "last_seen_at": latest_at.isoformat() if latest_at else None,
+        }
+
+    def _revoke_active_login_sessions_for_email(self, db: Session, email: str) -> None:
+        revoked_at = now_utc()
+        for session in self._active_general_session_rows(db, email):
+            session.revoked_at = revoked_at
+        for session in self._active_team_session_rows_for_email(db, email):
+            session.revoked_at = revoked_at
+        members = db.scalars(select(TeamMemberRow).where(func.lower(TeamMemberRow.email) == email.lower())).all()
+        for member in members:
+            member.active_sessions = 0
+
+    def verify_general_otp(self, email: str, otp_code: str, force_new_session: bool = False) -> dict | None:
         with self._session() as db:
             otp = db.get(OtpCodeRow, email)
             demo_bypass = settings.allow_empty_otp and otp_code == ""
@@ -1576,6 +1632,11 @@ class DbStore:
             profile = self._general_profile(db, email, issue_operator_session=False)
             if not profile:
                 return None
+            conflict = self._active_login_session_summary(db, email)
+            if conflict and not force_new_session:
+                raise SessionConflictError(conflict)
+            if conflict and force_new_session:
+                self._revoke_active_login_sessions_for_email(db, email)
             if otp:
                 otp.verified_at = now_utc()
             return self._issue_general_session(db, email, profile)
@@ -1590,7 +1651,7 @@ class DbStore:
                 return None
             return self._issue_general_session(db, email, profile)
 
-    def verify_general_password_otp(self, email: str, password: str, otp_code: str) -> dict | None:
+    def verify_general_password_otp(self, email: str, password: str, otp_code: str, force_new_session: bool = False) -> dict | None:
         with self._session() as db:
             account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
             if not self._is_password_login_account(account) or not verify_password(password, account.password_hash):
@@ -1602,6 +1663,11 @@ class DbStore:
             profile = self._general_profile(db, email, issue_operator_session=False)
             if not profile:
                 return None
+            conflict = self._active_login_session_summary(db, email)
+            if conflict and not force_new_session:
+                raise SessionConflictError(conflict)
+            if conflict and force_new_session:
+                self._revoke_active_login_sessions_for_email(db, email)
             if otp:
                 otp.verified_at = now_utc()
             return self._issue_general_session(db, email, profile)
@@ -2540,7 +2606,7 @@ class DbStore:
             )
             return _team(team) if team else None
 
-    def verify_otp(self, contest_id: str, email: str, otp_code: str) -> tuple[ParticipantTeam, TeamMember, ContestDivision, str] | None:
+    def verify_otp(self, contest_id: str, email: str, otp_code: str, force_new_session: bool = False) -> tuple[ParticipantTeam, TeamMember, ContestDivision, str] | None:
         with self._session() as db:
             otp = db.get(OtpCodeRow, email)
             demo_bypass = settings.allow_empty_otp and otp_code == ""
@@ -2551,6 +2617,11 @@ class DbStore:
             member = db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, TeamMemberRow.email == email))
             if not member:
                 return None
+            conflict = self._active_login_session_summary(db, email)
+            if conflict and not force_new_session:
+                raise SessionConflictError(conflict)
+            if conflict and force_new_session:
+                self._revoke_active_login_sessions_for_email(db, email)
             member.active_sessions += 1
             member.last_login_at = now_utc()
             team = db.scalar(
