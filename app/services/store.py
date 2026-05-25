@@ -152,6 +152,8 @@ def _contest(row: ContestRow) -> Contest:
         notice_access_after_end=ContestResourceAccess(row.notice_access_after_end or "public"),
         scoreboard_freeze_mode=ScoreboardFreezeMode(row.scoreboard_freeze_mode or "auto"),
         mock_judging_enabled=bool(row.mock_judging_enabled),
+        participant_progress_visible=bool(row.participant_progress_visible),
+        mock_judging_progress_visible=bool(row.mock_judging_progress_visible),
         emergency_notice=row.emergency_notice,
         created_at=_aware(row.created_at),
     )
@@ -2476,6 +2478,8 @@ class DbStore:
             "notice_access_after_end",
             "scoreboard_freeze_mode",
             "mock_judging_enabled",
+            "participant_progress_visible",
+            "mock_judging_progress_visible",
             "emergency_notice",
         }
         with self._session() as db:

@@ -2575,6 +2575,71 @@ def test_submission_progress_is_updated_during_judging():
     assert participant_detail.json()["data"]["memory_kb"] == 4567
 
 
+def test_participant_progress_can_be_hidden_by_contest_setting():
+    contest_id, login = participant_login()
+    operator = staff_tokens("test4@zoj.com")
+    hidden = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "participant_progress_visible": False,
+            "mock_judging_progress_visible": False,
+        },
+    )
+    assert hidden.status_code == 200
+    assert hidden.json()["data"]["participant_progress_visible"] is False
+
+    advanced_division = login["division"]
+    advanced_problem = client.get(
+        f"/api/contests/{contest_id}/divisions/{advanced_division['division_id']}/problems",
+        headers=auth_headers(login["access_token"]),
+    ).json()["data"][0]
+    submission = client.post(
+        f"/api/contests/{contest_id}/problems/{advanced_problem['problem_id']}/submissions",
+        headers=auth_headers(login["access_token"]),
+        json={"language": "python313", "source_code": "print(42)"},
+    )
+    assert submission.status_code == 200
+    submission_id = submission.json()["data"]["submission_id"]
+
+    node_secret = "hidden-progress-secret"
+    node = client.post(
+        "/api/internal/judge/nodes/register",
+        json={"node_name": f"hidden-progress-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 1},
+    )
+    node_id = node.json()["data"]["judge_node_id"]
+    job = claim_jobs_until(node_id, node_secret, [submission_id])[submission_id]
+    progress = client.post(
+        f"/api/internal/judge/jobs/{job['judge_job_id']}/progress",
+        json={
+            "node_secret": node_secret,
+            "lease_token": job["lease_token"],
+            "status": SubmissionStatus.JUDGING.value,
+            "progress_current": 3,
+            "progress_total": 5,
+        },
+    )
+    assert progress.status_code == 200
+
+    waited = client.get(
+        f"/api/contests/{contest_id}/submissions/{submission_id}/status:wait",
+        headers=auth_headers(login["access_token"]),
+    )
+    assert waited.status_code == 200
+    assert waited.json()["data"]["status"] == SubmissionStatus.JUDGING.value
+    assert waited.json()["data"]["progress_current"] is None
+    assert waited.json()["data"]["progress_total"] is None
+    assert waited.json()["data"]["progress_percent"] is None
+    assert waited.json()["data"]["queue_position"] is None
+
+    restored = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=auth_headers(operator["access_token"]),
+        json={"participant_progress_visible": True},
+    )
+    assert restored.status_code == 200
+
+
 def test_operator_and_admin_submission_detail_include_source_without_list_payload_bloat():
     contest_id, login = participant_login()
     set_contest_running(contest_id)

@@ -197,17 +197,18 @@ def _participant_submission_payload(
     include_source: bool,
     queue_position: int | None = None,
     source_code_length: int | None = None,
+    show_progress: bool = True,
 ) -> dict:
     item = submission.model_dump(mode="json")
-    item["queue_position"] = queue_position
-    if item["queue_position"] is None:
+    item["queue_position"] = queue_position if show_progress else None
+    if show_progress and item["queue_position"] is None:
         item["queue_position"] = store.pending_queue_ranks().get(submission.submission_id)
     source_code = item.get("source_code") or ""
     item["source_code_length"] = source_code_length if source_code_length is not None else len(source_code.encode("utf-8"))
     progress_current = item.get("progress_current")
     progress_total = item.get("progress_total")
     item["progress_percent"] = None
-    if isinstance(progress_current, int) and isinstance(progress_total, int) and progress_total > 0:
+    if show_progress and isinstance(progress_current, int) and isinstance(progress_total, int) and progress_total > 0:
         item["progress_percent"] = max(0, min(100, round((progress_current / progress_total) * 100)))
     item["progress_current"] = None
     item["progress_total"] = None
@@ -224,10 +225,14 @@ def _is_operator_test_submission(submission) -> bool:
     return bool(team and team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX))
 
 
-def _mock_submission_payload(submission) -> dict:
-    item = _participant_submission_payload(submission, include_source=False)
+def _mock_submission_payload(submission, show_progress: bool = True) -> dict:
+    item = _participant_submission_payload(submission, include_source=False, show_progress=show_progress)
     item["source_code"] = ""
     return item
+
+
+def _submission_progress_visible(contest) -> bool:
+    return bool(contest.participant_progress_visible)
 
 
 @router.post("/contests/{contest_id}/participant-login/otp/request")
@@ -396,7 +401,7 @@ async def create_submission(contest_id: str, problem_id: str, payload: Submissio
         if "division mismatch" in str(error):
             raise not_found("Problem is not available for this participant division.")
         raise not_found("Participant email or problem is not registered.")
-    return ok(request, submission.model_dump(mode="json"))
+    return ok(request, _participant_submission_payload(submission, include_source=False, show_progress=contest.participant_progress_visible))
 
 
 @router.post("/contests/{contest_id}/problems/{problem_id}/mock-submissions")
@@ -419,7 +424,8 @@ async def create_mock_submission(contest_id: str, problem_id: str, payload: Subm
         submission = store.create_operator_test_submission(contest_id, problem_id, payload.language, payload.source_code)
     except ValueError:
         raise not_found()
-    return ok(request, _mock_submission_payload(submission))
+    show_progress = contest.participant_progress_visible or contest.mock_judging_progress_visible
+    return ok(request, _mock_submission_payload(submission, show_progress=show_progress))
 
 
 @router.get("/contests/{contest_id}/mock-submissions/{submission_id}/status:wait")
@@ -452,12 +458,14 @@ async def wait_mock_submission_status(
             full = store.get_submission(submission_id)
             if not full:
                 raise not_found()
-            return ok(request, _mock_submission_payload(full))
+            show_progress = contest.participant_progress_visible or contest.mock_judging_progress_visible
+            return ok(request, _mock_submission_payload(full, show_progress=show_progress))
         await asyncio.sleep(poll)
     latest = store.get_submission(submission_id)
     if not latest:
         raise not_found()
-    return ok(request, _mock_submission_payload(latest))
+    show_progress = contest.participant_progress_visible or contest.mock_judging_progress_visible
+    return ok(request, _mock_submission_payload(latest, show_progress=show_progress))
 
 
 @router.get("/contests/{contest_id}/notices")
@@ -608,6 +616,7 @@ async def submissions(
 ):
     participant, contest = _allow_submission_list_view(request, contest_id)
     queue_ranks = store.pending_queue_ranks(contest_id=contest_id)
+    show_progress = _submission_progress_visible(contest)
     if not participant or _is_ended(contest):
         submissions, next_cursor, total_count = store.list_submissions(
             contest_id=contest_id,
@@ -625,6 +634,7 @@ async def submissions(
                 include_source=False,
                 queue_position=queue_ranks.get(submission.submission_id),
                 source_code_length=source_lengths.get(submission.submission_id),
+                show_progress=show_progress,
             )
             for submission in submissions
         ]
@@ -651,6 +661,7 @@ async def submissions(
             include_source=include_source,
             queue_position=queue_ranks.get(submission.submission_id),
             source_code_length=source_lengths.get(submission.submission_id),
+            show_progress=show_progress,
         )
         for submission in submissions
     ]
@@ -667,10 +678,13 @@ async def submissions(
 @router.get("/contests/{contest_id}/submissions/{submission_id}")
 async def submission_detail(contest_id: str, submission_id: str, request: Request):
     participant = _require_contest_participant(request, contest_id)
+    contest = store.contests.get(contest_id)
+    if not contest:
+        raise not_found()
     submission = store.get_submission(submission_id)
     if not submission or submission.contest_id != contest_id or submission.participant_team_id != participant["team"].participant_team_id:
         raise not_found()
-    return ok(request, _participant_submission_payload(submission, include_source=True))
+    return ok(request, _participant_submission_payload(submission, include_source=True, show_progress=_submission_progress_visible(contest)))
 
 
 @router.get("/contests/{contest_id}/submissions/{submission_id}/status:wait")
@@ -682,6 +696,9 @@ async def wait_submission_status(
     poll_interval_seconds: float = 0.25,
 ):
     participant = _require_contest_participant(request, contest_id)
+    contest = store.contests.get(contest_id)
+    if not contest:
+        raise not_found()
     submission = store.get_submission(submission_id, include_source=False)
     if not submission or submission.contest_id != contest_id or submission.participant_team_id != participant["team"].participant_team_id:
         raise not_found()
@@ -696,12 +713,12 @@ async def wait_submission_status(
             full = store.get_submission(submission_id)
             if not full:
                 raise not_found()
-            return ok(request, _participant_submission_payload(full, include_source=True))
+            return ok(request, _participant_submission_payload(full, include_source=True, show_progress=_submission_progress_visible(contest)))
         await asyncio.sleep(poll)
     latest = store.get_submission(submission_id)
     if not latest:
         raise not_found()
-    return ok(request, _participant_submission_payload(latest, include_source=True))
+    return ok(request, _participant_submission_payload(latest, include_source=True, show_progress=_submission_progress_visible(contest)))
 
 
 @router.get("/contests/{contest_id}/scoreboard")

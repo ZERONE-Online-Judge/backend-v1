@@ -29,6 +29,8 @@ class ContestRow(Base):
     notice_access_after_end: Mapped[str] = mapped_column(String(32), default="public")
     scoreboard_freeze_mode: Mapped[str] = mapped_column(String(32), default="auto")
     mock_judging_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    participant_progress_visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    mock_judging_progress_visible: Mapped[bool] = mapped_column(Boolean, default=False)
     emergency_notice: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
