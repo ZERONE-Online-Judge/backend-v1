@@ -1,6 +1,6 @@
 """audit logs and progress visibility
 
-Revision ID: 0016_audit_and_progress_visibility
+Revision ID: 0016_audit_progress_visibility
 Revises: 0015_board_write_after_end
 Create Date: 2026-05-25 00:00:00.000000
 """
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0016_audit_and_progress_visibility"
+revision = "0016_audit_progress_visibility"
 down_revision = "0015_board_write_after_end"
 branch_labels = None
 depends_on = None
