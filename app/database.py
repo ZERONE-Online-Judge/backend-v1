@@ -36,6 +36,9 @@ def create_schema() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_judge_jobs_contest_status_queue ON judge_jobs (contest_id, status, queue_position)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_judge_jobs_submission_created ON judge_jobs (submission_id, created_at DESC)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_judge_agent_logs_node_created ON judge_agent_logs (judge_node_id, created_at DESC, judge_agent_log_id DESC)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_operational_audit_scope_created ON operational_audit_logs (scope, created_at DESC, operational_audit_log_id DESC)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_operational_audit_contest_created ON operational_audit_logs (contest_id, created_at DESC, operational_audit_log_id DESC)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS idx_operational_audit_actor_created ON operational_audit_logs (actor_email, created_at DESC, operational_audit_log_id DESC)"))
     if settings.database_url.startswith("sqlite"):
         inspector = inspect(engine)
         if "judge_jobs" in inspector.get_table_names():

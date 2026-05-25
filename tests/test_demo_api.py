@@ -391,6 +391,64 @@ def test_operator_can_delete_contest_notice():
     )
 
 
+def test_operator_and_admin_mutations_are_audited():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    operator_headers = auth_headers(operator["access_token"])
+
+    notice = client.post(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=operator_headers,
+        json={
+            "title": "Audit notice",
+            "body": "Audit body",
+            "visibility": "participants",
+        },
+    )
+    assert notice.status_code == 200
+
+    operator_logs = client.get(
+        f"/api/operator/contests/{contest_id}/audit-logs",
+        headers=operator_headers,
+    )
+    assert operator_logs.status_code == 200
+    operator_entries = operator_logs.json()["data"]
+    assert any(
+        entry["method"] == "POST"
+        and entry["path"] == f"/api/operator/contests/{contest_id}/notices"
+        and entry["contest_id"] == contest_id
+        and entry["actor_email"] == operator["staff"]["email"]
+        for entry in operator_entries
+    )
+
+    master = staff_tokens("test3@zoj.com")
+    master_headers = auth_headers(master["access_token"])
+    service_notice = client.post(
+        "/api/admin/service-notices",
+        headers=master_headers,
+        json={
+            "title": "Audit service notice",
+            "summary": "Audit",
+            "body": "Audit body",
+        },
+    )
+    assert service_notice.status_code == 200
+
+    admin_logs = client.get(
+        "/api/admin/audit-logs?scope=admin",
+        headers=master_headers,
+    )
+    assert admin_logs.status_code == 200
+    admin_entries = admin_logs.json()["data"]
+    assert any(
+        entry["method"] == "POST"
+        and entry["path"] == "/api/admin/service-notices"
+        and entry["actor_role"] == "service_master"
+        and entry["actor_email"] == master["staff"]["email"]
+        for entry in admin_entries
+    )
+
+
 def test_admin_service_notice_management():
     admin = staff_tokens("test3@zoj.com")
     created = client.post(

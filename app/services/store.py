@@ -27,6 +27,7 @@ from app.models import (
     JudgeJobStatus,
     JudgeNode,
     MailQueueItem,
+    OperationalAuditLog,
     ParticipantTeam,
     Problem,
     ProblemAsset,
@@ -56,6 +57,7 @@ from app.orm_models import (
     JudgeNodeRow,
     MailQueueItemRow,
     OtpCodeRow,
+    OperationalAuditLogRow,
     ParticipantTeamRow,
     ProblemAssetRow,
     ProblemRow,
@@ -316,6 +318,33 @@ def _agent_log(row: JudgeAgentLogRow) -> JudgeAgentLog:
         node_name=row.node_name,
         level=row.level,
         message=row.message,
+        created_at=_aware(row.created_at),
+    )
+
+
+def _audit_log(row: OperationalAuditLogRow) -> OperationalAuditLog:
+    try:
+        details = json.loads(row.details or "{}")
+    except json.JSONDecodeError:
+        details = {}
+    if not isinstance(details, dict):
+        details = {}
+
+    return OperationalAuditLog(
+        operational_audit_log_id=row.operational_audit_log_id,
+        scope=row.scope,
+        action=row.action,
+        method=row.method,
+        path=row.path,
+        status_code=row.status_code,
+        actor_email=row.actor_email,
+        actor_name=row.actor_name,
+        actor_role=row.actor_role,
+        contest_id=row.contest_id,
+        client_ip=row.client_ip,
+        user_agent=row.user_agent,
+        request_id=row.request_id,
+        details=details,
         created_at=_aware(row.created_at),
     )
 
@@ -650,6 +679,83 @@ class DbStore:
             next_offset = offset + safe_limit
             next_cursor = str(next_offset) if next_offset < total_count else None
             return [_agent_log(row) for row in rows], next_cursor, total_count
+
+    def append_operational_audit_log(
+        self,
+        *,
+        scope: str,
+        action: str,
+        method: str,
+        path: str,
+        status_code: int,
+        actor_email: str | None = None,
+        actor_name: str | None = None,
+        actor_role: str | None = None,
+        contest_id: str | None = None,
+        client_ip: str | None = None,
+        user_agent: str | None = None,
+        request_id: str | None = None,
+        details: dict | None = None,
+    ) -> OperationalAuditLog:
+        row = OperationalAuditLogRow(
+            scope=scope,
+            action=action,
+            method=method.upper(),
+            path=path,
+            status_code=status_code,
+            actor_email=actor_email,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            contest_id=contest_id,
+            client_ip=client_ip,
+            user_agent=user_agent,
+            request_id=request_id,
+            details=json.dumps(details or {}, ensure_ascii=False, default=str),
+            created_at=now_utc(),
+        )
+        with self._session() as db:
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return _audit_log(row)
+
+    def list_operational_audit_logs(
+        self,
+        *,
+        scope: str | None = None,
+        contest_id: str | None = None,
+        actor_email: str | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> tuple[list[OperationalAuditLog], str | None, int]:
+        safe_limit = max(1, min(limit, 300))
+        try:
+            offset = max(0, int(cursor or "0"))
+        except ValueError:
+            offset = 0
+        filters = []
+        if scope:
+            filters.append(OperationalAuditLogRow.scope == scope)
+        if contest_id:
+            filters.append(OperationalAuditLogRow.contest_id == contest_id)
+        if actor_email:
+            filters.append(OperationalAuditLogRow.actor_email == actor_email.strip().lower())
+
+        base = select(OperationalAuditLogRow)
+        count_stmt = select(func.count()).select_from(OperationalAuditLogRow)
+        if filters:
+            base = base.where(*filters)
+            count_stmt = count_stmt.where(*filters)
+        with self._session() as db:
+            total_count = int(db.scalar(count_stmt) or 0)
+            rows = db.scalars(
+                base.order_by(OperationalAuditLogRow.created_at.desc(), OperationalAuditLogRow.operational_audit_log_id.desc())
+                .offset(offset)
+                .limit(safe_limit)
+            ).all()
+            next_offset = offset + safe_limit
+            next_cursor = str(next_offset) if next_offset < total_count else None
+            return [_audit_log(row) for row in rows], next_cursor, total_count
 
     def count_submissions(self, *, contest_id: str | None = None, division_id: str | None = None) -> int:
         filters = []

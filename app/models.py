@@ -309,6 +309,24 @@ class JudgeAgentLog(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 
+class OperationalAuditLog(BaseModel):
+    operational_audit_log_id: str = Field(default_factory=new_id)
+    scope: str
+    action: str
+    method: str
+    path: str
+    status_code: int
+    actor_email: EmailStr | None = None
+    actor_name: str | None = None
+    actor_role: str | None = None
+    contest_id: str | None = None
+    client_ip: str | None = None
+    user_agent: str | None = None
+    request_id: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 def demo_times() -> tuple[datetime, datetime, datetime]:
     start = now_utc() - timedelta(hours=1)
     end = now_utc() + timedelta(hours=3)

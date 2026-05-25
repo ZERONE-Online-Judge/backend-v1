@@ -258,6 +258,34 @@ async def admin_contact_inquiries(request: Request):
     return page(request, inquiries)
 
 
+@router.get("/admin/audit-logs")
+async def admin_audit_logs(
+    request: Request,
+    scope: str | None = None,
+    contest_id: str | None = None,
+    actor_email: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+):
+    require_service_master(request)
+    safe_scope = scope if scope in {"admin", "operator"} else None
+    logs, next_cursor, total_count = store.list_operational_audit_logs(
+        scope=safe_scope,
+        contest_id=contest_id or None,
+        actor_email=actor_email or None,
+        limit=limit,
+        cursor=cursor,
+    )
+    return page(
+        request,
+        [item.model_dump(mode="json") for item in logs],
+        next_cursor=next_cursor,
+        limit=max(1, min(limit, 300)),
+        total_count=total_count,
+        current_cursor=cursor,
+    )
+
+
 @router.post("/admin/contact-inquiries/{inquiry_id}/answer")
 async def answer_contact_inquiry(inquiry_id: str, payload: ContactInquiryAnswerRequest, request: Request):
     account = require_service_master(request)

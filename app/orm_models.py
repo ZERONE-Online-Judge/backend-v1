@@ -336,6 +336,26 @@ class JudgeAgentLogRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
 
 
+class OperationalAuditLogRow(Base):
+    __tablename__ = "operational_audit_logs"
+
+    operational_audit_log_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scope: Mapped[str] = mapped_column(String(32), index=True)
+    action: Mapped[str] = mapped_column(String(255))
+    method: Mapped[str] = mapped_column(String(12), index=True)
+    path: Mapped[str] = mapped_column(Text)
+    status_code: Mapped[int] = mapped_column(Integer, index=True)
+    actor_email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    actor_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    contest_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    details: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
 class OtpCodeRow(Base):
     __tablename__ = "otp_codes"
 
