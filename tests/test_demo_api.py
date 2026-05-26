@@ -1934,6 +1934,38 @@ def test_operator_can_manually_override_public_scoreboard_freeze_mode():
     assert restored.status_code == 200
 
 
+def test_operator_presentation_scoreboard_uses_public_freeze_view():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+
+    frozen = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={"scoreboard_freeze_mode": "frozen"},
+    )
+    assert frozen.status_code == 200
+
+    presentation = client.get(
+        f"/api/operator/contests/{contest_id}/scoreboard/presentation",
+        headers=headers,
+    )
+    assert presentation.status_code == 200
+    data = presentation.json()["data"]
+    assert data["contest"]["contest_id"] == contest_id
+    assert data["sections"]
+    assert all("division" in section for section in data["sections"])
+    assert all("problems" in section for section in data["sections"])
+    assert all(section["frozen"] is True for section in data["sections"])
+
+    restored = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=headers,
+        json={"scoreboard_freeze_mode": "auto"},
+    )
+    assert restored.status_code == 200
+
+
 def test_participant_cannot_view_problems_before_contest_start():
     contest_id, login = participant_login()
     set_contest_mutable(contest_id)

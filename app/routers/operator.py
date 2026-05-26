@@ -1155,6 +1155,42 @@ async def division_internal_scoreboard(contest_id: str, division_id: str, reques
     return ok(request, {"division": division.model_dump(mode="json"), "frozen_public_view": bool(public_board and public_board["frozen"]), "operator_live_view": True, "rows": rows})
 
 
+@router.get("/operator/contests/{contest_id}/scoreboard/presentation")
+async def presentation_scoreboard(contest_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    contest = store.contests.get(contest_id)
+    if not contest:
+        raise not_found()
+
+    sections = []
+    for division in store.contest_divisions(contest_id):
+        board = store.scoreboard_rows(contest_id, division.division_id, public_view=True)
+        if not board:
+            continue
+        problems = [
+            problem
+            for problem in store.problems.values()
+            if problem.contest_id == contest_id and problem.division_id == division.division_id
+        ]
+        problems.sort(key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
+        sections.append(
+            {
+                "division": division.model_dump(mode="json"),
+                "frozen": bool(board["frozen"]),
+                "problems": [problem.model_dump(mode="json") for problem in problems],
+                "rows": board["rows"],
+            }
+        )
+
+    return ok(
+        request,
+        {
+            "contest": contest.model_dump(mode="json"),
+            "sections": sections,
+        },
+    )
+
+
 @router.get("/operator/contests/{contest_id}/problems")
 async def operator_problems(contest_id: str, request: Request):
     require_contest_staff(request, contest_id)
