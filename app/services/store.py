@@ -3019,16 +3019,20 @@ class DbStore:
 
             item = _problem(row)
             deleted_storage_keys: set[str] = set()
-            testcase_sets = db.scalars(select(TestcaseSetRow).where(TestcaseSetRow.problem_id == problem_id)).all()
-            testcase_set_ids = [testcase_set.testcase_set_id for testcase_set in testcase_sets]
+            testcase_set_ids = list(
+                db.scalars(
+                    select(TestcaseSetRow.testcase_set_id).where(
+                        TestcaseSetRow.problem_id == problem_id
+                    )
+                ).all()
+            )
             if testcase_set_ids:
                 cases = db.scalars(select(TestcaseRow).where(TestcaseRow.testcase_set_id.in_(testcase_set_ids))).all()
                 for case in cases:
                     deleted_storage_keys.add(case.input_storage_key)
                     deleted_storage_keys.add(case.output_storage_key)
-                    db.delete(case)
-                for testcase_set in testcase_sets:
-                    db.delete(testcase_set)
+                db.execute(delete(TestcaseRow).where(TestcaseRow.testcase_set_id.in_(testcase_set_ids)))
+                db.execute(delete(TestcaseSetRow).where(TestcaseSetRow.testcase_set_id.in_(testcase_set_ids)))
 
             assets = db.scalars(
                 select(ProblemAssetRow).where(
@@ -3038,22 +3042,31 @@ class DbStore:
             ).all()
             for asset in assets:
                 deleted_storage_keys.add(asset.storage_key)
-                db.delete(asset)
-
-            submissions = db.scalars(
-                select(SubmissionRow).where(
-                    SubmissionRow.contest_id == contest_id,
-                    SubmissionRow.problem_id == problem_id,
+            db.execute(
+                delete(ProblemAssetRow).where(
+                    ProblemAssetRow.contest_id == contest_id,
+                    ProblemAssetRow.problem_id == problem_id,
                 )
-            ).all()
-            submission_ids = [submission.submission_id for submission in submissions]
-            if submission_ids:
-                jobs = db.scalars(select(JudgeJobRow).where(JudgeJobRow.submission_id.in_(submission_ids))).all()
-                for job in jobs:
-                    db.delete(job)
-                for submission in submissions:
-                    db.delete(submission)
+            )
 
+            submission_ids = list(
+                db.scalars(
+                    select(SubmissionRow.submission_id).where(
+                        SubmissionRow.contest_id == contest_id,
+                        SubmissionRow.problem_id == problem_id,
+                    )
+                ).all()
+            )
+            if submission_ids:
+                db.execute(delete(JudgeJobRow).where(JudgeJobRow.submission_id.in_(submission_ids)))
+                db.execute(delete(SubmissionRow).where(SubmissionRow.submission_id.in_(submission_ids)))
+
+            db.execute(
+                delete(BundleWarmQueueItemRow).where(
+                    BundleWarmQueueItemRow.contest_id == contest_id,
+                    BundleWarmQueueItemRow.problem_id == problem_id,
+                )
+            )
             db.delete(row)
             db.commit()
 
