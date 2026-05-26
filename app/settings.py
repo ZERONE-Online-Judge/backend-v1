@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     smtp_timeout_seconds: int = 20
     mail_worker_poll_interval_seconds: float = 2.0
     mail_worker_batch_size: int = 20
+    notice_worker_poll_interval_seconds: float = 2.0
     bundle_worker_poll_interval_seconds: float = 1.0
     bundle_worker_batch_size: int = 8
     bundle_worker_max_attempts: int = 5

@@ -2333,6 +2333,77 @@ def test_due_contest_reminders_enqueue_html_mail_once():
     assert "body_html" in reminder and "대회 페이지 열기" in reminder["body_html"]
 
 
+def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+    scheduled_titles = {
+        f"{target} {label} 전"
+        for target in ("스코어보드 프리즈", "대회 종료")
+        for label in ("30분", "10분", "5분", "1분")
+    }
+    for notice in store.contest_notices_for_view(contest_id, operator=True):
+        if notice.title in scheduled_titles:
+            store.delete_contest_notice(contest_id, notice.contest_notice_id)
+    now = datetime.now(timezone.utc)
+
+    store.update_contest_settings(
+        contest_id,
+        status=ContestStatus.RUNNING,
+        start_at=now - timedelta(hours=1),
+        freeze_at=now + timedelta(minutes=9),
+        end_at=now + timedelta(hours=1),
+        emergency_notice="",
+    )
+    freeze_count = store.enqueue_due_contest_emergency_notices()
+    duplicate_freeze_count = store.enqueue_due_contest_emergency_notices()
+    assert freeze_count >= 1
+    assert duplicate_freeze_count == 0
+
+    freeze_notice = client.get(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=headers,
+    )
+    assert freeze_notice.status_code == 200
+    freeze_notices = freeze_notice.json()["data"]
+    assert any(
+        item["title"] == "스코어보드 프리즈 10분 전"
+        and item["emergency"]
+        and item["pinned"]
+        and "스코어보드 프리즈까지 10분 남았습니다" in item["body"]
+        for item in freeze_notices
+    )
+    assert "스코어보드 프리즈까지 10분 남았습니다" in store.contests[contest_id].emergency_notice
+
+    store.update_contest_settings(
+        contest_id,
+        status=ContestStatus.RUNNING,
+        start_at=now - timedelta(hours=1),
+        freeze_at=now - timedelta(minutes=1),
+        end_at=now + timedelta(minutes=4),
+        emergency_notice="",
+    )
+    end_count = store.enqueue_due_contest_emergency_notices()
+    duplicate_end_count = store.enqueue_due_contest_emergency_notices()
+    assert end_count >= 1
+    assert duplicate_end_count == 0
+
+    end_notice = client.get(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=headers,
+    )
+    assert end_notice.status_code == 200
+    end_notices = end_notice.json()["data"]
+    assert any(
+        item["title"] == "대회 종료 5분 전"
+        and item["emergency"]
+        and item["pinned"]
+        and "대회 종료까지 5분 남았습니다" in item["body"]
+        for item in end_notices
+    )
+    assert "대회 종료까지 5분 남았습니다" in store.contests[contest_id].emergency_notice
+
+
 def test_participant_email_conflict_with_staff_is_scoped_to_same_contest():
     contest_id = first_contest_id()
     set_contest_mutable(contest_id)

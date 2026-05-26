@@ -71,6 +71,7 @@ Services:
 - `redis`: reserved runtime queue/cache dependency
 - `minio` and `minio-init`: object storage and bucket creation, internal compose network only
 - `mail-worker`: SMTP mail queue consumer
+- `notice-worker`: scheduled emergency notice publisher
 - `postgres-backup`: optional profile, daily `pg_dump -Fc`
 
 Enable backup profile:

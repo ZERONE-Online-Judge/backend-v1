@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import secrets
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -85,6 +86,7 @@ from app.services.mail_templates import (
 STAFF_OTP_SCOPE = "__staff__"
 GENERAL_OTP_SCOPE = "__general__"
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
+KST = ZoneInfo("Asia/Seoul")
 
 
 class SessionConflictError(Exception):
@@ -3891,6 +3893,113 @@ class DbStore:
                             )
                             queued_count += 1
             db.commit()
+        return queued_count
+
+    def enqueue_due_contest_emergency_notices(self) -> int:
+        if not settings.feature_emergency_notice_auto:
+            return 0
+
+        windows = [
+            ("30m", timedelta(minutes=30), timedelta(minutes=10), "30분"),
+            ("10m", timedelta(minutes=10), timedelta(minutes=5), "10분"),
+            ("5m", timedelta(minutes=5), timedelta(minutes=1), "5분"),
+            ("1m", timedelta(minutes=1), timedelta(0), "1분"),
+        ]
+        targets = [
+            ("freeze", "스코어보드 프리즈", "freeze_at"),
+            ("end", "대회 종료", "end_at"),
+        ]
+        now = now_utc()
+        due: list[tuple[str, str, str]] = []
+
+        with self._session() as db:
+            contests = db.scalars(
+                select(ContestRow).where(
+                    ContestRow.status.in_(
+                        [
+                            ContestStatus.SCHEDULED.value,
+                            ContestStatus.OPEN.value,
+                            ContestStatus.RUNNING.value,
+                        ]
+                    )
+                )
+            ).all()
+            for contest in contests:
+                for target_code, target_label, field_name in targets:
+                    target_at = _aware(getattr(contest, field_name))
+                    if not target_at:
+                        continue
+                    remaining = target_at - now
+                    if remaining <= timedelta(0):
+                        continue
+                    for window_code, upper_bound, lower_bound, label in windows:
+                        if remaining > upper_bound or remaining <= lower_bound:
+                            continue
+                        title = f"{target_label} {label} 전"
+                        kst_time = target_at.astimezone(KST)
+                        formatted_time = f"{kst_time.year}. {kst_time.month}. {kst_time.day}. {kst_time:%H:%M} KST"
+                        if target_code == "freeze":
+                            body = "\n".join(
+                                [
+                                    f"스코어보드 프리즈까지 {label} 남았습니다.",
+                                    "",
+                                    f"- 프리즈 시각: {formatted_time}",
+                                    "- 프리즈 이후 제출 결과는 대회 종료 전까지 스코어보드에 반영되지 않을 수 있습니다.",
+                                ]
+                            )
+                        else:
+                            body = "\n".join(
+                                [
+                                    f"대회 종료까지 {label} 남았습니다.",
+                                    "",
+                                    f"- 종료 시각: {formatted_time}",
+                                    "- 종료 이후에는 제출이 제한될 수 있으니 남은 시간을 확인해 주세요.",
+                                ]
+                            )
+                        exists = db.scalar(
+                            select(ContestNoticeRow.contest_notice_id)
+                            .where(
+                                ContestNoticeRow.contest_id == contest.contest_id,
+                                ContestNoticeRow.title == title,
+                                ContestNoticeRow.body == body,
+                                ContestNoticeRow.emergency.is_(True),
+                            )
+                            .limit(1)
+                        )
+                        if exists:
+                            continue
+                        due.append((contest.contest_id, title, body))
+                        break
+
+        queued_count = 0
+        for contest_id, title, body in due:
+            with self._session() as db:
+                contest = db.get(ContestRow, contest_id)
+                if not contest:
+                    continue
+                exists = db.scalar(
+                    select(ContestNoticeRow.contest_notice_id)
+                    .where(
+                        ContestNoticeRow.contest_id == contest_id,
+                        ContestNoticeRow.title == title,
+                        ContestNoticeRow.body == body,
+                        ContestNoticeRow.emergency.is_(True),
+                    )
+                    .limit(1)
+                )
+                if exists:
+                    continue
+                contest.emergency_notice = body
+                db.commit()
+            self.create_contest_notice(
+                contest_id,
+                title,
+                body,
+                pinned=True,
+                emergency=True,
+                visibility="participants",
+            )
+            queued_count += 1
         return queued_count
 
     def enqueue_bundle_warm(self, contest_id: str, problem_id: str) -> None:
