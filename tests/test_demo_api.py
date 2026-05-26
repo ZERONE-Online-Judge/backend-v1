@@ -1501,6 +1501,43 @@ def test_participant_session_me_uses_access_token():
     assert denied.status_code == 401
 
 
+def test_general_participant_session_replaces_previous_token():
+    contest_id = first_contest_id()
+    general = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": "test2@zoj.com", "otp_code": "", "force_new_session": True},
+    )
+    assert general.status_code == 200
+    general_token = general.json()["data"]["access_token"]
+
+    first = client.post(
+        f"/api/auth/general/contests/{contest_id}/participant-session",
+        headers=auth_headers(general_token),
+    )
+    assert first.status_code == 200
+    first_token = first.json()["data"]["access_token"]
+
+    second = client.post(
+        f"/api/auth/general/contests/{contest_id}/participant-session",
+        headers=auth_headers(general_token),
+    )
+    assert second.status_code == 200
+    second_token = second.json()["data"]["access_token"]
+    assert second_token != first_token
+
+    old_session = client.get(
+        f"/api/contests/{contest_id}/participant-session/me",
+        headers=auth_headers(first_token),
+    )
+    assert old_session.status_code == 401
+
+    current_session = client.get(
+        f"/api/contests/{contest_id}/participant-session/me",
+        headers=auth_headers(second_token),
+    )
+    assert current_session.status_code == 200
+
+
 def test_contest_resources_hidden_without_participant_during_contest():
     contest_id = client.get("/api/public/contests").json()["data"][0]["contest_id"]
 

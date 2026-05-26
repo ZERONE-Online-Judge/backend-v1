@@ -1760,6 +1760,14 @@ class DbStore:
         for member in members:
             member.active_sessions = 0
 
+    def _revoke_active_team_sessions_for_email(self, db: Session, email: str) -> None:
+        revoked_at = now_utc()
+        for session in self._active_team_session_rows_for_email(db, email):
+            session.revoked_at = revoked_at
+        members = db.scalars(select(TeamMemberRow).where(func.lower(TeamMemberRow.email) == email.lower())).all()
+        for member in members:
+            member.active_sessions = 0
+
     def verify_general_otp(self, email: str, otp_code: str, force_new_session: bool = False) -> dict | None:
         with self._session() as db:
             otp = db.get(OtpCodeRow, email)
@@ -1915,7 +1923,8 @@ class DbStore:
             division = db.get(ContestDivisionRow, team.division_id)
             if not division:
                 return None
-            member.active_sessions += 1
+            self._revoke_active_team_sessions_for_email(db, email)
+            member.active_sessions = 1
             member.last_login_at = now_utc()
             team.status = "active"
             access_token = new_session_token(
