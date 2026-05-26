@@ -173,6 +173,20 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
     return ok(request, contest.model_dump(mode="json"))
 
 
+@router.get("/admin/contests/{contest_id}/divisions")
+async def admin_contest_divisions(contest_id: str, request: Request):
+    require_service_master(request)
+    if contest_id not in store.contests:
+        raise not_found()
+    return ok(
+        request,
+        [
+            division.model_dump(mode="json")
+            for division in store.contest_divisions(contest_id)
+        ],
+    )
+
+
 @router.post("/admin/contests/{contest_id}/divisions")
 async def create_contest_division(contest_id: str, payload: ContestDivisionCreateRequest, request: Request):
     require_service_master(request)
