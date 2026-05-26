@@ -1,6 +1,6 @@
 """add team member session revoke marker
 
-Revision ID: 0019_team_member_session_revoke_marker
+Revision ID: 0019_team_session_revoke
 Revises: 0018_remove_unused_columns
 Create Date: 2026-05-27 00:00:00.000000
 """
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0019_team_member_session_revoke_marker"
+revision = "0019_team_session_revoke"
 down_revision = "0018_remove_unused_columns"
 branch_labels = None
 depends_on = None
