@@ -80,6 +80,7 @@ class TeamMember(BaseModel):
     email: EmailStr
     active_sessions: int = 0
     last_login_at: datetime | None = None
+    last_session_seen_at: datetime | None = None
 
 
 class ParticipantTeam(BaseModel):

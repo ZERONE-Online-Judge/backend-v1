@@ -1538,6 +1538,48 @@ def test_general_participant_session_replaces_previous_token():
     assert current_session.status_code == 200
 
 
+def test_operator_revoke_blocks_existing_general_participant_reissue():
+    contest_id = first_contest_id()
+    general = client.post(
+        "/api/auth/general/otp/verify",
+        json={"email": "test2@zoj.com", "otp_code": "", "force_new_session": True},
+    )
+    assert general.status_code == 200
+    general_token = general.json()["data"]["access_token"]
+
+    issued = client.post(
+        f"/api/auth/general/contests/{contest_id}/participant-session",
+        headers=auth_headers(general_token),
+    )
+    assert issued.status_code == 200
+    participant_token = issued.json()["data"]["access_token"]
+
+    operator = staff_tokens("test4@zoj.com")
+    participants = client.get(
+        f"/api/operator/contests/{contest_id}/participants",
+        headers=auth_headers(operator["access_token"]),
+    )
+    team = next(item for item in participants.json()["data"] if item["team_name"] == issued.json()["data"]["team"]["team_name"])
+    member = next(item for item in team["members"] if item["email"] == "test2@zoj.com")
+    revoked = client.post(
+        f"/api/operator/contests/{contest_id}/participants/{team['participant_team_id']}/members/{member['team_member_id']}/sessions:revoke",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert revoked.status_code == 200
+
+    old_session = client.get(
+        f"/api/contests/{contest_id}/participant-session/me",
+        headers=auth_headers(participant_token),
+    )
+    assert old_session.status_code == 401
+
+    reissue = client.post(
+        f"/api/auth/general/contests/{contest_id}/participant-session",
+        headers=auth_headers(general_token),
+    )
+    assert reissue.status_code == 403
+
+
 def test_contest_resources_hidden_without_participant_during_contest():
     contest_id = client.get("/api/public/contests").json()["data"][0]["contest_id"]
 

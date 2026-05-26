@@ -263,7 +263,11 @@ async def general_participant_session(contest_id: str, request: Request):
     session = store.get_general_by_access_token(token) if token else None
     if not session:
         raise AppError(401, "authentication_required", "General access token is required.")
-    verified = store.issue_participant_session_for_general(session["account"]["email"], contest_id)
+    verified = store.issue_participant_session_for_general(
+        session["account"]["email"],
+        contest_id,
+        token,
+    )
     if not verified:
         raise AppError(403, "scope_denied", "This account is not registered as a participant for the contest.")
     team, member, division, access_token = verified

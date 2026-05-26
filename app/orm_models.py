@@ -61,6 +61,7 @@ class TeamMemberRow(Base):
     email: Mapped[str] = mapped_column(String(255), index=True)
     active_sessions: Mapped[int] = mapped_column(Integer, default=0)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    session_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ParticipantTeamRow(Base):

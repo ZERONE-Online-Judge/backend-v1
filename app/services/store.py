@@ -195,6 +195,7 @@ def _team(row: ParticipantTeamRow) -> ParticipantTeam:
                 email=member.email,
                 active_sessions=member.active_sessions,
                 last_login_at=_aware(member.last_login_at),
+                last_session_seen_at=None,
             )
             for member in row.members
         ],
@@ -681,6 +682,52 @@ class DbStore:
                 .where(ParticipantTeamRow.participant_team_id.in_(ids))
             ).all()
             return {row.participant_team_id: _team(row) for row in rows}
+
+    def participant_teams_for_operator(self, contest_id: str) -> list[ParticipantTeam]:
+        with self._session() as db:
+            teams = db.scalars(
+                select(ParticipantTeamRow)
+                .options(selectinload(ParticipantTeamRow.members))
+                .where(ParticipantTeamRow.contest_id == contest_id)
+                .order_by(ParticipantTeamRow.team_name)
+            ).all()
+            member_ids = [
+                member.team_member_id
+                for team in teams
+                for member in team.members
+            ]
+            session_stats: dict[str, tuple[int, datetime | None]] = {}
+            if member_ids:
+                rows = db.execute(
+                    select(
+                        TeamSessionRow.team_member_id,
+                        func.count(TeamSessionRow.team_session_id),
+                        func.max(func.coalesce(TeamSessionRow.last_seen_at, TeamSessionRow.issued_at)),
+                    )
+                    .where(
+                        TeamSessionRow.team_member_id.in_(member_ids),
+                        TeamSessionRow.revoked_at.is_(None),
+                        TeamSessionRow.expires_at > now_utc(),
+                    )
+                    .group_by(TeamSessionRow.team_member_id)
+                ).all()
+                session_stats = {
+                    str(member_id): (int(count or 0), _aware(last_seen_at))
+                    for member_id, count, last_seen_at in rows
+                }
+
+            result: list[ParticipantTeam] = []
+            for team in teams:
+                item = _team(team)
+                for member in item.members:
+                    count, last_seen_at = session_stats.get(
+                        member.team_member_id,
+                        (0, None),
+                    )
+                    member.active_sessions = count
+                    member.last_session_seen_at = last_seen_at
+                result.append(item)
+            return result
 
     def judge_nodes_by_ids(self, judge_node_ids: list[str]) -> dict[str, JudgeNode]:
         ids = list(dict.fromkeys(judge_node_ids))
@@ -1760,13 +1807,25 @@ class DbStore:
         for member in members:
             member.active_sessions = 0
 
-    def _revoke_active_team_sessions_for_email(self, db: Session, email: str) -> None:
+    def _revoke_active_team_sessions_for_member(
+        self,
+        db: Session,
+        member: TeamMemberRow,
+        *,
+        mark_revoked: bool = False,
+    ) -> None:
         revoked_at = now_utc()
-        for session in self._active_team_session_rows_for_email(db, email):
+        sessions = db.scalars(
+            select(TeamSessionRow).where(
+                TeamSessionRow.team_member_id == member.team_member_id,
+                TeamSessionRow.revoked_at.is_(None),
+            )
+        ).all()
+        for session in sessions:
             session.revoked_at = revoked_at
-        members = db.scalars(select(TeamMemberRow).where(func.lower(TeamMemberRow.email) == email.lower())).all()
-        for member in members:
-            member.active_sessions = 0
+        member.active_sessions = 0
+        if mark_revoked:
+            member.session_revoked_at = revoked_at
 
     def verify_general_otp(self, email: str, otp_code: str, force_new_session: bool = False) -> dict | None:
         with self._session() as db:
@@ -1908,10 +1967,29 @@ class DbStore:
             db.commit()
             return True
 
-    def issue_participant_session_for_general(self, email: str, contest_id: str) -> tuple[ParticipantTeam, TeamMember, ContestDivision, str] | None:
+    def issue_participant_session_for_general(
+        self,
+        email: str,
+        contest_id: str,
+        parent_access_token: str | None = None,
+    ) -> tuple[ParticipantTeam, TeamMember, ContestDivision, str] | None:
         with self._session() as db:
             member = db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, func.lower(TeamMemberRow.email) == email.lower()))
             if not member:
+                return None
+            parent_session = None
+            if parent_access_token:
+                parent_session = db.scalar(
+                    select(GeneralSessionRow).where(
+                        GeneralSessionRow.access_token_hash == token_hash(parent_access_token),
+                        GeneralSessionRow.revoked_at.is_(None),
+                    )
+                )
+            if (
+                parent_session
+                and member.session_revoked_at
+                and _aware(parent_session.issued_at) <= _aware(member.session_revoked_at)
+            ):
                 return None
             team = db.scalar(
                 select(ParticipantTeamRow)
@@ -1923,7 +2001,7 @@ class DbStore:
             division = db.get(ContestDivisionRow, team.division_id)
             if not division:
                 return None
-            self._revoke_active_team_sessions_for_email(db, email)
+            self._revoke_active_team_sessions_for_member(db, member)
             member.active_sessions = 1
             member.last_login_at = now_utc()
             team.status = "active"
@@ -1991,6 +2069,8 @@ class DbStore:
             division = db.get(ContestDivisionRow, session.division_id)
             db.commit()
             if not team or not member or not division:
+                return None
+            if member.session_revoked_at and _aware(session.issued_at) <= _aware(member.session_revoked_at):
                 return None
             team_model = _team(team)
             member_model = next(item for item in team_model.members if item.team_member_id == member.team_member_id)
@@ -2968,6 +3048,7 @@ class DbStore:
             )
             if not member:
                 return None
+            revoked_at = now_utc()
             sessions = db.scalars(
                 select(TeamSessionRow).where(
                     TeamSessionRow.contest_id == contest_id,
@@ -2977,7 +3058,8 @@ class DbStore:
                 )
             ).all()
             for session in sessions:
-                session.revoked_at = now_utc()
+                session.revoked_at = revoked_at
+            member.session_revoked_at = revoked_at
             member.active_sessions = 0
             db.commit()
             db.refresh(member)

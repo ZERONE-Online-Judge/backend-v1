@@ -824,9 +824,7 @@ async def delete_answer(contest_id: str, question_id: str, answer_id: str, reque
 async def participants(contest_id: str, request: Request):
     require_contest_staff(request, contest_id)
     items = []
-    for team in sorted(store.teams.values(), key=lambda item: (item.team_name or "").lower()):
-        if team.contest_id != contest_id:
-            continue
+    for team in store.participant_teams_for_operator(contest_id):
         division = store.get_division(contest_id, team.division_id)
         items.append({**team.model_dump(mode="json"), "division": division.model_dump(mode="json") if division else None})
     return page(request, items)
