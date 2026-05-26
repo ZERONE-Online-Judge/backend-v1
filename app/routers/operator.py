@@ -1293,6 +1293,16 @@ async def update_problem(contest_id: str, problem_id: str, payload: ProblemUpdat
     return ok(request, problem.model_dump(mode="json"))
 
 
+@router.delete("/operator/contests/{contest_id}/problems/{problem_id}")
+async def delete_problem(contest_id: str, problem_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    _require_contest_mutation_open(contest_id)
+    problem = store.delete_problem(contest_id, problem_id)
+    if not problem:
+        raise not_found()
+    return ok(request, problem.model_dump(mode="json"))
+
+
 @router.get("/operator/contests/{contest_id}/problems/{problem_id}/assets")
 async def problem_assets(contest_id: str, problem_id: str, request: Request):
     require_contest_staff(request, contest_id)

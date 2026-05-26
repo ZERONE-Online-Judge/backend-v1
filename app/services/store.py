@@ -3011,6 +3011,59 @@ class DbStore:
             db.refresh(row)
             return _problem(row)
 
+    def delete_problem(self, contest_id: str, problem_id: str) -> Problem | None:
+        with self._session() as db:
+            row = db.get(ProblemRow, problem_id)
+            if not row or row.contest_id != contest_id:
+                return None
+
+            item = _problem(row)
+            deleted_storage_keys: set[str] = set()
+            testcase_sets = db.scalars(select(TestcaseSetRow).where(TestcaseSetRow.problem_id == problem_id)).all()
+            testcase_set_ids = [testcase_set.testcase_set_id for testcase_set in testcase_sets]
+            if testcase_set_ids:
+                cases = db.scalars(select(TestcaseRow).where(TestcaseRow.testcase_set_id.in_(testcase_set_ids))).all()
+                for case in cases:
+                    deleted_storage_keys.add(case.input_storage_key)
+                    deleted_storage_keys.add(case.output_storage_key)
+                    db.delete(case)
+                for testcase_set in testcase_sets:
+                    db.delete(testcase_set)
+
+            assets = db.scalars(
+                select(ProblemAssetRow).where(
+                    ProblemAssetRow.contest_id == contest_id,
+                    ProblemAssetRow.problem_id == problem_id,
+                )
+            ).all()
+            for asset in assets:
+                deleted_storage_keys.add(asset.storage_key)
+                db.delete(asset)
+
+            submissions = db.scalars(
+                select(SubmissionRow).where(
+                    SubmissionRow.contest_id == contest_id,
+                    SubmissionRow.problem_id == problem_id,
+                )
+            ).all()
+            submission_ids = [submission.submission_id for submission in submissions]
+            if submission_ids:
+                jobs = db.scalars(select(JudgeJobRow).where(JudgeJobRow.submission_id.in_(submission_ids))).all()
+                for job in jobs:
+                    db.delete(job)
+                for submission in submissions:
+                    db.delete(submission)
+
+            db.delete(row)
+            db.commit()
+
+            for key in deleted_storage_keys:
+                try:
+                    object_storage.delete(key)
+                except Exception:
+                    pass
+            return item
+
     def copy_problem_to_division(
         self,
         contest_id: str,

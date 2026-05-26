@@ -1043,6 +1043,26 @@ def test_operator_problem_asset_and_testcase_metadata_flow():
     )
     assert deleted.status_code == 200
 
+    deleted_problem = client.delete(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert deleted_problem.status_code == 200
+    assert deleted_problem.json()["data"]["problem_id"] == problem["problem_id"]
+
+    relisted = client.get(
+        f"/api/operator/contests/{contest_id}/problems",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert relisted.status_code == 200
+    assert all(item["problem_id"] != problem["problem_id"] for item in relisted.json()["data"])
+
+    deleted_assets = client.get(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/assets",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert deleted_assets.status_code == 404
+
 
 def test_operator_presign_upload_returns_storage_key_and_url():
     contest_id = first_contest_id()
