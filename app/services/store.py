@@ -2749,7 +2749,9 @@ class DbStore:
             if not row:
                 return None
             for key, value in values.items():
-                if key in allowed and value is not None:
+                if key in allowed and (
+                    value is not None or key == "emergency_notice"
+                ):
                     if isinstance(value, (ContestStatus, ContestResourceAccess, ScoreboardFreezeMode)):
                         value = value.value
                     setattr(row, key, value)
