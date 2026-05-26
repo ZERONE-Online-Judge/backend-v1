@@ -2453,6 +2453,8 @@ class DbStore:
                 created_by_email=created_by_email,
             )
             db.add(row)
+            if emergency:
+                contest.emergency_notice = body
             content = contest_notice_mail(
                 contest_title=contest.title,
                 organization_name=contest.organization_name,
@@ -2502,6 +2504,9 @@ class DbStore:
             for key, value in values.items():
                 if key in allowed and value is not None:
                     setattr(row, key, value)
+            contest = db.get(ContestRow, contest_id)
+            if contest and row.emergency:
+                contest.emergency_notice = row.body
             row.updated_at = now_utc()
             db.commit()
             db.refresh(row)
