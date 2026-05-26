@@ -15,19 +15,15 @@ def hash_password(password: str, salt: str | None = None) -> str:
     return f"pbkdf2_sha256${actual_salt}${digest.hex()}"
 
 
-def verify_password(password: str, password_hash: str) -> bool:
+def verify_password(password: str, expected_hash: str) -> bool:
     try:
-        algorithm, salt, expected = password_hash.split("$", 2)
+        algorithm, salt, expected = expected_hash.split("$", 2)
     except ValueError:
         return False
     if algorithm != "pbkdf2_sha256":
         return False
     actual = hash_password(password, salt).split("$", 2)[2]
     return hmac.compare_digest(actual, expected)
-
-
-def new_token() -> str:
-    return secrets.token_urlsafe(32)
 
 
 def _b64url_encode(raw: bytes) -> str:

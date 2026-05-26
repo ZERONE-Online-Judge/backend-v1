@@ -101,9 +101,6 @@ class Contest(BaseModel):
     start_at: datetime
     end_at: datetime
     freeze_at: datetime
-    problem_public_after_end: bool = False
-    scoreboard_public_after_end: bool = False
-    submission_public_after_end: bool = False
     problem_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
     scoreboard_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
     submission_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
@@ -138,7 +135,6 @@ class Problem(BaseModel):
     time_limit_ms: int
     memory_limit_mb: int
     display_order: int
-    max_score: int = 100
 
 
 class ProblemAsset(BaseModel):
@@ -189,7 +185,6 @@ class Submission(BaseModel):
     status: SubmissionStatus = SubmissionStatus.WAITING
     submitted_at: datetime = Field(default_factory=now_utc)
     status_updated_at: datetime = Field(default_factory=now_utc)
-    awarded_score: int | None = None
     compile_message: str | None = None
     judge_message: str | None = None
     failed_testcase_order: int | None = None

@@ -15,7 +15,7 @@ from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, Score
 from app.services.authz import require_contest_staff, require_staff
 from app.services.errors import AppError, not_found
 from app.services.mail_templates import absolute_url, render_branded_email
-from app.services.package_builder import PackageBuildError, build_problem_package, package_role
+from app.services.package_builder import PackageBuildError, package_role
 from app.services.responses import ok, page
 from app.settings import settings
 from app.services.store import store
@@ -86,9 +86,6 @@ class ContestSettingsUpdateRequest(BaseModel):
     start_at: datetime | None = None
     end_at: datetime | None = None
     freeze_at: datetime | None = None
-    problem_public_after_end: bool | None = None
-    scoreboard_public_after_end: bool | None = None
-    submission_public_after_end: bool | None = None
     problem_access_after_end: ContestResourceAccess | None = None
     scoreboard_access_after_end: ContestResourceAccess | None = None
     submission_access_after_end: ContestResourceAccess | None = None
@@ -209,10 +206,6 @@ class TestcaseCreateRequest(BaseModel):
     output_sha256: str
     time_limit_ms_override: int | None = None
     memory_limit_mb_override: int | None = None
-
-
-class PackageBuildRequest(BaseModel):
-    script_text: str | None = None
 
 
 class VerifiedTestcasePayload(BaseModel):
@@ -1225,7 +1218,6 @@ async def create_problem(contest_id: str, payload: ProblemCreateRequest, request
             time_limit_ms=payload.time_limit_ms,
             memory_limit_mb=payload.memory_limit_mb,
             display_order=payload.display_order,
-            max_score=100,
         )
     except ValueError:
         raise not_found("Contest division is not configured.")
@@ -1516,25 +1508,5 @@ async def create_verified_testcase_set(
         raise not_found()
     except Exception as error:
         raise AppError(422, "testcase_verification_failed", f"unexpected verifier error: {error}")
-    _schedule_bundle_warm(background_tasks, contest_id, problem_id)
-    return ok(request, result)
-
-
-@router.post("/operator/contests/{contest_id}/problems/{problem_id}/package-builds")
-async def build_package(
-    contest_id: str,
-    problem_id: str,
-    payload: PackageBuildRequest,
-    request: Request,
-    background_tasks: BackgroundTasks,
-):
-    require_contest_staff(request, contest_id)
-    _require_contest_mutation_open(contest_id)
-    try:
-        result = build_problem_package(contest_id, problem_id, payload.script_text)
-    except PackageBuildError as error:
-        raise AppError(422, "package_build_failed", str(error))
-    except ValueError:
-        raise not_found()
     _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, result)

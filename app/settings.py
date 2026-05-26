@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     enable_demo_seed: bool = False
     allow_empty_otp: bool = False
     bootstrap_service_master_email: str | None = None
-    bootstrap_service_master_password: str | None = None
     bootstrap_service_master_name: str = "Service Master"
     auth_token_secret: str = "dev-auth-token-secret-change-me"
     auth_token_issuer: str = "zerone-online-judge"

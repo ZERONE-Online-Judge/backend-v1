@@ -25,9 +25,6 @@ def upgrade() -> None:
         sa.Column("start_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("end_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("freeze_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("problem_public_after_end", sa.Boolean(), nullable=False),
-        sa.Column("scoreboard_public_after_end", sa.Boolean(), nullable=False),
-        sa.Column("submission_public_after_end", sa.Boolean(), nullable=False),
         sa.Column("emergency_notice", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
@@ -86,7 +83,6 @@ def upgrade() -> None:
         sa.Column("time_limit_ms", sa.Integer(), nullable=False),
         sa.Column("memory_limit_mb", sa.Integer(), nullable=False),
         sa.Column("display_order", sa.Integer(), nullable=False),
-        sa.Column("max_score", sa.Integer(), nullable=False),
         sa.UniqueConstraint("contest_id", "division_id", "problem_code", name="uq_problem_division_code"),
     )
     op.create_index("ix_problems_contest_id", "problems", ["contest_id"])
@@ -147,7 +143,6 @@ def upgrade() -> None:
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("status_updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("awarded_score", sa.Integer(), nullable=True),
         sa.Column("compile_message", sa.Text(), nullable=True),
     )
     op.create_index("ix_submissions_contest_id", "submissions", ["contest_id"])
@@ -189,7 +184,6 @@ def upgrade() -> None:
         sa.Column("email", sa.String(length=255), nullable=False),
         sa.Column("display_name", sa.String(length=120), nullable=False),
         sa.Column("is_service_master", sa.Boolean(), nullable=False),
-        sa.Column("password_hash", sa.Text(), nullable=False),
         sa.Column("permissions", sa.Text(), nullable=False),
         sa.Column("contest_scopes", sa.Text(), nullable=False),
     )

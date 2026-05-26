@@ -70,6 +70,9 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN scoreboard_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
                 if "submission_access_after_end" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN submission_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
+                for legacy_column in ("problem_public_after_end", "scoreboard_public_after_end", "submission_public_after_end"):
+                    if legacy_column in columns:
+                        connection.execute(text(f"ALTER TABLE contests DROP COLUMN {legacy_column}"))
                 if "board_access_after_end" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN board_access_after_end VARCHAR(32) DEFAULT 'participants' NOT NULL"))
                 if "board_write_after_end" not in columns:
@@ -94,3 +97,18 @@ def create_schema() -> None:
             if "agent_version" not in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE judge_nodes ADD COLUMN agent_version VARCHAR(64) DEFAULT 'unknown' NOT NULL"))
+        if "staff_accounts" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("staff_accounts")}
+            if "password_hash" in columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE staff_accounts DROP COLUMN password_hash"))
+        if "problems" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("problems")}
+            if "max_score" in columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE problems DROP COLUMN max_score"))
+        if "submissions" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("submissions")}
+            if "awarded_score" in columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE submissions DROP COLUMN awarded_score"))

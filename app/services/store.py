@@ -73,7 +73,7 @@ from app.orm_models import (
     TestcaseRow,
     TestcaseSetRow,
 )
-from app.services.security import decode_session_token, hash_password, new_session_token, new_token, token_hash, verify_password
+from app.services.security import decode_session_token, hash_password, new_session_token, token_hash, verify_password
 from app.services.storage import object_storage
 from app.services.mail_templates import (
     absolute_url,
@@ -138,9 +138,6 @@ def _valid_session_token(token: str, expected_type: str) -> bool:
 
 
 def _contest(row: ContestRow) -> Contest:
-    problem_access = "public" if row.problem_public_after_end else (row.problem_access_after_end or "private")
-    scoreboard_access = "public" if row.scoreboard_public_after_end else (row.scoreboard_access_after_end or "private")
-    submission_access = "public" if row.submission_public_after_end else (row.submission_access_after_end or "private")
     return Contest(
         contest_id=row.contest_id,
         title=row.title,
@@ -150,12 +147,9 @@ def _contest(row: ContestRow) -> Contest:
         start_at=_aware(row.start_at),
         end_at=_aware(row.end_at),
         freeze_at=_aware(row.freeze_at),
-        problem_public_after_end=row.problem_public_after_end,
-        scoreboard_public_after_end=row.scoreboard_public_after_end,
-        submission_public_after_end=row.submission_public_after_end,
-        problem_access_after_end=ContestResourceAccess(problem_access),
-        scoreboard_access_after_end=ContestResourceAccess(scoreboard_access),
-        submission_access_after_end=ContestResourceAccess(submission_access),
+        problem_access_after_end=ContestResourceAccess(row.problem_access_after_end or "private"),
+        scoreboard_access_after_end=ContestResourceAccess(row.scoreboard_access_after_end or "private"),
+        submission_access_after_end=ContestResourceAccess(row.submission_access_after_end or "private"),
         board_access_after_end=ContestResourceAccess(row.board_access_after_end or "participants"),
         board_write_after_end=bool(row.board_write_after_end),
         notice_access_after_end=ContestResourceAccess(row.notice_access_after_end or "public"),
@@ -219,7 +213,6 @@ def _problem(row: ProblemRow) -> Problem:
         time_limit_ms=row.time_limit_ms,
         memory_limit_mb=row.memory_limit_mb,
         display_order=row.display_order,
-        max_score=row.max_score,
     )
 
 
@@ -283,7 +276,6 @@ def _submission(row: SubmissionRow, include_source: bool = True) -> Submission:
         status=SubmissionStatus(row.status),
         submitted_at=_aware(row.submitted_at),
         status_updated_at=_aware(row.status_updated_at),
-        awarded_score=row.awarded_score,
         compile_message=row.compile_message,
         judge_message=row.judge_message,
         failed_testcase_order=row.failed_testcase_order,
@@ -641,7 +633,6 @@ class DbStore:
                     SubmissionRow.status,
                     SubmissionRow.submitted_at,
                     SubmissionRow.status_updated_at,
-                    SubmissionRow.awarded_score,
                     SubmissionRow.compile_message,
                     SubmissionRow.judge_message,
                     SubmissionRow.failed_testcase_order,
@@ -1043,7 +1034,6 @@ class DbStore:
                     SubmissionRow.status,
                     SubmissionRow.submitted_at,
                     SubmissionRow.status_updated_at,
-                    SubmissionRow.awarded_score,
                     SubmissionRow.compile_message,
                     SubmissionRow.judge_message,
                     SubmissionRow.failed_testcase_order,
@@ -1251,7 +1241,6 @@ class DbStore:
                             time_limit_ms=1000 + index * 500,
                             memory_limit_mb=512,
                             display_order=index + 1,
-                            max_score=100,
                         )
                     )
 
@@ -1320,7 +1309,6 @@ class DbStore:
                         language="cpp17",
                         source_code="int main(){return 0;}",
                         status=SubmissionStatus.ACCEPTED.value,
-                        awarded_score=100,
                     )
                 )
 
@@ -1338,12 +1326,10 @@ class DbStore:
                         email="test3@zoj.com",
                         display_name="Service Master",
                         is_service_master=True,
-                        password_hash=hash_password("demo"),
                     ),
                     StaffAccountRow(
                         email="test4@zoj.com",
                         display_name="Contest Operator",
-                        password_hash=hash_password("demo"),
                         contest_scopes=json.dumps({contest.contest_id: ["contest.*"]}),
                     ),
                 ]
@@ -1352,8 +1338,7 @@ class DbStore:
 
     def ensure_bootstrap_service_master(self) -> None:
         email = settings.bootstrap_service_master_email
-        password = settings.bootstrap_service_master_password
-        if not email or not password:
+        if not email:
             return
         with self._session() as db:
             account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
@@ -1364,7 +1349,6 @@ class DbStore:
                     email=email,
                     display_name=settings.bootstrap_service_master_name,
                     is_service_master=True,
-                    password_hash=hash_password(password),
                     permissions="",
                     contest_scopes=json.dumps({}),
                 )
@@ -1406,7 +1390,6 @@ class DbStore:
                             email=email,
                             display_name=display_name,
                             is_service_master=is_master,
-                            password_hash=hash_password("demo"),
                             contest_scopes=json.dumps(scopes),
                         )
                     )
@@ -1449,13 +1432,6 @@ class DbStore:
             ).all():
                 db.delete(member)
             db.commit()
-
-    def authenticate_staff(self, email: str, password: str) -> dict | None:
-        with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            if not account or not verify_password(password, account.password_hash):
-                return None
-            return self._issue_staff_session(db, account)
 
     def is_staff_email(self, email: str) -> bool:
         with self._session() as db:
@@ -1513,17 +1489,6 @@ class DbStore:
                 conflicts.append(email)
         return sorted(set(conflicts))
 
-    def _is_password_login_account(self, account: StaffAccountRow | None) -> bool:
-        if not account:
-            return False
-        has_service_permissions = bool([item for item in (account.permissions or "").split(",") if item.strip()])
-        return bool(account.is_service_master or has_service_permissions)
-
-    def is_password_login_email(self, email: str) -> bool:
-        with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            return self._is_password_login_account(account)
-
     def _issue_staff_session(self, db: Session, account: StaffAccountRow) -> dict:
         access_token = new_session_token(
             "staff_access",
@@ -1579,37 +1544,6 @@ class DbStore:
                 recipient_email=email,
                 subject="[ZOJ] Staff login verification code",
                 body_text=f"Your staff login verification code is {code}. It expires in {settings.otp_ttl_seconds // 60} minutes.",
-            )
-            return code
-
-    def create_general_password_otp(self, email: str, password: str) -> str | None:
-        with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            if not self._is_password_login_account(account) or not verify_password(password, account.password_hash):
-                return None
-            code = f"{secrets.randbelow(1_000_000):06d}"
-            row = db.get(OtpCodeRow, email)
-            if row:
-                row.contest_id = STAFF_OTP_SCOPE
-                row.code = code
-                row.created_at = now_utc()
-                row.expires_at = now_utc() + timedelta(seconds=settings.otp_ttl_seconds)
-                row.verified_at = None
-            else:
-                db.add(
-                    OtpCodeRow(
-                        email=email,
-                        contest_id=STAFF_OTP_SCOPE,
-                        code=code,
-                        expires_at=now_utc() + timedelta(seconds=settings.otp_ttl_seconds),
-                    )
-                )
-            db.commit()
-            self.enqueue_mail(
-                mail_type="general_password_otp",
-                recipient_email=email,
-                subject="[ZOJ] Admin login verification code",
-                body_text=f"관리자 로그인 인증번호는 {code} 입니다. {settings.otp_ttl_seconds // 60}분 안에 입력하세요.",
             )
             return code
 
@@ -1831,37 +1765,6 @@ class DbStore:
             otp = db.get(OtpCodeRow, email)
             demo_bypass = settings.allow_empty_otp and otp_code == ""
             if not demo_bypass and (not otp or otp.contest_id != GENERAL_OTP_SCOPE or otp.code != otp_code or _aware(otp.expires_at) <= now_utc()):
-                return None
-            profile = self._general_profile(db, email, issue_operator_session=False)
-            if not profile:
-                return None
-            conflict = self._active_login_session_summary(db, email)
-            if conflict and not force_new_session:
-                raise SessionConflictError(conflict)
-            if conflict and force_new_session:
-                self._revoke_active_login_sessions_for_email(db, email)
-            if otp:
-                otp.verified_at = now_utc()
-            return self._issue_general_session(db, email, profile)
-
-    def verify_general_password(self, email: str, password: str) -> dict | None:
-        with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            if not self._is_password_login_account(account) or not verify_password(password, account.password_hash):
-                return None
-            profile = self._general_profile(db, email, issue_operator_session=False)
-            if not profile:
-                return None
-            return self._issue_general_session(db, email, profile)
-
-    def verify_general_password_otp(self, email: str, password: str, otp_code: str, force_new_session: bool = False) -> dict | None:
-        with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            if not self._is_password_login_account(account) or not verify_password(password, account.password_hash):
-                return None
-            otp = db.get(OtpCodeRow, email)
-            demo_bypass = settings.allow_empty_otp and otp_code == ""
-            if not demo_bypass and (not otp or otp.contest_id != STAFF_OTP_SCOPE or otp.code != otp_code or _aware(otp.expires_at) <= now_utc()):
                 return None
             profile = self._general_profile(db, email, issue_operator_session=False)
             if not profile:
@@ -2254,7 +2157,7 @@ class DbStore:
             db.refresh(row)
             return _division(row)
 
-    def upsert_contest_operator(self, contest_id: str, email: str, display_name: str, password: str | None = None) -> StaffAccount:
+    def upsert_contest_operator(self, contest_id: str, email: str, display_name: str) -> StaffAccount:
         with self._session() as db:
             contest = db.get(ContestRow, contest_id)
             if not contest:
@@ -2269,7 +2172,6 @@ class DbStore:
                     email=email,
                     display_name=display_name,
                     is_service_master=False,
-                    password_hash=hash_password(password or new_token()),
                     permissions="",
                     contest_scopes=json.dumps({contest_id: ["contest.*"]}),
                 )
@@ -2736,9 +2638,6 @@ class DbStore:
             "start_at",
             "end_at",
             "freeze_at",
-            "problem_public_after_end",
-            "scoreboard_public_after_end",
-            "submission_public_after_end",
             "problem_access_after_end",
             "scoreboard_access_after_end",
             "submission_access_after_end",
@@ -2760,20 +2659,8 @@ class DbStore:
                     if isinstance(value, (ContestStatus, ContestResourceAccess, ScoreboardFreezeMode)):
                         value = value.value
                     setattr(row, key, value)
-            if "problem_access_after_end" in values:
-                row.problem_public_after_end = row.problem_access_after_end == ContestResourceAccess.PUBLIC.value
-            elif "problem_public_after_end" in values:
-                row.problem_access_after_end = "public" if row.problem_public_after_end else "private"
             if row.problem_access_after_end == ContestResourceAccess.PRIVATE.value:
                 row.mock_judging_enabled = False
-            if "scoreboard_access_after_end" in values:
-                row.scoreboard_public_after_end = row.scoreboard_access_after_end == ContestResourceAccess.PUBLIC.value
-            elif "scoreboard_public_after_end" in values:
-                row.scoreboard_access_after_end = "public" if row.scoreboard_public_after_end else "private"
-            if "submission_access_after_end" in values:
-                row.submission_public_after_end = row.submission_access_after_end == ContestResourceAccess.PUBLIC.value
-            elif "submission_public_after_end" in values:
-                row.submission_access_after_end = "public" if row.submission_public_after_end else "private"
             row.status = _schedule_status(row.status, row.start_at, row.end_at, now_utc())
             db.commit()
             db.refresh(row)
@@ -3104,7 +2991,6 @@ class DbStore:
         time_limit_ms: int,
         memory_limit_mb: int,
         display_order: int,
-        max_score: int,
     ) -> Problem:
         with self._session() as db:
             division = db.get(ContestDivisionRow, division_id)
@@ -3119,7 +3005,6 @@ class DbStore:
                 time_limit_ms=time_limit_ms,
                 memory_limit_mb=memory_limit_mb,
                 display_order=display_order,
-                max_score=max_score,
             )
             db.add(row)
             db.commit()
@@ -3157,7 +3042,6 @@ class DbStore:
                 time_limit_ms=source.time_limit_ms,
                 memory_limit_mb=source.memory_limit_mb,
                 display_order=next_display_order,
-                max_score=source.max_score,
             )
             db.add(target)
             db.flush()
@@ -4351,7 +4235,6 @@ class DbStore:
                 "problem_id": problem.problem_id,
                 "time_limit_ms": problem.time_limit_ms,
                 "memory_limit_mb": problem.memory_limit_mb,
-                "max_score": problem.max_score,
             },
             "testcase_set": {
                 "testcase_set_id": testcase_set.testcase_set_id,
@@ -4588,7 +4471,6 @@ class DbStore:
         node_secret: str,
         lease_token: str,
         final_status: SubmissionStatus,
-        awarded_score: int | None,
         compile_message: str | None,
         judge_message: str | None,
         failed_testcase_order: int | None,
@@ -4610,7 +4492,6 @@ class DbStore:
             if not submission:
                 return None
             submission.status = final_status.value
-            submission.awarded_score = awarded_score
             submission.compile_message = compile_message
             submission.judge_message = judge_message
             submission.failed_testcase_order = failed_testcase_order

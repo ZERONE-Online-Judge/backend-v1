@@ -18,9 +18,6 @@ class ContestRow(Base):
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     freeze_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    problem_public_after_end: Mapped[bool] = mapped_column(Boolean, default=False)
-    scoreboard_public_after_end: Mapped[bool] = mapped_column(Boolean, default=False)
-    submission_public_after_end: Mapped[bool] = mapped_column(Boolean, default=False)
     problem_access_after_end: Mapped[str] = mapped_column(String(32), default="private")
     scoreboard_access_after_end: Mapped[str] = mapped_column(String(32), default="private")
     submission_access_after_end: Mapped[str] = mapped_column(String(32), default="private")
@@ -93,7 +90,6 @@ class ProblemRow(Base):
     time_limit_ms: Mapped[int] = mapped_column(Integer)
     memory_limit_mb: Mapped[int] = mapped_column(Integer)
     display_order: Mapped[int] = mapped_column(Integer)
-    max_score: Mapped[int] = mapped_column(Integer, default=100)
 
 
 class ProblemAssetRow(Base):
@@ -150,7 +146,6 @@ class SubmissionRow(Base):
     status: Mapped[str] = mapped_column(String(32), index=True)
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
-    awarded_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     compile_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     judge_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     failed_testcase_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -253,7 +248,6 @@ class StaffAccountRow(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(120))
     is_service_master: Mapped[bool] = mapped_column(Boolean, default=False)
-    password_hash: Mapped[str] = mapped_column(Text)
     permissions: Mapped[str] = mapped_column(Text, default="")
     contest_scopes: Mapped[str] = mapped_column(Text, default="{}")
 

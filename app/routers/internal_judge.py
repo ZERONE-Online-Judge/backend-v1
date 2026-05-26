@@ -37,7 +37,6 @@ class ResultRequest(BaseModel):
     node_secret: str
     lease_token: str
     final_status: SubmissionStatus
-    awarded_score: int | None = None
     compile_message: str | None = None
     judge_message: str | None = None
     failed_testcase_order: int | None = None
@@ -149,7 +148,6 @@ async def report_result(job_id: str, payload: ResultRequest, request: Request):
             payload.node_secret,
             payload.lease_token,
             payload.final_status,
-            payload.awarded_score,
             payload.compile_message,
             payload.judge_message,
             payload.failed_testcase_order,

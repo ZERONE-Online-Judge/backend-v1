@@ -15,10 +15,21 @@ branch_labels = None
 depends_on = None
 
 
+def _has_column(table_name: str, column_name: str) -> bool:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if table_name not in inspector.get_table_names():
+        return False
+    return column_name in {column["name"] for column in inspector.get_columns(table_name)}
+
+
 def upgrade() -> None:
-    op.execute("UPDATE contests SET problem_access_after_end = 'public' WHERE problem_public_after_end = TRUE")
-    op.execute("UPDATE contests SET scoreboard_access_after_end = 'public' WHERE scoreboard_public_after_end = TRUE")
-    op.execute("UPDATE contests SET submission_access_after_end = 'public' WHERE submission_public_after_end = TRUE")
+    if _has_column("contests", "problem_public_after_end"):
+        op.execute("UPDATE contests SET problem_access_after_end = 'public' WHERE problem_public_after_end = TRUE")
+    if _has_column("contests", "scoreboard_public_after_end"):
+        op.execute("UPDATE contests SET scoreboard_access_after_end = 'public' WHERE scoreboard_public_after_end = TRUE")
+    if _has_column("contests", "submission_public_after_end"):
+        op.execute("UPDATE contests SET submission_access_after_end = 'public' WHERE submission_public_after_end = TRUE")
     op.add_column(
         "contests",
         sa.Column(

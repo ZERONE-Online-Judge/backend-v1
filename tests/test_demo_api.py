@@ -97,7 +97,6 @@ def claim_jobs_until(node_id: str, node_secret: str, submission_ids: list[str]) 
                         "node_secret": node_secret,
                         "lease_token": job["lease_token"],
                         "final_status": "system_error",
-                        "awarded_score": 0,
                     },
                 )
         if not remaining:
@@ -707,7 +706,6 @@ def test_operator_mutations_are_locked_during_running_contest():
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
             "display_order": 99,
-            "max_score": 100,
         },
     )
     assert problem_create.status_code == 409
@@ -935,7 +933,6 @@ def test_operator_problem_asset_and_testcase_metadata_flow():
             "time_limit_ms": 2000,
             "memory_limit_mb": 512,
             "display_order": 4,
-            "max_score": 100,
         },
     )
     assert created.status_code == 200
@@ -1084,71 +1081,6 @@ def test_storage_proxy_put_and_get_local_object():
     assert get.text == "hello"
 
 
-def test_operator_builds_package_from_recipe():
-    contest_id = first_contest_id()
-    set_contest_mutable(contest_id)
-    operator = staff_tokens("test4@zoj.com")
-    divisions = client.get(f"/api/operator/contests/{contest_id}/divisions", headers=auth_headers(operator["access_token"]))
-    division_id = next(item for item in divisions.json()["data"] if item["code"] == "advanced")["division_id"]
-    suffix = uuid4().hex[:8]
-    created = client.post(
-        f"/api/operator/contests/{contest_id}/problems",
-        headers=auth_headers(operator["access_token"]),
-        json={
-            "division_id": division_id,
-            "problem_code": f"B{suffix[:4]}",
-            "title": "Package Build",
-            "statement": "Build generated tests.",
-            "time_limit_ms": 1000,
-            "memory_limit_mb": 512,
-            "display_order": 50,
-            "max_score": 100,
-        },
-    )
-    assert created.status_code == 200
-    problem = created.json()["data"]
-
-    def add_package_asset(role: str, filename: str, source: str):
-        storage_key = f"contests/{contest_id}/problems/{problem['problem_id']}/package-files/{role}/{suffix}-{filename}"
-        object_storage.write_text(storage_key, source)
-        response = client.post(
-            f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/assets",
-            headers=auth_headers(operator["access_token"]),
-            json={
-                "original_filename": filename,
-                "storage_key": storage_key,
-                "mime_type": "text/plain",
-                "file_size": len(source.encode("utf-8")),
-                "sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
-            },
-        )
-        assert response.status_code == 200
-
-    add_package_asset("package-resource", "helper.py", "def emit(value):\n    print(value)\n")
-    add_package_asset("generator", "gen_echo.py", "import sys\nfrom helper import emit\nemit(sys.argv[1])\n")
-    add_package_asset("validator", "validator.py", "import sys\nvalue=sys.stdin.read().strip()\nassert value.isdigit() and int(value) > 0\n")
-    add_package_asset("main-solution", "main.py", "import sys\nprint(int(sys.stdin.read().strip()) * 2)\n")
-    response = client.post(
-        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/package-builds",
-        headers=auth_headers(operator["access_token"]),
-        json={"script_text": "gen_echo 7\ngen_echo 11\n"},
-    )
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["generated_count"] == 2
-    assert data["testcase_set"]["is_active"] is True
-
-    listed = client.get(
-        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/testcase-sets",
-        headers=auth_headers(operator["access_token"]),
-    )
-    assert listed.status_code == 200
-    cases = listed.json()["data"][-1]["testcases"]
-    assert len(cases) == 2
-    assert object_storage.read_text(cases[0]["input_storage_key"]).strip() == "7"
-    assert object_storage.read_text(cases[0]["output_storage_key"]).strip() == "14"
-
-
 def test_operator_creates_verified_testcase_set_from_in_out_files():
     contest_id = first_contest_id()
     set_contest_mutable(contest_id)
@@ -1167,7 +1099,6 @@ def test_operator_creates_verified_testcase_set_from_in_out_files():
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
             "display_order": 60,
-            "max_score": 100,
         },
     )
     assert created.status_code == 200
@@ -1266,7 +1197,6 @@ def test_operator_can_delete_testcase_and_testcase_set():
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
             "display_order": 62,
-            "max_score": 100,
         },
     )
     assert created.status_code == 200
@@ -1336,7 +1266,6 @@ def test_operator_package_status_and_zip_testcase_import():
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
             "display_order": 61,
-            "max_score": 100,
         },
     )
     assert created.status_code == 200
@@ -1422,7 +1351,6 @@ def test_package_status_does_not_require_checker_when_testcases_exist():
             "time_limit_ms": 1000,
             "memory_limit_mb": 128,
             "display_order": 62,
-            "max_score": 100,
         },
     )
     assert created.status_code == 200
@@ -2031,15 +1959,15 @@ def test_operator_updates_contest_settings_and_public_after_end_policy():
             "start_at": start_at.isoformat(),
             "freeze_at": freeze_at.isoformat(),
             "end_at": end_at.isoformat(),
-            "problem_public_after_end": True,
-            "scoreboard_public_after_end": True,
-            "submission_public_after_end": True,
+            "problem_access_after_end": "public",
+            "scoreboard_access_after_end": "public",
+            "submission_access_after_end": "public",
             "emergency_notice": "Final review in progress",
         },
     )
     assert updated.status_code == 200
     assert updated.json()["data"]["status"] == "ended"
-    assert updated.json()["data"]["problem_public_after_end"] is True
+    assert updated.json()["data"]["problem_access_after_end"] == "public"
 
     public_problems = client.get(f"/api/contests/{contest_id}/problems")
     assert public_problems.status_code == 200
@@ -2062,9 +1990,9 @@ def test_operator_updates_contest_settings_and_public_after_end_policy():
             "start_at": restore_start.isoformat(),
             "freeze_at": restore_freeze.isoformat(),
             "end_at": restore_end.isoformat(),
-            "problem_public_after_end": False,
-            "scoreboard_public_after_end": False,
-            "submission_public_after_end": False,
+            "problem_access_after_end": "private",
+            "scoreboard_access_after_end": "private",
+            "submission_access_after_end": "private",
             "emergency_notice": "제출 지연은 long polling 상태창에서 확인하세요.",
         },
     )
@@ -2621,7 +2549,6 @@ def test_judge_node_secret_is_required_for_claim_and_result():
             "node_secret": "wrong",
             "lease_token": job["lease_token"],
             "final_status": "accepted",
-            "awarded_score": 100,
         },
     )
     assert result_denied.status_code == 403
@@ -2728,7 +2655,6 @@ def test_submission_progress_is_updated_during_judging():
             "node_secret": node_secret,
             "lease_token": job["lease_token"],
             "final_status": "wrong_answer",
-            "awarded_score": 0,
             "runtime_ms": 123,
             "memory_kb": 4567,
         },
@@ -2904,7 +2830,6 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
             "node_secret": node_secret,
             "lease_token": claimed["lease_token"],
             "final_status": "accepted",
-            "awarded_score": 100,
         },
     )
     assert completed.status_code == 200
@@ -2927,7 +2852,6 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
             "display_order": 120,
-            "max_score": 100,
         },
     ).json()["data"]
     set_contest_running(contest_id)
@@ -2951,11 +2875,11 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     jobs_by_submission = claim_jobs_until(node_id, node_secret, [submission["submission_id"] for submission in submissions])
 
     results = [
-        (submissions[0]["submission_id"], "wrong_answer", 30),
-        (submissions[1]["submission_id"], "wrong_answer", 20),
-        (submissions[2]["submission_id"], "compile_error", 100),
+        (submissions[0]["submission_id"], "wrong_answer"),
+        (submissions[1]["submission_id"], "wrong_answer"),
+        (submissions[2]["submission_id"], "compile_error"),
     ]
-    for submission_id, status, score in results:
+    for submission_id, status in results:
         job = jobs_by_submission[submission_id]
         response = client.post(
             f"/api/internal/judge/jobs/{job['judge_job_id']}/result",
@@ -2963,7 +2887,6 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
                 "node_secret": node_secret,
                 "lease_token": job["lease_token"],
                 "final_status": status,
-                "awarded_score": score,
             },
         )
         assert response.status_code == 200
@@ -2976,7 +2899,6 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     team_row = next(row for row in scoreboard.json()["data"]["rows"] if row["team_id"] == login["team"]["participant_team_id"])
     problem_score = next(item for item in team_row["problem_scores"] if item["problem_id"] == problem["problem_id"])
     assert "score" not in problem_score
-    assert "max_score" not in problem_score
     assert problem_score["best_submission_id"] is None
     assert problem_score["attempts"] == 2
     assert problem_score["wrong_attempts"] == 2
@@ -3001,7 +2923,6 @@ def test_manual_rejudge_api_is_not_available_to_service_master_or_operator():
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
             "display_order": 130,
-            "max_score": 100,
         },
     ).json()["data"]
     set_contest_running(contest_id)
@@ -3028,7 +2949,6 @@ def test_manual_rejudge_api_is_not_available_to_service_master_or_operator():
             "node_secret": node_secret,
             "lease_token": job["lease_token"],
             "final_status": "wrong_answer",
-            "awarded_score": 90,
         },
     )
     assert result.status_code == 200
@@ -3080,7 +3000,6 @@ def test_judge_claim_includes_active_testcases():
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
             "display_order": 99,
-            "max_score": 100,
         },
     ).json()["data"]
     testcase_set = client.post(
