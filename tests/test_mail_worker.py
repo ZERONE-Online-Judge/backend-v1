@@ -30,6 +30,7 @@ def test_send_mail_uses_resend_provider(monkeypatch):
     mail_worker.send_mail("user@example.com", "Subject", "Plain body", "<p>HTML body</p>")
 
     assert fake_resend.api_key == "re_test"
+    assert fake_resend.api_url == "https://api.resend.com"
     assert captured["params"] == {
         "from": "ZOJ <noreply@mail.example.com>",
         "to": ["user@example.com"],

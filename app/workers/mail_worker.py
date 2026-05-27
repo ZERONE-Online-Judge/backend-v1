@@ -62,7 +62,11 @@ def _send_resend_mail(recipient_email: str, subject: str, body_text: str, body_h
     if resend is None:
         raise RuntimeError("resend package is not installed.")
 
+    api_url = settings.resend_api_url.rstrip("/")
+    if api_url.endswith("/emails"):
+        api_url = api_url.removesuffix("/emails")
     resend.api_key = settings.resend_api_key
+    resend.api_url = api_url
     params: dict[str, object] = {
         "from": from_email,
         "to": [recipient_email],
