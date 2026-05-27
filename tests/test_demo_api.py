@@ -3002,6 +3002,44 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     assert completed.status_code == 200
 
 
+def test_submission_source_code_normalizes_line_endings_for_length():
+    contest_id, login = participant_login()
+    set_contest_running(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    division_id = login["division"]["division_id"]
+    problems = client.get(
+        f"/api/operator/contests/{contest_id}/problems",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert problems.status_code == 200
+    problem = next(item for item in problems.json()["data"] if item["division_id"] == division_id)
+    source_code = "print(1)\r\nprint(2)\rprint(3)"
+    normalized = "print(1)\nprint(2)\nprint(3)"
+
+    created = client.post(
+        f"/api/contests/{contest_id}/problems/{problem['problem_id']}/submissions",
+        headers=auth_headers(login["access_token"]),
+        json={"language": "python313", "source_code": source_code},
+    )
+    assert created.status_code == 200
+    submission_id = created.json()["data"]["submission_id"]
+
+    operator_detail = client.get(
+        f"/api/operator/contests/{contest_id}/submissions/{submission_id}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert operator_detail.status_code == 200
+    assert operator_detail.json()["data"]["source_code"] == normalized
+
+    operator_list = client.get(
+        f"/api/operator/contests/{contest_id}/submissions",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert operator_list.status_code == 200
+    listed = next(item for item in operator_list.json()["data"] if item["submission_id"] == submission_id)
+    assert listed["source_code_length"] == len(normalized.encode("utf-8"))
+
+
 def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     contest_id, login = participant_login()
     set_contest_mutable(contest_id)

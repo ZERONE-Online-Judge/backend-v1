@@ -287,6 +287,10 @@ def _submission(row: SubmissionRow, include_source: bool = True) -> Submission:
     )
 
 
+def _normalize_source_code(source_code: str) -> str:
+    return source_code.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _job(row: JudgeJobRow) -> JudgeJob:
     return JudgeJob(
         judge_job_id=row.judge_job_id,
@@ -1121,10 +1125,13 @@ class DbStore:
             return {}
         with self._session() as db:
             rows = db.execute(
-                select(SubmissionRow.submission_id, func.length(SubmissionRow.source_code))
+                select(SubmissionRow.submission_id, SubmissionRow.source_code)
                 .where(SubmissionRow.submission_id.in_(submission_ids))
             ).all()
-            return {str(submission_id): int(length or 0) for submission_id, length in rows}
+            return {
+                str(submission_id): len((source_code or "").encode("utf-8"))
+                for submission_id, source_code in rows
+            }
 
     def pending_queue_ranks(self, contest_id: str | None = None) -> dict[str, int]:
         filters = [JudgeJobRow.status == "pending"]
@@ -3567,6 +3574,7 @@ class DbStore:
             return result
 
     def create_submission(self, contest_id: str, problem_id: str, team_member_email: str, language: str, source_code: str) -> Submission:
+        source_code = _normalize_source_code(source_code)
         with self._session() as db:
             problem = db.get(ProblemRow, problem_id)
             if not problem or problem.contest_id != contest_id:
@@ -3604,6 +3612,7 @@ class DbStore:
             return _submission(submission)
 
     def create_operator_test_submission(self, contest_id: str, problem_id: str, language: str, source_code: str) -> Submission:
+        source_code = _normalize_source_code(source_code)
         with self._session() as db:
             problem = db.get(ProblemRow, problem_id)
             if not problem or problem.contest_id != contest_id:
