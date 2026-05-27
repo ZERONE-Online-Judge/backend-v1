@@ -2401,6 +2401,7 @@ def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
         for target in ("스코어보드 프리즈", "대회 종료")
         for label in ("30분", "10분", "5분", "1분")
     }
+    scheduled_titles.update({"스코어보드 프리즈 시작", "대회 종료", "스코어보드 공개됨"})
     for notice in store.contest_notices_for_view(contest_id, operator=True):
         if notice.title in scheduled_titles:
             store.delete_contest_notice(contest_id, notice.contest_notice_id)
@@ -2461,6 +2462,41 @@ def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
         for item in end_notices
     )
     assert "대회 종료까지 5분 남았습니다" in store.contests[contest_id].emergency_notice
+
+    store.update_contest_settings(
+        contest_id,
+        status=ContestStatus.RUNNING,
+        start_at=now - timedelta(hours=2),
+        freeze_at=now - timedelta(hours=1),
+        end_at=now - timedelta(minutes=1),
+        scoreboard_access_after_end="public",
+        emergency_notice="",
+    )
+    ended_count = store.enqueue_due_contest_emergency_notices()
+    duplicate_ended_count = store.enqueue_due_contest_emergency_notices()
+    assert ended_count >= 2
+    assert duplicate_ended_count == 0
+
+    ended_notice = client.get(
+        f"/api/operator/contests/{contest_id}/notices",
+        headers=headers,
+    )
+    assert ended_notice.status_code == 200
+    ended_notices = ended_notice.json()["data"]
+    assert any(
+        item["title"] == "대회 종료"
+        and item["emergency"]
+        and item["pinned"]
+        and "대회가 종료되었습니다" in item["body"]
+        for item in ended_notices
+    )
+    assert any(
+        item["title"] == "스코어보드 공개됨"
+        and item["emergency"]
+        and item["pinned"]
+        and "스코어보드가 공개되었습니다" in item["body"]
+        for item in ended_notices
+    )
 
 
 def test_participant_email_conflict_with_staff_is_scoped_to_same_contest():
@@ -3034,6 +3070,89 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     assert problem_score["attempts"] == 2
     assert problem_score["wrong_attempts"] == 2
     assert problem_score["solved"] is False
+
+
+def test_scoreboard_ties_zero_solve_and_orders_wrong_only_below_no_submit():
+    contest_id, login = participant_login()
+    set_contest_mutable(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    division_id = login["division"]["division_id"]
+    suffix = uuid4().hex[:8]
+
+    problem = client.post(
+        f"/api/operator/contests/{contest_id}/problems",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "division_id": division_id,
+            "problem_code": f"T{uuid4().hex[:6]}",
+            "title": "Zero Solve Tie Policy",
+            "statement": "Scoreboard should tie no-submit teams and rank wrong-only teams below.",
+            "time_limit_ms": 1000,
+            "memory_limit_mb": 512,
+            "display_order": 121,
+        },
+    )
+    assert problem.status_code == 200
+    problem_id = problem.json()["data"]["problem_id"]
+
+    teams = []
+    for label in ["No Submit A", "No Submit B", "Wrong Only"]:
+        email = f"scoreboard-{label.lower().replace(' ', '-')}-{suffix}@zoj.com"
+        created = client.post(
+            f"/api/operator/contests/{contest_id}/participants",
+            headers=auth_headers(operator["access_token"]),
+            json={
+                "team_name": f"{label} {suffix}",
+                "division_id": division_id,
+                "leader": {"name": label, "email": email},
+                "members": [],
+            },
+        )
+        assert created.status_code == 200
+        teams.append((label, email, created.json()["data"]))
+
+    set_contest_running(contest_id)
+    _, wrong_login = participant_login(teams[2][1])
+    wrong_submission = client.post(
+        f"/api/contests/{contest_id}/problems/{problem_id}/submissions",
+        headers=auth_headers(wrong_login["access_token"]),
+        json={"language": "python313", "source_code": "print(0)"},
+    )
+    assert wrong_submission.status_code == 200
+    submission_id = wrong_submission.json()["data"]["submission_id"]
+
+    node_secret = f"rank-secret-{uuid4().hex[:6]}"
+    node = client.post(
+        "/api/internal/judge/nodes/register",
+        json={"node_name": f"rank-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
+    )
+    assert node.status_code == 200
+    node_id = node.json()["data"]["judge_node_id"]
+    job = claim_jobs_until(node_id, node_secret, [submission_id])[submission_id]
+    judged = client.post(
+        f"/api/internal/judge/jobs/{job['judge_job_id']}/result",
+        json={
+            "node_secret": node_secret,
+            "lease_token": job["lease_token"],
+            "final_status": "wrong_answer",
+        },
+    )
+    assert judged.status_code == 200
+
+    scoreboard = client.get(
+        f"/api/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/internal",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert scoreboard.status_code == 200
+    rows_by_team = {row["team_id"]: row for row in scoreboard.json()["data"]["rows"]}
+    no_submit_a = rows_by_team[teams[0][2]["participant_team_id"]]
+    no_submit_b = rows_by_team[teams[1][2]["participant_team_id"]]
+    wrong_only = rows_by_team[teams[2][2]["participant_team_id"]]
+
+    assert no_submit_a["solved"] == no_submit_b["solved"] == wrong_only["solved"] == 0
+    assert no_submit_a["penalty"] == no_submit_b["penalty"] == wrong_only["penalty"] == 0
+    assert no_submit_a["rank"] == no_submit_b["rank"]
+    assert no_submit_a["rank"] < wrong_only["rank"]
 
 
 def test_manual_rejudge_api_is_not_available_to_service_master_or_operator():

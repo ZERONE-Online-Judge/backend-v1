@@ -3762,6 +3762,7 @@ class DbStore:
                 total_penalty = 0
                 solved = 0
                 last_solved_at = None
+                unresolved_attempts = 0
                 for problem in problems:
                     accepted = accepted_by_team_problem.get((team.participant_team_id, problem.problem_id))
                     stats = problem_attempts_by_team.get((team.participant_team_id, problem.problem_id))
@@ -3773,6 +3774,8 @@ class DbStore:
                         last_solved_at = accepted["submitted_at"]
                     attempts = int(stats["attempts"]) if stats else 0
                     wrong_attempts = int(stats["wrong_before_solved"]) if solved_problem and stats else attempts
+                    if not solved_problem:
+                        unresolved_attempts += attempts
                     problem_scores.append(
                         {
                             "problem_id": problem.problem_id,
@@ -3799,12 +3802,29 @@ class DbStore:
                         "submission_count": submission_count_by_team.get(team.participant_team_id, 0),
                         "last_solved_at": last_solved_at,
                         "problem_scores": problem_scores,
+                        "_unresolved_attempts": unresolved_attempts,
                     }
                 )
 
-            rows.sort(key=lambda row: (-row["solved"], row["penalty"], row["last_solved_at"] or datetime.max.replace(tzinfo=timezone.utc), row["team_name"]))
-            for rank, row in enumerate(rows, start=1):
-                row["rank"] = rank
+            def rank_key(row: dict) -> tuple:
+                return (-row["solved"], row["penalty"], row["_unresolved_attempts"])
+
+            rows.sort(
+                key=lambda row: (
+                    *rank_key(row),
+                    row["last_solved_at"] or datetime.max.replace(tzinfo=timezone.utc),
+                    row["team_name"],
+                )
+            )
+            previous_key = None
+            current_rank = 0
+            for index, row in enumerate(rows, start=1):
+                current_key = rank_key(row)
+                if current_key != previous_key:
+                    current_rank = index
+                    previous_key = current_key
+                row["rank"] = current_rank
+                row.pop("_unresolved_attempts", None)
                 if public_view:
                     if not settings.feature_public_scoreboard_penalty:
                         row["penalty"] = None
@@ -3957,6 +3977,7 @@ class DbStore:
             ("freeze", "스코어보드 프리즈", "freeze_at"),
             ("end", "대회 종료", "end_at"),
         ]
+        event_window = timedelta(minutes=10)
         now = now_utc()
         due: list[tuple[str, str, str]] = []
 
@@ -3968,6 +3989,7 @@ class DbStore:
                             ContestStatus.SCHEDULED.value,
                             ContestStatus.OPEN.value,
                             ContestStatus.RUNNING.value,
+                            ContestStatus.ENDED.value,
                         ]
                     )
                 )
@@ -3978,32 +4000,79 @@ class DbStore:
                     if not target_at:
                         continue
                     remaining = target_at - now
-                    if remaining <= timedelta(0):
-                        continue
-                    for window_code, upper_bound, lower_bound, label in windows:
-                        if remaining > upper_bound or remaining <= lower_bound:
-                            continue
-                        title = f"{target_label} {label} 전"
-                        kst_time = target_at.astimezone(KST)
-                        formatted_time = f"{kst_time.year}. {kst_time.month}. {kst_time.day}. {kst_time:%H:%M} KST"
-                        if target_code == "freeze":
-                            body = "\n".join(
-                                [
-                                    f"스코어보드 프리즈까지 {label} 남았습니다.",
-                                    "",
-                                    f"- 프리즈 시각: {formatted_time}",
-                                    "- 프리즈 이후 제출 결과는 대회 종료 전까지 스코어보드에 반영되지 않을 수 있습니다.",
-                                ]
+                    kst_time = target_at.astimezone(KST)
+                    formatted_time = f"{kst_time.year}. {kst_time.month}. {kst_time.day}. {kst_time:%H:%M} KST"
+                    candidates: list[tuple[str, str]] = []
+                    if timedelta(0) < remaining and contest.status != ContestStatus.ENDED.value:
+                        for window_code, upper_bound, lower_bound, label in windows:
+                            if remaining > upper_bound or remaining <= lower_bound:
+                                continue
+                            title = f"{target_label} {label} 전"
+                            if target_code == "freeze":
+                                body = "\n".join(
+                                    [
+                                        f"스코어보드 프리즈까지 {label} 남았습니다.",
+                                        "",
+                                        f"- 프리즈 시각: {formatted_time}",
+                                        "- 프리즈 이후 제출 결과는 대회 종료 전까지 스코어보드에 반영되지 않을 수 있습니다.",
+                                    ]
+                                )
+                            else:
+                                body = "\n".join(
+                                    [
+                                        f"대회 종료까지 {label} 남았습니다.",
+                                        "",
+                                        f"- 종료 시각: {formatted_time}",
+                                        "- 종료 이후에는 제출이 제한될 수 있으니 남은 시간을 확인해 주세요.",
+                                    ]
+                                )
+                            candidates.append((title, body))
+                            break
+                    elif now - target_at <= event_window:
+                        if target_code == "freeze" and contest.scoreboard_freeze_mode != ScoreboardFreezeMode.LIVE.value:
+                            candidates.append(
+                                (
+                                    "스코어보드 프리즈 시작",
+                                    "\n".join(
+                                        [
+                                            "스코어보드가 프리즈되었습니다.",
+                                            "",
+                                            f"- 프리즈 시각: {formatted_time}",
+                                            "- 프리즈 이후 제출 결과는 대회 종료 전까지 공개 스코어보드에 반영되지 않을 수 있습니다.",
+                                        ]
+                                    ),
+                                )
                             )
-                        else:
-                            body = "\n".join(
-                                [
-                                    f"대회 종료까지 {label} 남았습니다.",
-                                    "",
-                                    f"- 종료 시각: {formatted_time}",
-                                    "- 종료 이후에는 제출이 제한될 수 있으니 남은 시간을 확인해 주세요.",
-                                ]
+                        elif target_code == "end":
+                            candidates.append(
+                                (
+                                    "대회 종료",
+                                    "\n".join(
+                                        [
+                                            "대회가 종료되었습니다.",
+                                            "",
+                                            f"- 종료 시각: {formatted_time}",
+                                            "- 종료 이후에는 제출이 제한됩니다.",
+                                        ]
+                                    ),
+                                )
                             )
+                            if contest.scoreboard_access_after_end != ContestResourceAccess.PRIVATE.value:
+                                access_label = "전체 공개" if contest.scoreboard_access_after_end == ContestResourceAccess.PUBLIC.value else "참가자 공개"
+                                candidates.append(
+                                    (
+                                        "스코어보드 공개됨",
+                                        "\n".join(
+                                            [
+                                                "스코어보드가 공개되었습니다.",
+                                                "",
+                                                f"- 공개 범위: {access_label}",
+                                                f"- 공개 시각: {formatted_time}",
+                                            ]
+                                        ),
+                                    )
+                                )
+                    for title, body in candidates:
                         exists = db.scalar(
                             select(ContestNoticeRow.contest_notice_id)
                             .where(
@@ -4017,7 +4086,6 @@ class DbStore:
                         if exists:
                             continue
                         due.append((contest.contest_id, title, body))
-                        break
 
         queued_count = 0
         for contest_id, title, body in due:
