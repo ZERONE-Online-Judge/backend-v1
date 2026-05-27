@@ -1,5 +1,5 @@
-import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,39 +10,27 @@ from app.settings import settings
 from app.workers import mail_worker
 
 
-class _FakeResponse:
-    status = 200
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-
 def test_send_mail_uses_resend_provider(monkeypatch):
     captured = {}
 
-    def fake_urlopen(request, timeout):
-        captured["request"] = request
-        captured["timeout"] = timeout
-        return _FakeResponse()
+    class FakeEmails:
+        @staticmethod
+        def send(params):
+            captured["params"] = params
+            return {"id": "email_test"}
+
+    fake_resend = SimpleNamespace(api_key=None, Emails=FakeEmails)
 
     monkeypatch.setattr(settings, "mail_delivery_provider", "resend")
     monkeypatch.setattr(settings, "resend_api_key", "re_test")
     monkeypatch.setattr(settings, "resend_from_email", "ZOJ <noreply@mail.example.com>")
     monkeypatch.setattr(settings, "resend_api_url", "https://api.resend.com/emails")
-    monkeypatch.setattr(settings, "smtp_timeout_seconds", 7)
-    monkeypatch.setattr(mail_worker, "urlopen", fake_urlopen)
+    monkeypatch.setattr(mail_worker, "resend", fake_resend)
 
     mail_worker.send_mail("user@example.com", "Subject", "Plain body", "<p>HTML body</p>")
 
-    request = captured["request"]
-    payload = json.loads(request.data.decode("utf-8"))
-    assert captured["timeout"] == 7
-    assert request.full_url == "https://api.resend.com/emails"
-    assert request.get_header("Authorization") == "Bearer re_test"
-    assert payload == {
+    assert fake_resend.api_key == "re_test"
+    assert captured["params"] == {
         "from": "ZOJ <noreply@mail.example.com>",
         "to": ["user@example.com"],
         "subject": "Subject",

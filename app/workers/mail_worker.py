@@ -1,11 +1,13 @@
 import asyncio
 import base64
 from email.message import EmailMessage
-import json
 from pathlib import Path
 import smtplib
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+
+try:
+    import resend
+except ImportError:  # pragma: no cover - production image installs requirements.
+    resend = None
 
 from app.settings import settings
 from app.services.store import is_internal_mail_recipient, store
@@ -57,41 +59,28 @@ def _send_resend_mail(recipient_email: str, subject: str, body_text: str, body_h
     from_email = settings.resend_from_email or settings.smtp_from_email
     if not settings.resend_api_key or not from_email:
         raise RuntimeError("RESEND_API_KEY and RESEND_FROM_EMAIL or SMTP_FROM_EMAIL must be configured.")
+    if resend is None:
+        raise RuntimeError("resend package is not installed.")
 
-    payload: dict[str, object] = {
+    resend.api_key = settings.resend_api_key
+    params: dict[str, object] = {
         "from": from_email,
         "to": [recipient_email],
         "subject": subject,
         "text": body_text,
     }
     if body_html:
-        payload["html"] = body_html
+        params["html"] = body_html
         if "cid:zoj-wordmark" in body_html and LOGO_PATH.exists():
-            payload["attachments"] = [
+            params["attachments"] = [
                 {
                     "filename": "zerone-online-judge.png",
                     "content": base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii"),
-                    "contentId": "zoj-wordmark",
+                    "content_id": "zoj-wordmark",
+                    "content_type": "image/png",
                 }
             ]
-
-    body = json.dumps(payload).encode("utf-8")
-    request = Request(
-        settings.resend_api_url,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {settings.resend_api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=settings.smtp_timeout_seconds) as response:
-            if response.status >= 400:
-                raise RuntimeError(f"Resend API returned HTTP {response.status}")
-    except HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Resend API returned HTTP {error.code}: {detail}") from error
+    resend.Emails.send(params)
 
 
 async def main() -> None:
