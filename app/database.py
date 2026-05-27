@@ -109,6 +109,9 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE staff_accounts DROP COLUMN password_hash"))
         if "problems" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("problems")}
+            if "language_resource_limits" not in columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE problems ADD COLUMN language_resource_limits JSON DEFAULT '{}' NOT NULL"))
             if "max_score" in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE problems DROP COLUMN max_score"))

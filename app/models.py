@@ -135,7 +135,13 @@ class Problem(BaseModel):
     statement: str
     time_limit_ms: int
     memory_limit_mb: int
+    language_resource_limits: dict[str, "ProblemLanguageResourceLimit"] = Field(default_factory=dict)
     display_order: int
+
+
+class ProblemLanguageResourceLimit(BaseModel):
+    time_limit_ms: int | None = None
+    memory_limit_mb: int | None = None
 
 
 class ProblemAsset(BaseModel):

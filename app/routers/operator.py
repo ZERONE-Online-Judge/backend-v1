@@ -9,7 +9,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import require_contest_staff, require_staff
@@ -26,6 +26,28 @@ router = APIRouter(tags=["operator"])
 
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
 KST = ZoneInfo("Asia/Seoul")
+SUPPORTED_JUDGE_LANGUAGES = {"c99", "cpp17", "python313", "java8"}
+
+
+class ProblemLanguageResourceLimitPayload(BaseModel):
+    time_limit_ms: int | None = Field(default=None, ge=100, le=10000)
+    memory_limit_mb: int | None = Field(default=None, ge=16, le=1024)
+
+
+def _clean_language_resource_limits(
+    value: dict[str, ProblemLanguageResourceLimitPayload] | None,
+) -> dict[str, dict[str, int]]:
+    if not value:
+        return {}
+
+    cleaned: dict[str, dict[str, int]] = {}
+    for language, limits in value.items():
+        if language not in SUPPORTED_JUDGE_LANGUAGES:
+            raise ValueError(f"unsupported language resource limit: {language}")
+        payload = limits.model_dump(exclude_none=True)
+        if payload:
+            cleaned[language] = payload
+    return cleaned
 
 
 def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str | None]:
@@ -162,7 +184,14 @@ class ProblemCreateRequest(BaseModel):
     statement: str
     time_limit_ms: int
     memory_limit_mb: int
+    language_resource_limits: dict[str, ProblemLanguageResourceLimitPayload] = Field(default_factory=dict)
     display_order: int
+
+    @field_validator("language_resource_limits")
+    @classmethod
+    def validate_language_resource_limits(cls, value):
+        _clean_language_resource_limits(value)
+        return value
 
 
 class ProblemCopyRequest(BaseModel):
@@ -179,7 +208,14 @@ class ProblemUpdateRequest(BaseModel):
     statement: str | None = None
     time_limit_ms: int | None = None
     memory_limit_mb: int | None = None
+    language_resource_limits: dict[str, ProblemLanguageResourceLimitPayload] | None = None
     display_order: int | None = None
+
+    @field_validator("language_resource_limits")
+    @classmethod
+    def validate_language_resource_limits(cls, value):
+        _clean_language_resource_limits(value)
+        return value
 
 
 class ProblemAssetCreateRequest(BaseModel):
@@ -1254,6 +1290,7 @@ async def create_problem(contest_id: str, payload: ProblemCreateRequest, request
             statement=payload.statement,
             time_limit_ms=payload.time_limit_ms,
             memory_limit_mb=payload.memory_limit_mb,
+            language_resource_limits=_clean_language_resource_limits(payload.language_resource_limits),
             display_order=payload.display_order,
         )
     except ValueError:
@@ -1286,7 +1323,12 @@ async def update_problem(contest_id: str, problem_id: str, payload: ProblemUpdat
     require_contest_staff(request, contest_id)
     _require_contest_mutation_open(contest_id)
     try:
-        problem = store.update_problem(contest_id, problem_id, **payload.model_dump(exclude_unset=True))
+        values = payload.model_dump(exclude_unset=True)
+        if "language_resource_limits" in values:
+            values["language_resource_limits"] = _clean_language_resource_limits(
+                payload.language_resource_limits,
+            )
+        problem = store.update_problem(contest_id, problem_id, **values)
     except ValueError as error:
         raise AppError(422, "validation_error", str(error))
     if not problem:

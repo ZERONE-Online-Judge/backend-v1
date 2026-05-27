@@ -212,6 +212,7 @@ def _problem(row: ProblemRow) -> Problem:
         statement=row.statement,
         time_limit_ms=row.time_limit_ms,
         memory_limit_mb=row.memory_limit_mb,
+        language_resource_limits=row.language_resource_limits or {},
         display_order=row.display_order,
     )
 
@@ -3097,6 +3098,7 @@ class DbStore:
         statement: str,
         time_limit_ms: int,
         memory_limit_mb: int,
+        language_resource_limits: dict | None,
         display_order: int,
     ) -> Problem:
         with self._session() as db:
@@ -3111,6 +3113,7 @@ class DbStore:
                 statement=statement,
                 time_limit_ms=time_limit_ms,
                 memory_limit_mb=memory_limit_mb,
+                language_resource_limits=language_resource_limits or {},
                 display_order=display_order,
             )
             db.add(row)
@@ -3214,6 +3217,7 @@ class DbStore:
                 statement=source.statement,
                 time_limit_ms=source.time_limit_ms,
                 memory_limit_mb=source.memory_limit_mb,
+                language_resource_limits=source.language_resource_limits or {},
                 display_order=next_display_order,
             )
             db.add(target)
@@ -4400,7 +4404,7 @@ class DbStore:
                     if problem and active_set:
                         bundle_key = self._judge_bundle_key(
                             submission.contest_id,
-                            problem.problem_id,
+                            problem,
                             active_set.testcase_set_id,
                             testcase_rows,
                             package_assets,
@@ -4424,7 +4428,7 @@ class DbStore:
     def _judge_bundle_key(
         self,
         contest_id: str,
-        problem_id: str,
+        problem: ProblemRow,
         testcase_set_id: str,
         testcase_rows: list[TestcaseRow],
         package_assets: list[ProblemAssetRow],
@@ -4436,7 +4440,10 @@ class DbStore:
                     role_assets.append((role, asset))
                     break
         digest = hashlib.sha256()
-        digest.update(problem_id.encode("utf-8"))
+        digest.update(problem.problem_id.encode("utf-8"))
+        digest.update(str(problem.time_limit_ms).encode("utf-8"))
+        digest.update(str(problem.memory_limit_mb).encode("utf-8"))
+        digest.update(json.dumps(problem.language_resource_limits or {}, sort_keys=True).encode("utf-8"))
         digest.update(testcase_set_id.encode("utf-8"))
         for case in testcase_rows:
             digest.update(case.testcase_id.encode("utf-8"))
@@ -4447,7 +4454,7 @@ class DbStore:
             digest.update(asset.asset_id.encode("utf-8"))
             digest.update(asset.sha256.encode("utf-8"))
         version_hash = digest.hexdigest()
-        return f"contests/{contest_id}/problems/{problem_id}/judge-bundles/{testcase_set_id}-{version_hash}.json.gz"
+        return f"contests/{contest_id}/problems/{problem.problem_id}/judge-bundles/{testcase_set_id}-{version_hash}.json.gz"
 
     def _ensure_problem_judge_bundle(
         self,
@@ -4463,7 +4470,7 @@ class DbStore:
                 if f"/package-files/{role}/" in asset.storage_key:
                     role_assets.append((role, asset))
                     break
-        bundle_key = self._judge_bundle_key(contest_id, problem.problem_id, testcase_set.testcase_set_id, testcase_rows, package_assets)
+        bundle_key = self._judge_bundle_key(contest_id, problem, testcase_set.testcase_set_id, testcase_rows, package_assets)
         version_hash = bundle_key.rsplit("-", 1)[-1].replace(".json.gz", "")
 
         try:
@@ -4478,6 +4485,7 @@ class DbStore:
                 "problem_id": problem.problem_id,
                 "time_limit_ms": problem.time_limit_ms,
                 "memory_limit_mb": problem.memory_limit_mb,
+                "language_resource_limits": problem.language_resource_limits or {},
             },
             "testcase_set": {
                 "testcase_set_id": testcase_set.testcase_set_id,

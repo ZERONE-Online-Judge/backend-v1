@@ -3354,9 +3354,13 @@ def test_judge_claim_includes_active_testcases():
             "statement": "Use active testcase set.",
             "time_limit_ms": 1000,
             "memory_limit_mb": 512,
+            "language_resource_limits": {
+                "python313": {"time_limit_ms": 2500, "memory_limit_mb": 768}
+            },
             "display_order": 99,
         },
     ).json()["data"]
+    assert problem["language_resource_limits"]["python313"]["time_limit_ms"] == 2500
     testcase_set = client.post(
         f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/testcase-sets",
         headers=auth_headers(operator["access_token"]),
@@ -3398,6 +3402,10 @@ def test_judge_claim_includes_active_testcases():
     assert job["testcases"][0]["input_url"].startswith("file://")
     assert job["problem"]["problem_id"] == problem["problem_id"]
     assert job["problem"]["time_limit_ms"] == 1000
+    assert job["problem"]["language_resource_limits"]["python313"] == {
+        "time_limit_ms": 2500,
+        "memory_limit_mb": 768,
+    }
     assert job["leased_at"]
 
     empty_claim = client.post(

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -90,6 +90,7 @@ class ProblemRow(Base):
     statement: Mapped[str] = mapped_column(Text)
     time_limit_ms: Mapped[int] = mapped_column(Integer)
     memory_limit_mb: Mapped[int] = mapped_column(Integer)
+    language_resource_limits: Mapped[dict] = mapped_column(JSON, default=dict)
     display_order: Mapped[int] = mapped_column(Integer)
 
 
