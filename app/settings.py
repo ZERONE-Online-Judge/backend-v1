@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     smtp_from_email: str | None = None
     smtp_use_tls: bool = True
     smtp_timeout_seconds: int = 20
+    mail_delivery_provider: str = "smtp"
+    resend_api_key: str | None = None
+    resend_from_email: str | None = None
+    resend_api_url: str = "https://api.resend.com/emails"
     mail_worker_poll_interval_seconds: float = 2.0
     mail_worker_batch_size: int = 20
     notice_worker_poll_interval_seconds: float = 2.0

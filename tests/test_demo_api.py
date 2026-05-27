@@ -220,12 +220,13 @@ def test_general_otp_request_is_rate_limited_for_staff_account():
 def test_contest_notice_and_board_flow():
     contest_id, participant = participant_login()
     operator = staff_tokens("test4@zoj.com")
+    notice_title = f"공지 {uuid4().hex[:8]}"
 
     notice = client.post(
         f"/api/operator/contests/{contest_id}/notices",
         headers=auth_headers(operator["access_token"]),
         json={
-            "title": "공지",
+            "title": notice_title,
             "body": "본문 $O(N)$",
             "pinned": True,
             "emergency": True,
@@ -244,15 +245,11 @@ def test_contest_notice_and_board_flow():
         headers=auth_headers(participant["access_token"]),
     )
     assert participant_notices.status_code == 200
-    assert any(item["title"] == "공지" for item in participant_notices.json()["data"])
+    assert any(item["title"] == notice_title for item in participant_notices.json()["data"])
     mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(staff_tokens()["access_token"]))
     assert mail_queue.status_code == 200
-    assert any(
-        item["mail_type"] == "contest_notice_created"
-        and item["recipient_email"] == "test2@zoj.com"
-        and "공지" in item["subject"]
-        and "공지 확인하기" in item["body_html"]
-        and "공지 본문" in item["body_html"]
+    assert not any(
+        item["mail_type"] == "contest_notice_created" and notice_title in item["subject"]
         for item in mail_queue.json()["data"]
     )
 
@@ -844,9 +841,12 @@ def test_operator_contest_list_includes_scheduled_assigned_contest():
     assert any(item["contest_id"] == contest["contest_id"] for item in response.json()["data"])
 
 
-def test_operator_setting_change_enqueues_notification():
+def test_operator_setting_change_does_not_enqueue_email_notification():
     contest_id = client.get("/api/public/contests").json()["data"][0]["contest_id"]
     operator = staff_tokens("test4@zoj.com")
+    master = staff_tokens()
+    before_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
+    before_count = len([item for item in before_queue.json()["data"] if item["mail_type"] == "contest_settings_updated"])
 
     updated = client.patch(
         f"/api/operator/contests/{contest_id}/settings",
@@ -855,11 +855,9 @@ def test_operator_setting_change_enqueues_notification():
     )
     assert updated.status_code == 200
 
-    master = staff_tokens()
     mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
-    queued = [item for item in mail_queue.json()["data"] if item["mail_type"] == "contest_settings_updated"]
-    assert queued
-    assert any("Delayed queue update" in item["body_text"] for item in queued)
+    after_count = len([item for item in mail_queue.json()["data"] if item["mail_type"] == "contest_settings_updated"])
+    assert after_count == before_count
 
 
 def test_operator_can_update_and_remove_contest_operator():
@@ -1765,17 +1763,17 @@ def test_public_contact_inquiry_can_be_answered_by_service_master():
     )
 
 
-def test_operator_test_member_is_not_contest_mail_recipient():
+def test_contest_notice_does_not_enqueue_email():
     contest_id = first_contest_id()
     operator = staff_tokens("test4@zoj.com")
     problem = next(item for item in store.problems.values() if item.contest_id == contest_id)
     store.create_operator_test_submission(contest_id, problem.problem_id, "cpp17", "int main(){return 0;}")
-    title = f"운영자 테스트 제외 {uuid4()}"
+    title = f"공지 메일 비활성화 {uuid4()}"
 
     created_notice = client.post(
         f"/api/operator/contests/{contest_id}/notices",
         headers=auth_headers(operator["access_token"]),
-        json={"title": title, "body": "메일 수신자 제외 확인", "visibility": "participants"},
+        json={"title": title, "body": "공지 이메일 비활성화 확인", "visibility": "participants"},
     )
     assert created_notice.status_code == 200
 
@@ -1784,8 +1782,7 @@ def test_operator_test_member_is_not_contest_mail_recipient():
         for item in store.mail_queue.values()
         if item.mail_type == "contest_notice_created" and item.subject.endswith(title)
     ]
-    assert matching
-    assert all(not str(item.recipient_email).startswith("operator-test+") for item in matching)
+    assert not matching
 
 
 def test_mock_judging_after_end_is_separate_from_public_submission_list():

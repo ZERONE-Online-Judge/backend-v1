@@ -599,20 +599,23 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
                 visibility="participants",
                 created_by_email=str(account.email),
             )
-        store.notify_contest_operators(
-            contest_id,
-            "contest_settings_updated",
-            f"[ZOJ] {updated.title} settings updated",
-            "\n".join(
-                [
-                    f"Contest: {updated.title}",
-                    f"Changed by: {account.display_name} <{account.email}>",
-                    "",
-                    "Updated fields:",
-                    *changed_lines,
-                ]
-            ),
-        )
+        # Settings changes can happen repeatedly during live operations.
+        # Keep the in-app audit log as the source of truth and avoid
+        # sending high-volume operator emails for every settings edit.
+        # store.notify_contest_operators(
+        #     contest_id,
+        #     "contest_settings_updated",
+        #     f"[ZOJ] {updated.title} settings updated",
+        #     "\n".join(
+        #         [
+        #             f"Contest: {updated.title}",
+        #             f"Changed by: {account.display_name} <{account.email}>",
+        #             "",
+        #             "Updated fields:",
+        #             *changed_lines,
+        #         ]
+        #     ),
+        # )
     return ok(request, updated.model_dump(mode="json"))
 
 

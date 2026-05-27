@@ -77,7 +77,6 @@ from app.services.security import decode_session_token, hash_password, new_sessi
 from app.services.storage import object_storage
 from app.services.mail_templates import (
     absolute_url,
-    contest_notice_mail,
     contest_reminder_mail,
     participant_invite_mail,
     render_basic_html,
@@ -2462,42 +2461,45 @@ class DbStore:
             db.add(row)
             if emergency:
                 contest.emergency_notice = body
-            content = contest_notice_mail(
-                contest_title=contest.title,
-                organization_name=contest.organization_name,
-                notice_title=title,
-                notice_body=body,
-                notice_url=absolute_url(f"/contests/{contest_id}/board"),
-                pinned=pinned,
-                emergency=emergency,
-            )
-            participant_emails = db.scalars(
-                select(TeamMemberRow.email)
-                .join(
-                    ParticipantTeamRow,
-                    TeamMemberRow.participant_team_id == ParticipantTeamRow.participant_team_id,
-                )
-                .where(
-                    TeamMemberRow.contest_id == contest_id,
-                    ~ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX),
-                )
-                .order_by(TeamMemberRow.email)
-            ).all()
-            notified: set[str] = set()
-            for email in participant_emails:
-                normalized = email.strip().lower()
-                if is_internal_mail_recipient(normalized) or normalized in notified:
-                    continue
-                notified.add(normalized)
-                db.add(
-                    MailQueueItemRow(
-                        mail_type="contest_notice_created",
-                        recipient_email=normalized,
-                        subject=content.subject,
-                        body_text=content.body_text,
-                        body_html=content.body_html,
-                    )
-                )
+            # Contest notices are visible in-app. Disable notice email
+            # fan-out to keep transactional mail volume focused on OTP
+            # and direct question/answer flows during live operations.
+            # content = contest_notice_mail(
+            #     contest_title=contest.title,
+            #     organization_name=contest.organization_name,
+            #     notice_title=title,
+            #     notice_body=body,
+            #     notice_url=absolute_url(f"/contests/{contest_id}/board"),
+            #     pinned=pinned,
+            #     emergency=emergency,
+            # )
+            # participant_emails = db.scalars(
+            #     select(TeamMemberRow.email)
+            #     .join(
+            #         ParticipantTeamRow,
+            #         TeamMemberRow.participant_team_id == ParticipantTeamRow.participant_team_id,
+            #     )
+            #     .where(
+            #         TeamMemberRow.contest_id == contest_id,
+            #         ~ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX),
+            #     )
+            #     .order_by(TeamMemberRow.email)
+            # ).all()
+            # notified: set[str] = set()
+            # for email in participant_emails:
+            #     normalized = email.strip().lower()
+            #     if is_internal_mail_recipient(normalized) or normalized in notified:
+            #         continue
+            #     notified.add(normalized)
+            #     db.add(
+            #         MailQueueItemRow(
+            #             mail_type="contest_notice_created",
+            #             recipient_email=normalized,
+            #             subject=content.subject,
+            #             body_text=content.body_text,
+            #             body_html=content.body_html,
+            #         )
+            #     )
             db.commit()
             db.refresh(row)
             return _contest_notice(row)

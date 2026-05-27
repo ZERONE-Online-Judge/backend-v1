@@ -1,7 +1,11 @@
 import asyncio
+import base64
 from email.message import EmailMessage
+import json
 from pathlib import Path
 import smtplib
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from app.settings import settings
 from app.services.store import is_internal_mail_recipient, store
@@ -10,6 +14,17 @@ LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "logos" / "wordmark
 
 
 def send_mail(recipient_email: str, subject: str, body_text: str, body_html: str | None = None) -> None:
+    provider = settings.mail_delivery_provider.strip().lower()
+    if provider == "smtp":
+        _send_smtp_mail(recipient_email, subject, body_text, body_html)
+        return
+    if provider == "resend":
+        _send_resend_mail(recipient_email, subject, body_text, body_html)
+        return
+    raise RuntimeError(f"Unsupported MAIL_DELIVERY_PROVIDER: {settings.mail_delivery_provider}")
+
+
+def _send_smtp_mail(recipient_email: str, subject: str, body_text: str, body_html: str | None = None) -> None:
     if not settings.smtp_host or not settings.smtp_from_email:
         raise RuntimeError("SMTP_HOST and SMTP_FROM_EMAIL must be configured.")
 
@@ -36,6 +51,47 @@ def send_mail(recipient_email: str, subject: str, body_text: str, body_html: str
         if settings.smtp_username:
             smtp.login(settings.smtp_username, settings.smtp_password or "")
         smtp.send_message(message)
+
+
+def _send_resend_mail(recipient_email: str, subject: str, body_text: str, body_html: str | None = None) -> None:
+    from_email = settings.resend_from_email or settings.smtp_from_email
+    if not settings.resend_api_key or not from_email:
+        raise RuntimeError("RESEND_API_KEY and RESEND_FROM_EMAIL or SMTP_FROM_EMAIL must be configured.")
+
+    payload: dict[str, object] = {
+        "from": from_email,
+        "to": [recipient_email],
+        "subject": subject,
+        "text": body_text,
+    }
+    if body_html:
+        payload["html"] = body_html
+        if "cid:zoj-wordmark" in body_html and LOGO_PATH.exists():
+            payload["attachments"] = [
+                {
+                    "filename": "zerone-online-judge.png",
+                    "content": base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii"),
+                    "contentId": "zoj-wordmark",
+                }
+            ]
+
+    body = json.dumps(payload).encode("utf-8")
+    request = Request(
+        settings.resend_api_url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {settings.resend_api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=settings.smtp_timeout_seconds) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"Resend API returned HTTP {response.status}")
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Resend API returned HTTP {error.code}: {detail}") from error
 
 
 async def main() -> None:
