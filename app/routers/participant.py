@@ -200,8 +200,12 @@ def _participant_submission_payload(
     queue_position: int | None = None,
     source_code_length: int | None = None,
     show_progress: bool = True,
+    team_name: str | None = None,
+    member_name: str | None = None,
 ) -> dict:
     item = submission.model_dump(mode="json")
+    item["team_name"] = team_name
+    item["member_name"] = member_name
     item["queue_position"] = queue_position if show_progress else None
     if show_progress and item["queue_position"] is None:
         item["queue_position"] = store.pending_queue_ranks().get(submission.submission_id)
@@ -231,6 +235,38 @@ def _mock_submission_payload(submission, show_progress: bool = True) -> dict:
     item = _participant_submission_payload(submission, include_source=False, show_progress=show_progress)
     item["source_code"] = ""
     return item
+
+
+def _participant_submission_payloads(
+    submissions: list,
+    *,
+    include_source: bool,
+    queue_ranks: dict[str, int],
+    source_lengths: dict[str, int],
+    show_progress: bool,
+) -> list[dict]:
+    teams = store.teams_by_ids([submission.participant_team_id for submission in submissions])
+    members = {
+        member.team_member_id: member
+        for team in teams.values()
+        for member in team.members
+    }
+    items = []
+    for submission in submissions:
+        team = teams.get(submission.participant_team_id)
+        member = members.get(submission.team_member_id)
+        items.append(
+            _participant_submission_payload(
+                submission,
+                include_source=include_source,
+                queue_position=queue_ranks.get(submission.submission_id),
+                source_code_length=source_lengths.get(submission.submission_id),
+                show_progress=show_progress,
+                team_name=team.team_name if team else None,
+                member_name=member.name if member else None,
+            )
+        )
+    return items
 
 
 def _submission_progress_visible(contest) -> bool:
@@ -685,16 +721,13 @@ async def submissions(
             cursor=cursor,
         )
         source_lengths = store.submission_source_lengths([submission.submission_id for submission in submissions])
-        items = [
-            _participant_submission_payload(
-                submission,
-                include_source=False,
-                queue_position=queue_ranks.get(submission.submission_id),
-                source_code_length=source_lengths.get(submission.submission_id),
-                show_progress=show_progress,
-            )
-            for submission in submissions
-        ]
+        items = _participant_submission_payloads(
+            submissions,
+            include_source=False,
+            queue_ranks=queue_ranks,
+            source_lengths=source_lengths,
+            show_progress=show_progress,
+        )
         return page(
             request,
             items,
@@ -712,16 +745,13 @@ async def submissions(
         cursor=cursor,
     )
     source_lengths = store.submission_source_lengths([submission.submission_id for submission in submissions])
-    items = [
-        _participant_submission_payload(
-            submission,
-            include_source=include_source,
-            queue_position=queue_ranks.get(submission.submission_id),
-            source_code_length=source_lengths.get(submission.submission_id),
-            show_progress=show_progress,
-        )
-        for submission in submissions
-    ]
+    items = _participant_submission_payloads(
+        submissions,
+        include_source=include_source,
+        queue_ranks=queue_ranks,
+        source_lengths=source_lengths,
+        show_progress=show_progress,
+    )
     return page(
         request,
         items,

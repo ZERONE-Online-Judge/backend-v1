@@ -3040,6 +3040,76 @@ def test_submission_source_code_normalizes_line_endings_for_length():
     assert listed["source_code_length"] == len(normalized.encode("utf-8"))
 
 
+def test_participant_public_submission_list_includes_each_team_name_after_end():
+    contest_id, login = participant_login()
+    set_contest_mutable(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    division_id = login["division"]["division_id"]
+    suffix = uuid4().hex[:8]
+
+    problem = client.post(
+        f"/api/operator/contests/{contest_id}/problems",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "division_id": division_id,
+            "problem_code": f"N{uuid4().hex[:6]}",
+            "title": "Submission Owner Names",
+            "statement": "Public submission rows should show each submitting team.",
+            "time_limit_ms": 1000,
+            "memory_limit_mb": 512,
+            "display_order": 119,
+        },
+    )
+    assert problem.status_code == 200
+    problem_id = problem.json()["data"]["problem_id"]
+
+    other_team_name = f"Other Submit Team {suffix}"
+    other_email = f"other-submit-{suffix}@zoj.com"
+    created_team = client.post(
+        f"/api/operator/contests/{contest_id}/participants",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "team_name": other_team_name,
+            "division_id": division_id,
+            "leader": {"name": "Other Submitter", "email": other_email},
+            "members": [],
+        },
+    )
+    assert created_team.status_code == 200
+
+    set_contest_running(contest_id)
+    _, other_login = participant_login(other_email)
+    for token, source in [
+        (login["access_token"], "print(1)"),
+        (other_login["access_token"], "print(2)"),
+    ]:
+        response = client.post(
+            f"/api/contests/{contest_id}/problems/{problem_id}/submissions",
+            headers=auth_headers(token),
+            json={"language": "python313", "source_code": source},
+        )
+        assert response.status_code == 200
+
+    now = datetime.now(timezone.utc)
+    store.update_contest_settings(
+        contest_id,
+        status=ContestStatus.ENDED,
+        start_at=now - timedelta(hours=2),
+        freeze_at=now - timedelta(hours=1),
+        end_at=now - timedelta(minutes=1),
+        submission_access_after_end="participants",
+    )
+
+    listed = client.get(
+        f"/api/contests/{contest_id}/submissions?division_id={division_id}",
+        headers=auth_headers(login["access_token"]),
+    )
+    assert listed.status_code == 200
+    team_names = {item["team_name"] for item in listed.json()["data"] if item["problem_id"] == problem_id}
+    assert login["team"]["team_name"] in team_names
+    assert other_team_name in team_names
+
+
 def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     contest_id, login = participant_login()
     set_contest_mutable(contest_id)
