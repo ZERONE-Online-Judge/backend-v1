@@ -3892,6 +3892,7 @@ class DbStore:
                         problem_score["best_submitted_at"] = None
 
             problem_stats = []
+            total_team_count = len(teams)
             for problem in problems:
                 stats = problem_stats_by_id[problem.problem_id]
                 accepted_team_count = len(stats["accepted_team_ids"])
@@ -3904,6 +3905,7 @@ class DbStore:
                         "total_submissions": total_submissions,
                         "accepted_submissions": accepted_submissions,
                         "accepted_team_count": accepted_team_count,
+                        "total_team_count": total_team_count,
                         "acceptance_rate": round(accepted_submissions / total_submissions * 100, 1)
                         if total_submissions
                         else None,
