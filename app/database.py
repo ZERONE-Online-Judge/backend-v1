@@ -61,6 +61,95 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE submissions ADD COLUMN runtime_ms INTEGER"))
                 if "memory_kb" not in columns:
                     connection.execute(text("ALTER TABLE submissions ADD COLUMN memory_kb INTEGER"))
+                if "submission_kind" not in columns:
+                    connection.execute(text("ALTER TABLE submissions ADD COLUMN submission_kind VARCHAR(32) DEFAULT 'participant' NOT NULL"))
+                if "submitted_by_name" not in columns:
+                    connection.execute(text("ALTER TABLE submissions ADD COLUMN submitted_by_name VARCHAR(120)"))
+                if "submitted_by_email" not in columns:
+                    connection.execute(text("ALTER TABLE submissions ADD COLUMN submitted_by_email VARCHAR(255)"))
+            submission_columns = {
+                column["name"]: column for column in inspect(engine).get_columns("submissions")
+            }
+            if (
+                "participant_team_id" in submission_columns
+                and not submission_columns["participant_team_id"].get("nullable", True)
+            ) or (
+                "team_member_id" in submission_columns
+                and not submission_columns["team_member_id"].get("nullable", True)
+            ):
+                with engine.begin() as connection:
+                    connection.execute(text("PRAGMA foreign_keys=OFF"))
+                    connection.execute(text("ALTER TABLE submissions RENAME TO submissions_old"))
+                    connection.execute(
+                        text(
+                            """
+                            CREATE TABLE submissions (
+                                submission_id VARCHAR(36) NOT NULL PRIMARY KEY,
+                                contest_id VARCHAR(36) NOT NULL,
+                                division_id VARCHAR(36) NOT NULL,
+                                problem_id VARCHAR(36) NOT NULL,
+                                participant_team_id VARCHAR(36),
+                                team_member_id VARCHAR(36),
+                                submission_kind VARCHAR(32) DEFAULT 'participant' NOT NULL,
+                                submitted_by_name VARCHAR(120),
+                                submitted_by_email VARCHAR(255),
+                                language VARCHAR(32) NOT NULL,
+                                source_code TEXT NOT NULL,
+                                status VARCHAR(32) NOT NULL,
+                                submitted_at DATETIME,
+                                status_updated_at DATETIME,
+                                compile_message TEXT,
+                                judge_message TEXT,
+                                failed_testcase_order INTEGER,
+                                progress_current INTEGER,
+                                progress_total INTEGER,
+                                runtime_ms INTEGER,
+                                memory_kb INTEGER,
+                                FOREIGN KEY(contest_id) REFERENCES contests (contest_id),
+                                FOREIGN KEY(division_id) REFERENCES contest_divisions (division_id),
+                                FOREIGN KEY(problem_id) REFERENCES problems (problem_id),
+                                FOREIGN KEY(participant_team_id) REFERENCES participant_teams (participant_team_id),
+                                FOREIGN KEY(team_member_id) REFERENCES team_members (team_member_id)
+                            )
+                            """
+                        )
+                    )
+                    connection.execute(
+                        text(
+                            """
+                            INSERT INTO submissions (
+                                submission_id, contest_id, division_id, problem_id,
+                                participant_team_id, team_member_id, submission_kind,
+                                submitted_by_name, submitted_by_email, language,
+                                source_code, status, submitted_at, status_updated_at,
+                                compile_message, judge_message, failed_testcase_order,
+                                progress_current, progress_total, runtime_ms, memory_kb
+                            )
+                            SELECT
+                                submission_id, contest_id, division_id, problem_id,
+                                participant_team_id, team_member_id, submission_kind,
+                                submitted_by_name, submitted_by_email, language,
+                                source_code, status, submitted_at, status_updated_at,
+                                compile_message, judge_message, failed_testcase_order,
+                                progress_current, progress_total, runtime_ms, memory_kb
+                            FROM submissions_old
+                            """
+                        )
+                    )
+                    connection.execute(text("DROP TABLE submissions_old"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_contest_id ON submissions (contest_id)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_division_id ON submissions (division_id)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_problem_id ON submissions (problem_id)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_participant_team_id ON submissions (participant_team_id)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_team_member_id ON submissions (team_member_id)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_status ON submissions (status)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_submission_kind ON submissions (submission_kind)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_submitted_id ON submissions (submitted_at DESC, submission_id DESC)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_contest_submitted_id ON submissions (contest_id, submitted_at DESC, submission_id DESC)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_contest_division_submitted_id ON submissions (contest_id, division_id, submitted_at DESC, submission_id DESC)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_contest_team_submitted_id ON submissions (contest_id, participant_team_id, submitted_at DESC, submission_id DESC)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS idx_submissions_contest_problem_submitted_id ON submissions (contest_id, problem_id, submitted_at DESC, submission_id DESC)"))
+                    connection.execute(text("PRAGMA foreign_keys=ON"))
         if "contests" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("contests")}
             with engine.begin() as connection:

@@ -1813,15 +1813,29 @@ def test_mock_judging_after_end_is_separate_from_public_submission_list():
             json={"language": "cpp17", "source_code": "int main(){return 0;}"},
         )
         assert created.status_code == 200
-        submission_id = created.json()["data"]["submission_id"]
+        created_payload = created.json()["data"]
+        submission_id = created_payload["submission_id"]
+        assert created_payload["submission_kind"] == "mock_judging"
+        assert created_payload["participant_team_id"] is None
+        assert created_payload["team_member_id"] is None
 
         waited = client.get(f"/api/contests/{contest_id}/mock-submissions/{submission_id}/status:wait")
         assert waited.status_code == 200
         assert waited.json()["data"]["source_code"] == ""
+        assert waited.json()["data"]["submission_kind"] == "mock_judging"
 
         public_list = client.get(f"/api/contests/{contest_id}/submissions")
         assert public_list.status_code == 200
         assert all(item["submission_id"] != submission_id for item in public_list.json()["data"])
+
+        operator_list = client.get(
+            f"/api/operator/contests/{contest_id}/submissions",
+            headers=headers,
+        )
+        assert operator_list.status_code == 200
+        operator_item = next(item for item in operator_list.json()["data"] if item["submission_id"] == submission_id)
+        assert operator_item["submission_kind"] == "mock_judging"
+        assert operator_item["participant_team_id"] is None
 
         private_again = client.patch(
             f"/api/operator/contests/{contest_id}/settings",
@@ -1842,6 +1856,48 @@ def test_mock_judging_after_end_is_separate_from_public_submission_list():
             },
         )
         assert restored.status_code == 200
+
+
+def test_operator_test_submission_uses_staff_owner_without_participant_team():
+    contest_id = first_contest_id()
+    operator = staff_tokens("test4@zoj.com")
+    headers = auth_headers(operator["access_token"])
+    problem = next(item for item in store.problems.values() if item.contest_id == contest_id)
+    before_dashboard = client.get(
+        f"/api/operator/contests/{contest_id}/dashboard",
+        headers=headers,
+    )
+    assert before_dashboard.status_code == 200
+    before_participant_count = before_dashboard.json()["data"]["participant_count"]
+
+    created = client.post(
+        f"/api/operator/contests/{contest_id}/problems/{problem.problem_id}/test-submissions",
+        headers=headers,
+        json={"language": "cpp17", "source_code": "int main(){return 0;}"},
+    )
+    assert created.status_code == 200
+    payload = created.json()["data"]
+    assert payload["submission_kind"] == "operator_test"
+    assert payload["submitted_by_name"] == operator["staff"]["display_name"]
+    assert payload["submitted_by_email"] == operator["staff"]["email"]
+    assert payload["participant_team_id"] is None
+    assert payload["team_member_id"] is None
+
+    after_dashboard = client.get(
+        f"/api/operator/contests/{contest_id}/dashboard",
+        headers=headers,
+    )
+    assert after_dashboard.status_code == 200
+    assert after_dashboard.json()["data"]["participant_count"] == before_participant_count
+
+    operator_list = client.get(
+        f"/api/operator/contests/{contest_id}/submissions",
+        headers=headers,
+    )
+    assert operator_list.status_code == 200
+    listed = next(item for item in operator_list.json()["data"] if item["submission_id"] == payload["submission_id"])
+    assert listed["submission_kind"] == "operator_test"
+    assert listed["submitted_by_name"] == operator["staff"]["display_name"]
 
 
 def test_public_contest_resources_use_manual_ended_status_even_when_end_time_is_future():

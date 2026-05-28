@@ -187,8 +187,11 @@ class Submission(BaseModel):
     contest_id: str
     division_id: str
     problem_id: str
-    participant_team_id: str
-    team_member_id: str
+    participant_team_id: str | None = None
+    team_member_id: str | None = None
+    submission_kind: str = "participant"
+    submitted_by_name: str | None = None
+    submitted_by_email: str | None = None
     language: str
     source_code: str
     status: SubmissionStatus = SubmissionStatus.WAITING

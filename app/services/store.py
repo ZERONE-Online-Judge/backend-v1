@@ -274,6 +274,9 @@ def _submission(row: SubmissionRow, include_source: bool = True) -> Submission:
         problem_id=row.problem_id,
         participant_team_id=row.participant_team_id,
         team_member_id=row.team_member_id,
+        submission_kind=row.submission_kind or "participant",
+        submitted_by_name=row.submitted_by_name,
+        submitted_by_email=row.submitted_by_email,
         language=row.language,
         source_code=row.source_code if include_source else "",
         status=SubmissionStatus(row.status),
@@ -636,6 +639,9 @@ class DbStore:
                     SubmissionRow.problem_id,
                     SubmissionRow.participant_team_id,
                     SubmissionRow.team_member_id,
+                    SubmissionRow.submission_kind,
+                    SubmissionRow.submitted_by_name,
+                    SubmissionRow.submitted_by_email,
                     SubmissionRow.language,
                     SubmissionRow.status,
                     SubmissionRow.submitted_at,
@@ -677,8 +683,8 @@ class DbStore:
             rows = db.scalars(select(ProblemRow).where(ProblemRow.problem_id.in_(ids))).all()
             return {row.problem_id: _problem(row) for row in rows}
 
-    def teams_by_ids(self, participant_team_ids: list[str]) -> dict[str, ParticipantTeam]:
-        ids = list(dict.fromkeys(participant_team_ids))
+    def teams_by_ids(self, participant_team_ids: list[str | None]) -> dict[str, ParticipantTeam]:
+        ids = [item for item in dict.fromkeys(participant_team_ids) if item]
         if not ids:
             return {}
         with self._session() as db:
@@ -694,7 +700,10 @@ class DbStore:
             teams = db.scalars(
                 select(ParticipantTeamRow)
                 .options(selectinload(ParticipantTeamRow.members))
-                .where(ParticipantTeamRow.contest_id == contest_id)
+                .where(
+                    ParticipantTeamRow.contest_id == contest_id,
+                    ~ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX),
+                )
                 .order_by(ParticipantTeamRow.team_name)
             ).all()
             member_ids = [
@@ -1062,6 +1071,7 @@ class DbStore:
         if participant_team_id:
             filters.append(SubmissionRow.participant_team_id == participant_team_id)
         if exclude_operator_tests:
+            filters.append(SubmissionRow.submission_kind == "participant")
             operator_team_ids = select(ParticipantTeamRow.participant_team_id).where(
                 ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX)
             )
@@ -3623,53 +3633,65 @@ class DbStore:
             db.refresh(submission)
             return _submission(submission)
 
-    def create_operator_test_submission(self, contest_id: str, problem_id: str, language: str, source_code: str) -> Submission:
+    def create_operator_test_submission(
+        self,
+        contest_id: str,
+        problem_id: str,
+        language: str,
+        source_code: str,
+        *,
+        submitted_by_name: str | None = None,
+        submitted_by_email: str | None = None,
+    ) -> Submission:
         source_code = _normalize_source_code(source_code)
         with self._session() as db:
             problem = db.get(ProblemRow, problem_id)
             if not problem or problem.contest_id != contest_id:
                 raise ValueError("problem not found")
-            team_name = f"{OPERATOR_TEST_TEAM_PREFIX}:{problem.division_id[:8]}"
-            team = db.scalar(
-                select(ParticipantTeamRow).where(
-                    ParticipantTeamRow.contest_id == contest_id,
-                    ParticipantTeamRow.division_id == problem.division_id,
-                    ParticipantTeamRow.team_name == team_name,
-                )
-            )
-            if not team:
-                team = ParticipantTeamRow(
-                    contest_id=contest_id,
-                    division_id=problem.division_id,
-                    team_name=team_name,
-                    status="disabled",
-                )
-                db.add(team)
-                db.flush()
-            member_email = f"operator-test+{problem.division_id[:8]}@local.zoj"
-            member = db.scalar(
-                select(TeamMemberRow).where(
-                    TeamMemberRow.contest_id == contest_id,
-                    TeamMemberRow.participant_team_id == team.participant_team_id,
-                    TeamMemberRow.email == member_email,
-                )
-            )
-            if not member:
-                member = TeamMemberRow(
-                    contest_id=contest_id,
-                    participant_team_id=team.participant_team_id,
-                    role=TeamMemberRole.LEADER.value,
-                    name="Operator Test",
-                    email=member_email,
-                )
-                db.add(member)
-                db.flush()
             submission = SubmissionRow(
                 contest_id=contest_id,
                 division_id=problem.division_id,
                 problem_id=problem_id,
-                participant_team_id=team.participant_team_id,
-                team_member_id=member.team_member_id,
+                participant_team_id=None,
+                team_member_id=None,
+                submission_kind="operator_test",
+                submitted_by_name=submitted_by_name or "운영자",
+                submitted_by_email=submitted_by_email,
+                language=language,
+                source_code=source_code,
+                status=SubmissionStatus.WAITING.value,
+            )
+            db.add(submission)
+            db.flush()
+            next_position = (db.scalar(select(func.max(JudgeJobRow.queue_position))) or 0) + 1
+            db.add(
+                JudgeJobRow(
+                    submission_id=submission.submission_id,
+                    contest_id=contest_id,
+                    division_id=problem.division_id,
+                    status=JudgeJobStatus.PENDING.value,
+                    queue_position=next_position,
+                )
+            )
+            db.commit()
+            db.refresh(submission)
+            return _submission(submission)
+
+    def create_mock_submission(self, contest_id: str, problem_id: str, language: str, source_code: str) -> Submission:
+        source_code = _normalize_source_code(source_code)
+        with self._session() as db:
+            problem = db.get(ProblemRow, problem_id)
+            if not problem or problem.contest_id != contest_id:
+                raise ValueError("problem not found")
+            submission = SubmissionRow(
+                contest_id=contest_id,
+                division_id=problem.division_id,
+                problem_id=problem_id,
+                participant_team_id=None,
+                team_member_id=None,
+                submission_kind="mock_judging",
+                submitted_by_name="모의채점",
+                submitted_by_email=None,
                 language=language,
                 source_code=source_code,
                 status=SubmissionStatus.WAITING.value,
@@ -3712,7 +3734,10 @@ class DbStore:
 
             team_filters = [ParticipantTeamRow.contest_id == contest_id]
             problem_filters = [ProblemRow.contest_id == contest_id]
-            submission_filters = [SubmissionRow.contest_id == contest_id]
+            submission_filters = [
+                SubmissionRow.contest_id == contest_id,
+                SubmissionRow.submission_kind == "participant",
+            ]
             if division_id:
                 team_filters.append(ParticipantTeamRow.division_id == division_id)
                 problem_filters.append(ProblemRow.division_id == division_id)

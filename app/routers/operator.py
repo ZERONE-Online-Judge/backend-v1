@@ -429,18 +429,23 @@ async def operator_dashboard(contest_id: str, request: Request):
     contest = store.contests.get(contest_id)
     if not contest:
         raise not_found()
+    participant_teams = [
+        team
+        for team in store.teams.values()
+        if team.contest_id == contest_id and not team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX)
+    ]
     return ok(
         request,
         {
             "contest": contest.model_dump(mode="json"),
             "divisions": [division.model_dump(mode="json") for division in store.contest_divisions(contest_id)],
-            "participant_count": len([team for team in store.teams.values() if team.contest_id == contest_id]),
+            "participant_count": len(participant_teams),
             "submission_count": store.count_submissions(contest_id=contest_id),
             "pending_jobs": store.count_judge_jobs(contest_id=contest_id, status="pending"),
             "operators": [account.model_dump(mode="json") for account in store.contest_operator_accounts(contest_id)],
             "participant_count_by_division": {
                 division.division_id: len(
-                    [team for team in store.teams.values() if team.contest_id == contest_id and team.division_id == division.division_id]
+                    [team for team in participant_teams if team.division_id == division.division_id]
                 )
                 for division in store.contest_divisions(contest_id)
             },
@@ -1107,13 +1112,20 @@ async def operator_wait_submission_status(
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/test-submissions")
 async def create_operator_test_submission(contest_id: str, problem_id: str, payload: OperatorTestSubmissionRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id)
     if payload.language not in {"c99", "cpp17", "python313", "java8"}:
         raise AppError(422, "validation_error", "Unsupported language.", {"fields": [{"path": "body.language", "code": "invalid_enum"}]})
     if not payload.source_code.strip():
         raise AppError(422, "validation_error", "Source code is required.")
     try:
-        submission = store.create_operator_test_submission(contest_id, problem_id, payload.language, payload.source_code)
+        submission = store.create_operator_test_submission(
+            contest_id,
+            problem_id,
+            payload.language,
+            payload.source_code,
+            submitted_by_name=account.display_name,
+            submitted_by_email=str(account.email),
+        )
     except ValueError:
         raise not_found()
     return ok(request, submission.model_dump(mode="json"))

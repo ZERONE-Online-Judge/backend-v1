@@ -239,7 +239,12 @@ def _participant_submission_payload(
     return item
 
 
-def _is_operator_test_submission(submission) -> bool:
+def _is_mock_submission(submission) -> bool:
+    kind = getattr(submission, "submission_kind", "participant")
+    if kind == "mock_judging":
+        return True
+    if kind == "operator_test":
+        return False
     team = store.teams.get(submission.participant_team_id)
     return bool(team and team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX))
 
@@ -539,7 +544,7 @@ async def create_mock_submission(contest_id: str, problem_id: str, payload: Subm
     if not payload.source_code.strip():
         raise AppError(422, "validation_error", "Source code is required.")
     try:
-        submission = store.create_operator_test_submission(contest_id, problem_id, payload.language, payload.source_code)
+        submission = store.create_mock_submission(contest_id, problem_id, payload.language, payload.source_code)
     except ValueError:
         raise not_found()
     show_progress = contest.participant_progress_visible or contest.mock_judging_progress_visible
@@ -555,7 +560,7 @@ async def wait_mock_submission_status(
     poll_interval_seconds: float = 0.25,
 ):
     submission = store.get_submission(submission_id, include_source=False)
-    if not submission or submission.contest_id != contest_id or not _is_operator_test_submission(submission):
+    if not submission or submission.contest_id != contest_id or not _is_mock_submission(submission):
         raise not_found()
     problem = store.problems.get(submission.problem_id)
     if not problem:
