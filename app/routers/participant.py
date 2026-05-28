@@ -41,9 +41,12 @@ def _problem_solve_statuses(contest_id: str, participant: dict | None) -> dict[s
     pending = {SubmissionStatus.WAITING, SubmissionStatus.PREPARING, SubmissionStatus.JUDGING}
     wrong = {
         SubmissionStatus.WRONG_ANSWER,
+        SubmissionStatus.COMPILE_ERROR,
+        SubmissionStatus.RUNTIME_ERROR,
         SubmissionStatus.TIME_LIMIT_EXCEEDED,
         SubmissionStatus.MEMORY_LIMIT_EXCEEDED,
         SubmissionStatus.OUTPUT_LIMIT_EXCEEDED,
+        SubmissionStatus.SYSTEM_ERROR,
     }
     for submission in store.submissions.values():
         if submission.contest_id != contest_id or submission.participant_team_id != team_id:

@@ -3117,6 +3117,104 @@ def test_participant_public_submission_list_includes_each_team_name_after_end():
     assert other_team_name in team_names
 
 
+def test_problem_solve_status_uses_live_participant_results_during_scoreboard_freeze():
+    contest_id, login = participant_login()
+    set_contest_mutable(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    division_id = login["division"]["division_id"]
+
+    problem = client.post(
+        f"/api/operator/contests/{contest_id}/problems",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "division_id": division_id,
+            "problem_code": f"F{uuid4().hex[:6]}",
+            "title": "Frozen Scoreboard Live Solve Status",
+            "statement": "Problem list status should not be frozen with the public scoreboard.",
+            "time_limit_ms": 1000,
+            "memory_limit_mb": 512,
+            "display_order": 119,
+        },
+    )
+    assert problem.status_code == 200
+    problem_id = problem.json()["data"]["problem_id"]
+    set_contest_running(contest_id)
+
+    wrong_submission = client.post(
+        f"/api/contests/{contest_id}/problems/{problem_id}/submissions",
+        headers=auth_headers(login["access_token"]),
+        json={"language": "python313", "source_code": "print(0)"},
+    )
+    assert wrong_submission.status_code == 200
+    wrong_submission_data = wrong_submission.json()["data"]
+
+    node_secret = f"freeze-status-{uuid4().hex[:6]}"
+    node = client.post(
+        "/api/internal/judge/nodes/register",
+        json={"node_name": f"freeze-status-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
+    )
+    assert node.status_code == 200
+    node_id = node.json()["data"]["judge_node_id"]
+    wrong_job = claim_jobs_until(node_id, node_secret, [wrong_submission_data["submission_id"]])[wrong_submission_data["submission_id"]]
+    wrong_result = client.post(
+        f"/api/internal/judge/jobs/{wrong_job['judge_job_id']}/result",
+        json={
+            "node_secret": node_secret,
+            "lease_token": wrong_job["lease_token"],
+            "final_status": "wrong_answer",
+        },
+    )
+    assert wrong_result.status_code == 200
+
+    freeze_at = datetime.fromisoformat(
+        wrong_submission_data["submitted_at"].replace("Z", "+00:00")
+    ) + timedelta(microseconds=1)
+    store.update_contest_settings(contest_id, freeze_at=freeze_at)
+
+    accepted_submission = client.post(
+        f"/api/contests/{contest_id}/problems/{problem_id}/submissions",
+        headers=auth_headers(login["access_token"]),
+        json={"language": "python313", "source_code": "print(1)"},
+    )
+    assert accepted_submission.status_code == 200
+    accepted_submission_id = accepted_submission.json()["data"]["submission_id"]
+    accepted_job = claim_jobs_until(node_id, node_secret, [accepted_submission_id])[accepted_submission_id]
+    accepted_result = client.post(
+        f"/api/internal/judge/jobs/{accepted_job['judge_job_id']}/result",
+        json={
+            "node_secret": node_secret,
+            "lease_token": accepted_job["lease_token"],
+            "final_status": "accepted",
+        },
+    )
+    assert accepted_result.status_code == 200
+
+    frozen_scoreboard = client.get(
+        f"/api/contests/{contest_id}/divisions/{division_id}/scoreboard",
+        headers=auth_headers(login["access_token"]),
+    )
+    assert frozen_scoreboard.status_code == 200
+    frozen_score = next(
+        item
+        for row in frozen_scoreboard.json()["data"]["rows"]
+        if row["team_id"] == login["team"]["participant_team_id"]
+        for item in row["problem_scores"]
+        if item["problem_id"] == problem_id
+    )
+    assert frozen_score["solved"] is False
+    assert frozen_score["attempts"] == 1
+
+    live_problems = client.get(
+        f"/api/contests/{contest_id}/divisions/{division_id}/problems",
+        headers=auth_headers(login["access_token"]),
+    )
+    assert live_problems.status_code == 200
+    problem_payload = next(
+        item for item in live_problems.json()["data"] if item["problem_id"] == problem_id
+    )
+    assert problem_payload["solve_status"] == "accepted"
+
+
 def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     contest_id, login = participant_login()
     set_contest_mutable(contest_id)
