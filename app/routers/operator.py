@@ -1008,12 +1008,14 @@ async def operator_submissions(
     include_source: bool = False,
     division_id: str | None = None,
     problem_id: str | None = None,
+    participant_team_id: str | None = None,
 ):
     require_contest_staff(request, contest_id)
     submissions, next_cursor, total_count = store.list_submissions(
         contest_id=contest_id,
         division_id=division_id,
         problem_id=problem_id,
+        participant_team_id=participant_team_id,
         include_source=include_source,
         limit=limit,
         cursor=cursor,

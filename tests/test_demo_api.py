@@ -2938,6 +2938,16 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     assert len(operator_page.json()["data"]) <= 1
     assert operator_page.json()["page"]["limit"] == 1
     assert all(item["division_id"] == division_id for item in operator_page.json()["data"])
+    operator_team_page = client.get(
+        f"/api/operator/contests/{contest_id}/submissions?participant_team_id={login['team']['participant_team_id']}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert operator_team_page.status_code == 200
+    assert operator_team_page.json()["data"]
+    assert all(
+        item["participant_team_id"] == login["team"]["participant_team_id"]
+        for item in operator_team_page.json()["data"]
+    )
 
     operator_detail = client.get(
         f"/api/operator/contests/{contest_id}/submissions/{submission_id}",
