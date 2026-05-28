@@ -63,8 +63,10 @@ def _problem_solve_statuses(contest_id: str, participant: dict | None) -> dict[s
     return statuses
 
 
-def _problem_payload(problem, solve_statuses: dict[str, str]) -> dict:
+def _problem_payload(problem, solve_statuses: dict[str, str], include_editorial: bool = False) -> dict:
     item = problem.model_dump(mode="json")
+    if not include_editorial:
+        item["editorial"] = ""
     item["solve_status"] = solve_statuses.get(problem.problem_id, "unsolved")
     return item
 
@@ -127,6 +129,14 @@ def _allow_after_end_resource(contest, access: ContestResourceAccess, participan
     if access == ContestResourceAccess.PARTICIPANTS:
         return participant is not None
     return False
+
+
+def _allow_editorial_view(contest, participant: dict | None) -> bool:
+    if not _is_ended(contest):
+        return False
+    if contest.problem_access_after_end == ContestResourceAccess.PRIVATE:
+        return False
+    return _allow_after_end_resource(contest, contest.editorial_access_after_end, participant)
 
 
 def _allow_board_write_after_end(contest, participant: dict | None) -> bool:
@@ -457,8 +467,15 @@ async def problem_detail(contest_id: str, problem_id: str, request: Request):
     problem = store.problems.get(problem_id)
     if not problem or problem.contest_id != contest_id:
         raise not_found()
-    _allow_problem_view(request, contest_id, problem.division_id)
-    return ok(request, problem.model_dump(mode="json"))
+    participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
+    return ok(
+        request,
+        _problem_payload(
+            problem,
+            _problem_solve_statuses(contest_id, participant),
+            include_editorial=_allow_editorial_view(contest, participant),
+        ),
+    )
 
 
 @router.get("/contests/{contest_id}/problems/{problem_id}/assets")
@@ -466,12 +483,17 @@ async def problem_assets(contest_id: str, problem_id: str, request: Request):
     problem = store.problems.get(problem_id)
     if not problem or problem.contest_id != contest_id:
         raise not_found()
-    _allow_problem_view(request, contest_id, problem.division_id)
+    participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
+    include_editorial_assets = _allow_editorial_view(contest, participant)
     try:
         assets = [
             asset
             for asset in store.problem_assets_for_problem(contest_id, problem_id)
             if "/package-files/" not in asset.storage_key
+            and (
+                include_editorial_assets
+                or "/editorial-assets/" not in asset.storage_key
+            )
         ]
     except ValueError:
         raise not_found()

@@ -114,6 +114,7 @@ class ContestSettingsUpdateRequest(BaseModel):
     board_access_after_end: ContestResourceAccess | None = None
     board_write_after_end: bool | None = None
     notice_access_after_end: ContestResourceAccess | None = None
+    editorial_access_after_end: ContestResourceAccess | None = None
     scoreboard_freeze_mode: ScoreboardFreezeMode | None = None
     mock_judging_enabled: bool | None = None
     participant_progress_visible: bool | None = None
@@ -206,6 +207,7 @@ class ProblemUpdateRequest(BaseModel):
     problem_code: str | None = None
     title: str | None = None
     statement: str | None = None
+    editorial: str | None = None
     time_limit_ms: int | None = None
     memory_limit_mb: int | None = None
     language_resource_limits: dict[str, ProblemLanguageResourceLimitPayload] | None = None
@@ -561,6 +563,7 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
 
     next_problem_access = updates.get("problem_access_after_end", contest.problem_access_after_end)
     if next_problem_access == ContestResourceAccess.PRIVATE:
+        updates["editorial_access_after_end"] = ContestResourceAccess.PRIVATE
         updates["mock_judging_enabled"] = False
     next_participant_progress_visible = updates.get(
         "participant_progress_visible",

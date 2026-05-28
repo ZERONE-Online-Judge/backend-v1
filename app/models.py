@@ -108,6 +108,7 @@ class Contest(BaseModel):
     board_access_after_end: ContestResourceAccess = ContestResourceAccess.PARTICIPANTS
     board_write_after_end: bool = False
     notice_access_after_end: ContestResourceAccess = ContestResourceAccess.PUBLIC
+    editorial_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
     scoreboard_freeze_mode: ScoreboardFreezeMode = ScoreboardFreezeMode.AUTO
     mock_judging_enabled: bool = False
     participant_progress_visible: bool = True
@@ -133,6 +134,7 @@ class Problem(BaseModel):
     problem_code: str
     title: str
     statement: str
+    editorial: str = ""
     time_limit_ms: int
     memory_limit_mb: int
     language_resource_limits: dict[str, "ProblemLanguageResourceLimit"] = Field(default_factory=dict)

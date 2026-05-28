@@ -2078,6 +2078,20 @@ def test_operator_updates_contest_settings_and_public_after_end_policy():
     start_at = now - timedelta(hours=3)
     freeze_at = now - timedelta(hours=2)
     end_at = now - timedelta(hours=1)
+    problem_id = next(
+        problem.problem_id
+        for problem in store.problems.values()
+        if problem.contest_id == contest_id
+    )
+    editorial = "# 해설\n\n대회 종료 후 공개되는 해설입니다."
+
+    patched_problem = client.patch(
+        f"/api/operator/contests/{contest_id}/problems/{problem_id}",
+        headers=auth_headers(operator["access_token"]),
+        json={"editorial": editorial},
+    )
+    assert patched_problem.status_code == 200
+    assert patched_problem.json()["data"]["editorial"] == editorial
 
     updated = client.patch(
         f"/api/operator/contests/{contest_id}/settings",
@@ -2088,6 +2102,7 @@ def test_operator_updates_contest_settings_and_public_after_end_policy():
             "freeze_at": freeze_at.isoformat(),
             "end_at": end_at.isoformat(),
             "problem_access_after_end": "public",
+            "editorial_access_after_end": "public",
             "scoreboard_access_after_end": "public",
             "submission_access_after_end": "public",
             "emergency_notice": "Final review in progress",
@@ -2099,6 +2114,19 @@ def test_operator_updates_contest_settings_and_public_after_end_policy():
 
     public_problems = client.get(f"/api/contests/{contest_id}/problems")
     assert public_problems.status_code == 200
+    public_problem = client.get(f"/api/contests/{contest_id}/problems/{problem_id}")
+    assert public_problem.status_code == 200
+    assert public_problem.json()["data"]["editorial"] == editorial
+
+    private_editorial = client.patch(
+        f"/api/operator/contests/{contest_id}/settings",
+        headers=auth_headers(operator["access_token"]),
+        json={"editorial_access_after_end": "private"},
+    )
+    assert private_editorial.status_code == 200
+    hidden_problem = client.get(f"/api/contests/{contest_id}/problems/{problem_id}")
+    assert hidden_problem.status_code == 200
+    assert hidden_problem.json()["data"]["editorial"] == ""
 
     invalid = client.patch(
         f"/api/operator/contests/{contest_id}/settings",
@@ -2119,6 +2147,7 @@ def test_operator_updates_contest_settings_and_public_after_end_policy():
             "freeze_at": restore_freeze.isoformat(),
             "end_at": restore_end.isoformat(),
             "problem_access_after_end": "private",
+            "editorial_access_after_end": "private",
             "scoreboard_access_after_end": "private",
             "submission_access_after_end": "private",
             "emergency_notice": "제출 지연은 long polling 상태창에서 확인하세요.",

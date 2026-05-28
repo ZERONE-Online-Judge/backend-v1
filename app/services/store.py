@@ -152,6 +152,7 @@ def _contest(row: ContestRow) -> Contest:
         board_access_after_end=ContestResourceAccess(row.board_access_after_end or "participants"),
         board_write_after_end=bool(row.board_write_after_end),
         notice_access_after_end=ContestResourceAccess(row.notice_access_after_end or "public"),
+        editorial_access_after_end=ContestResourceAccess(row.editorial_access_after_end or "private"),
         scoreboard_freeze_mode=ScoreboardFreezeMode(row.scoreboard_freeze_mode or "auto"),
         mock_judging_enabled=bool(row.mock_judging_enabled),
         participant_progress_visible=bool(row.participant_progress_visible),
@@ -210,6 +211,7 @@ def _problem(row: ProblemRow) -> Problem:
         problem_code=row.problem_code,
         title=row.title,
         statement=row.statement,
+        editorial=row.editorial or "",
         time_limit_ms=row.time_limit_ms,
         memory_limit_mb=row.memory_limit_mb,
         language_resource_limits=row.language_resource_limits or {},
@@ -2748,6 +2750,7 @@ class DbStore:
             "board_access_after_end",
             "board_write_after_end",
             "notice_access_after_end",
+            "editorial_access_after_end",
             "scoreboard_freeze_mode",
             "mock_judging_enabled",
             "participant_progress_visible",
@@ -2766,6 +2769,7 @@ class DbStore:
                         value = value.value
                     setattr(row, key, value)
             if row.problem_access_after_end == ContestResourceAccess.PRIVATE.value:
+                row.editorial_access_after_end = ContestResourceAccess.PRIVATE.value
                 row.mock_judging_enabled = False
             row.status = _schedule_status(row.status, row.start_at, row.end_at, now_utc())
             db.commit()
@@ -3111,6 +3115,7 @@ class DbStore:
                 problem_code=problem_code,
                 title=title,
                 statement=statement,
+                editorial="",
                 time_limit_ms=time_limit_ms,
                 memory_limit_mb=memory_limit_mb,
                 language_resource_limits=language_resource_limits or {},
@@ -3215,6 +3220,7 @@ class DbStore:
                 problem_code=(problem_code or source.problem_code).strip(),
                 title=source.title,
                 statement=source.statement,
+                editorial=source.editorial or "",
                 time_limit_ms=source.time_limit_ms,
                 memory_limit_mb=source.memory_limit_mb,
                 language_resource_limits=source.language_resource_limits or {},

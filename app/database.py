@@ -79,6 +79,8 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN board_write_after_end BOOLEAN DEFAULT 0 NOT NULL"))
                 if "notice_access_after_end" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN notice_access_after_end VARCHAR(32) DEFAULT 'public' NOT NULL"))
+                if "editorial_access_after_end" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN editorial_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
                 if "scoreboard_freeze_mode" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN scoreboard_freeze_mode VARCHAR(32) DEFAULT 'auto' NOT NULL"))
                 if "mock_judging_enabled" not in columns:
@@ -112,6 +114,9 @@ def create_schema() -> None:
             if "language_resource_limits" not in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE problems ADD COLUMN language_resource_limits JSON DEFAULT '{}' NOT NULL"))
+            if "editorial" not in columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE problems ADD COLUMN editorial TEXT DEFAULT '' NOT NULL"))
             if "max_score" in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE problems DROP COLUMN max_score"))
