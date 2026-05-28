@@ -10,7 +10,7 @@ from app.services.authz import require_service_master
 from app.services.errors import AppError, not_found
 from app.services.mail_templates import render_branded_email
 from app.services.responses import ok, page
-from app.services.store import store
+from app.services.store import SERVICE_MASTER_OPERATOR_ERROR, store
 
 router = APIRouter(tags=["admin"])
 
@@ -132,7 +132,9 @@ async def admin_contests(request: Request):
 
 @router.post("/admin/contests")
 async def create_contest(payload: ContestCreateRequest, request: Request):
-    account = require_service_master(request)
+    require_service_master(request)
+    if payload.operator_email and store.is_service_master_email(str(payload.operator_email)):
+        raise AppError(409, "service_master_operator_immutable", "서비스 마스터는 모든 대회 권한을 자동으로 가지므로 대회 운영자로 추가할 수 없습니다.")
     contest = store.create_contest(
         payload.title,
         payload.organization_name,
@@ -142,16 +144,13 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
         payload.freeze_at,
         payload.status,
     )
-    store.upsert_contest_operator(
-        contest.contest_id,
-        account.email,
-        account.display_name or account.email,
-    )
     if payload.operator_email:
         try:
             store.upsert_contest_operator(contest.contest_id, str(payload.operator_email), str(payload.operator_email))
         except ValueError as exc:
             message = str(exc)
+            if message == SERVICE_MASTER_OPERATOR_ERROR:
+                raise AppError(409, "service_master_operator_immutable", "서비스 마스터는 모든 대회 권한을 자동으로 가지므로 대회 운영자로 추가할 수 없습니다.")
             if message.startswith("operator email cannot be participant email:"):
                 raise AppError(422, "validation_error", message, {"field": "operator_email_conflict"})
             raise AppError(404, "not_found", message)
@@ -204,6 +203,8 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
         operator = store.upsert_contest_operator(contest_id, str(payload.email), payload.display_name or str(payload.email))
     except ValueError as exc:
         message = str(exc)
+        if message == SERVICE_MASTER_OPERATOR_ERROR:
+            raise AppError(409, "service_master_operator_immutable", "서비스 마스터는 모든 대회 권한을 자동으로 가지므로 대회 운영자로 추가할 수 없습니다.")
         if message.startswith("operator email cannot be participant email:"):
             raise AppError(422, "validation_error", message, {"field": "operator_email_conflict"})
         raise AppError(404, "not_found", message)

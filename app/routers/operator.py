@@ -18,7 +18,7 @@ from app.services.mail_templates import absolute_url, render_branded_email
 from app.services.package_builder import PackageBuildError, package_role
 from app.services.responses import ok, page
 from app.settings import settings
-from app.services.store import store
+from app.services.store import SERVICE_MASTER_OPERATOR_ERROR, store
 from app.services.storage import object_storage
 from app.services.testcase_verifier import UploadedTestcase, build_verified_testcase_set, verify_active_testcases_with_candidate_asset
 
@@ -678,6 +678,8 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
         operator = store.upsert_contest_operator(contest_id, str(payload.email), payload.display_name or str(payload.email))
     except ValueError as exc:
         message = str(exc)
+        if message == SERVICE_MASTER_OPERATOR_ERROR:
+            raise AppError(409, "service_master_operator_immutable", "서비스 마스터는 모든 대회 권한을 자동으로 가지므로 대회 운영자로 추가할 수 없습니다.")
         if message.startswith("operator email cannot be participant email:"):
             raise AppError(422, "validation_error", message, {"field": "operator_email_conflict"})
         raise AppError(404, "not_found", message)
@@ -712,10 +714,15 @@ async def update_contest_operator(contest_id: str, operator_email: str, payload:
 async def delete_contest_operator(contest_id: str, operator_email: str, request: Request):
     account = require_contest_staff(request, contest_id)
     current_operators = store.contest_operator_accounts(contest_id)
+    normalized_email = operator_email.strip().lower()
+    if store.is_service_master_email(operator_email):
+        raise AppError(409, "service_master_operator_immutable", "서비스 마스터는 대회 운영자 목록에서 제거할 수 없습니다.")
+    if normalized_email not in {str(operator.email).lower() for operator in current_operators}:
+        raise not_found()
+    if str(account.email).lower() == normalized_email:
+        raise AppError(409, "self_remove_denied", "현재 로그인한 운영자 자신은 제거할 수 없습니다.")
     if len(current_operators) <= 1:
         raise AppError(409, "last_operator", "마지막 대회 운영자는 제거할 수 없습니다.")
-    if str(account.email) == operator_email:
-        raise AppError(409, "self_remove_denied", "현재 로그인한 운영자 자신은 제거할 수 없습니다.")
     removed = store.remove_contest_operator(contest_id, operator_email)
     if not removed:
         raise not_found()

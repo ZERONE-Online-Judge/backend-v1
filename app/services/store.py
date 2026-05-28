@@ -85,6 +85,7 @@ from app.services.mail_templates import (
 STAFF_OTP_SCOPE = "__staff__"
 GENERAL_OTP_SCOPE = "__general__"
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
+SERVICE_MASTER_OPERATOR_ERROR = "service master cannot be contest operator"
 KST = ZoneInfo("Asia/Seoul")
 
 
@@ -2274,10 +2275,12 @@ class DbStore:
             participant_conflicts = self._contest_participant_email_conflicts(db, contest_id, [normalized_email])
             if participant_conflicts:
                 raise ValueError(f"operator email cannot be participant email: {participant_conflicts[0]}")
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
+            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email))
+            if account and account.is_service_master:
+                raise ValueError(SERVICE_MASTER_OPERATOR_ERROR)
             if not account:
                 account = StaffAccountRow(
-                    email=email,
+                    email=normalized_email,
                     display_name=display_name,
                     is_service_master=False,
                     permissions="",
@@ -2295,8 +2298,9 @@ class DbStore:
 
     def update_contest_operator(self, contest_id: str, email: str, display_name: str) -> StaffAccount | None:
         with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            if not account:
+            normalized_email = email.strip().lower()
+            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email))
+            if not account or account.is_service_master:
                 return None
             scopes = json.loads(account.contest_scopes or "{}")
             if "contest.*" not in scopes.get(contest_id, []):
@@ -2308,8 +2312,9 @@ class DbStore:
 
     def remove_contest_operator(self, contest_id: str, email: str) -> StaffAccount | None:
         with self._session() as db:
-            account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
-            if not account:
+            normalized_email = email.strip().lower()
+            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email))
+            if not account or account.is_service_master:
                 return None
             scopes = json.loads(account.contest_scopes or "{}")
             if "contest.*" not in scopes.get(contest_id, []):
@@ -2322,13 +2327,25 @@ class DbStore:
 
     def contest_operator_accounts(self, contest_id: str) -> list[StaffAccount]:
         with self._session() as db:
-            rows = db.scalars(select(StaffAccountRow).order_by(StaffAccountRow.email)).all()
+            rows = db.scalars(
+                select(StaffAccountRow)
+                .where(StaffAccountRow.is_service_master.is_(False))
+                .order_by(StaffAccountRow.email)
+            ).all()
             accounts = []
             for row in rows:
                 scopes = json.loads(row.contest_scopes or "{}")
                 if "contest.*" in scopes.get(contest_id, []):
                     accounts.append(_staff(row))
             return accounts
+
+    def is_service_master_email(self, email: str) -> bool:
+        normalized_email = email.strip().lower()
+        if not normalized_email:
+            return False
+        with self._session() as db:
+            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email))
+            return bool(account and account.is_service_master)
 
     def accessible_contests_for_staff(self, account: StaffAccount) -> list[Contest]:
         if account.is_service_master:

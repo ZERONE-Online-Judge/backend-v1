@@ -617,6 +617,13 @@ def test_admin_can_bootstrap_contest_divisions_and_operator():
     assert created.status_code == 200
     contest_id = created.json()["data"]["contest_id"]
 
+    listed_before_assignment = client.get(
+        f"/api/operator/contests/{contest_id}/operators",
+        headers=auth_headers(master["access_token"]),
+    )
+    assert listed_before_assignment.status_code == 200
+    assert listed_before_assignment.json()["data"] == []
+
     division = client.post(
         f"/api/admin/contests/{contest_id}/divisions",
         headers=auth_headers(master["access_token"]),
@@ -632,6 +639,50 @@ def test_admin_can_bootstrap_contest_divisions_and_operator():
     )
     assert operator.status_code == 200
     assert operator.json()["data"]["contest_scopes"][contest_id] == ["contest.*"]
+
+
+def test_service_master_has_implicit_contest_access_and_is_not_contest_operator():
+    contest_id = first_contest_id()
+    master = staff_tokens()
+    operator = staff_tokens("test4@zoj.com")
+    master_email = master["staff"]["email"]
+
+    dashboard = client.get(
+        f"/api/operator/contests/{contest_id}/dashboard",
+        headers=auth_headers(master["access_token"]),
+    )
+    assert dashboard.status_code == 200
+
+    listed = client.get(
+        f"/api/operator/contests/{contest_id}/operators",
+        headers=auth_headers(master["access_token"]),
+    )
+    assert listed.status_code == 200
+    assert all(not item["is_service_master"] for item in listed.json()["data"])
+    assert all(item["email"] != master_email for item in listed.json()["data"])
+
+    admin_assign = client.post(
+        f"/api/admin/contests/{contest_id}/operators",
+        headers=auth_headers(master["access_token"]),
+        json={"email": master_email, "display_name": "Should Not Be Listed"},
+    )
+    assert admin_assign.status_code == 409
+    assert admin_assign.json()["error"]["code"] == "service_master_operator_immutable"
+
+    operator_assign = client.post(
+        f"/api/operator/contests/{contest_id}/operators",
+        headers=auth_headers(operator["access_token"]),
+        json={"email": master_email, "display_name": "Should Not Be Listed"},
+    )
+    assert operator_assign.status_code == 409
+    assert operator_assign.json()["error"]["code"] == "service_master_operator_immutable"
+
+    remove_master = client.delete(
+        f"/api/operator/contests/{contest_id}/operators/{master_email}",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert remove_master.status_code == 409
+    assert remove_master.json()["error"]["code"] == "service_master_operator_immutable"
 
 
 def test_operator_can_create_and_update_division():
