@@ -3139,7 +3139,7 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     set_contest_running(contest_id)
 
     submissions = []
-    for source_code in ["print(30)", "print(20)", "broken"]:
+    for source_code in ["print(30)", "print(20)", "print(10)", "print(5)", "broken"]:
         response = client.post(
             f"/api/contests/{contest_id}/problems/{problem['problem_id']}/submissions",
             headers=auth_headers(login["access_token"]),
@@ -3158,8 +3158,10 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
 
     results = [
         (submissions[0]["submission_id"], "wrong_answer"),
-        (submissions[1]["submission_id"], "wrong_answer"),
-        (submissions[2]["submission_id"], "compile_error"),
+        (submissions[1]["submission_id"], "runtime_error"),
+        (submissions[2]["submission_id"], "time_limit_exceeded"),
+        (submissions[3]["submission_id"], "system_error"),
+        (submissions[4]["submission_id"], "compile_error"),
     ]
     for submission_id, status in results:
         job = jobs_by_submission[submission_id]
@@ -3182,8 +3184,8 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     problem_score = next(item for item in team_row["problem_scores"] if item["problem_id"] == problem["problem_id"])
     assert "score" not in problem_score
     assert problem_score["best_submission_id"] is None
-    assert problem_score["attempts"] == 2
-    assert problem_score["wrong_attempts"] == 2
+    assert problem_score["attempts"] == 4
+    assert problem_score["wrong_attempts"] == 4
     assert problem_score["solved"] is False
 
 

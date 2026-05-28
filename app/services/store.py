@@ -3730,11 +3730,14 @@ class DbStore:
             submission_count_by_team: dict[str, int] = {}
             accepted_by_team_problem: dict[tuple[str, str], dict] = {}
             problem_attempts_by_team: dict[tuple[str, str], dict] = {}
+            # ICPC-style attempts: every finalized non-AC result counts except CE.
             penalty_statuses = {
                 SubmissionStatus.WRONG_ANSWER.value,
+                SubmissionStatus.RUNTIME_ERROR.value,
                 SubmissionStatus.TIME_LIMIT_EXCEEDED.value,
                 SubmissionStatus.MEMORY_LIMIT_EXCEEDED.value,
                 SubmissionStatus.OUTPUT_LIMIT_EXCEEDED.value,
+                SubmissionStatus.SYSTEM_ERROR.value,
             }
             tracked_statuses = {
                 SubmissionStatus.ACCEPTED.value,
