@@ -3214,6 +3214,24 @@ def test_problem_solve_status_uses_live_participant_results_during_scoreboard_fr
     )
     assert problem_payload["solve_status"] == "accepted"
 
+    live_scoreboard = client.get(
+        f"/api/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/internal",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert live_scoreboard.status_code == 200
+    problem_stat = next(
+        item
+        for item in live_scoreboard.json()["data"]["problem_stats"]
+        if item["problem_id"] == problem_id
+    )
+    assert problem_stat["total_submissions"] == 2
+    assert problem_stat["accepted_submissions"] == 1
+    assert problem_stat["accepted_team_count"] == 1
+    assert problem_stat["acceptance_rate"] == 50.0
+    assert problem_stat["first_accepted_team_id"] == login["team"]["participant_team_id"]
+    assert problem_stat["first_accepted_team_name"] == login["team"]["team_name"]
+    assert isinstance(problem_stat["first_accepted_elapsed_minutes"], int)
+
 
 def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     contest_id, login = participant_login()

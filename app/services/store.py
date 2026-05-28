@@ -3727,6 +3727,21 @@ class DbStore:
             if excluded_team_ids:
                 submissions = [submission for submission in submissions if submission.participant_team_id not in excluded_team_ids]
 
+            team_name_by_id = {team.participant_team_id: team.team_name for team in teams}
+            problem_stats_by_id = {
+                problem.problem_id: {
+                    "problem_id": problem.problem_id,
+                    "problem_code": problem.problem_code,
+                    "total_submissions": 0,
+                    "accepted_submissions": 0,
+                    "accepted_team_ids": set(),
+                    "first_accepted_team_id": None,
+                    "first_accepted_team_name": None,
+                    "first_accepted_at": None,
+                    "first_accepted_elapsed_minutes": None,
+                }
+                for problem in problems
+            }
             submission_count_by_team: dict[str, int] = {}
             accepted_by_team_problem: dict[tuple[str, str], dict] = {}
             problem_attempts_by_team: dict[tuple[str, str], dict] = {}
@@ -3747,6 +3762,23 @@ class DbStore:
                 submission_count_by_team[submission.participant_team_id] = submission_count_by_team.get(submission.participant_team_id, 0) + 1
                 if submission.problem_id not in problem_by_id:
                     continue
+                problem_stats = problem_stats_by_id.get(submission.problem_id)
+                if problem_stats is not None:
+                    problem_stats["total_submissions"] += 1
+                    if submission.status == SubmissionStatus.ACCEPTED.value:
+                        solved_at = _aware(submission.submitted_at)
+                        elapsed_minutes = max(0, int((solved_at - _aware(contest.start_at)).total_seconds() // 60))
+                        problem_stats["accepted_submissions"] += 1
+                        problem_stats["accepted_team_ids"].add(submission.participant_team_id)
+                        first_accepted_at = problem_stats["first_accepted_at"]
+                        if first_accepted_at is None or solved_at < first_accepted_at:
+                            problem_stats["first_accepted_team_id"] = submission.participant_team_id
+                            problem_stats["first_accepted_team_name"] = (
+                                team_name_by_id.get(submission.participant_team_id)
+                                or submission.participant_team_id
+                            )
+                            problem_stats["first_accepted_at"] = solved_at
+                            problem_stats["first_accepted_elapsed_minutes"] = elapsed_minutes
                 key = (submission.participant_team_id, submission.problem_id)
                 stats = problem_attempts_by_team.setdefault(
                     key,
@@ -3852,7 +3884,34 @@ class DbStore:
                         problem_score["solved_at"] = None
                         problem_score["best_submission_id"] = None
                         problem_score["best_submitted_at"] = None
-            return {"frozen": frozen, "rows": rows}
+
+            problem_stats = []
+            for problem in problems:
+                stats = problem_stats_by_id[problem.problem_id]
+                accepted_team_count = len(stats["accepted_team_ids"])
+                total_submissions = int(stats["total_submissions"])
+                accepted_submissions = int(stats["accepted_submissions"])
+                problem_stats.append(
+                    {
+                        "problem_id": stats["problem_id"],
+                        "problem_code": stats["problem_code"],
+                        "total_submissions": total_submissions,
+                        "accepted_submissions": accepted_submissions,
+                        "accepted_team_count": accepted_team_count,
+                        "acceptance_rate": round(accepted_submissions / total_submissions * 100, 1)
+                        if total_submissions
+                        else None,
+                        "first_accepted_team_id": stats["first_accepted_team_id"],
+                        "first_accepted_team_name": stats["first_accepted_team_name"],
+                        "first_accepted_at": stats["first_accepted_at"],
+                        "first_accepted_elapsed_minutes": stats["first_accepted_elapsed_minutes"],
+                    }
+                )
+
+            result = {"frozen": frozen, "rows": rows}
+            if not public_view:
+                result["problem_stats"] = problem_stats
+            return result
 
     def _mail_exists(self, db: Session, mail_type: str, recipient_email: str, subject: str) -> bool:
         return (

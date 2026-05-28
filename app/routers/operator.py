@@ -1177,7 +1177,15 @@ async def internal_scoreboard(contest_id: str, request: Request):
     if not board:
         raise not_found()
     rows = [{**row, "visible_to_team": False} for row in board["rows"]]
-    return ok(request, {"frozen_public_view": bool(public_board and public_board["frozen"]), "operator_live_view": True, "rows": rows})
+    return ok(
+        request,
+        {
+            "frozen_public_view": bool(public_board and public_board["frozen"]),
+            "operator_live_view": True,
+            "problem_stats": board.get("problem_stats", []),
+            "rows": rows,
+        },
+    )
 
 
 @router.get("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/internal")
@@ -1191,7 +1199,16 @@ async def division_internal_scoreboard(contest_id: str, division_id: str, reques
     if not board:
         raise not_found()
     rows = [{**row, "visible_to_team": False} for row in board["rows"]]
-    return ok(request, {"division": division.model_dump(mode="json"), "frozen_public_view": bool(public_board and public_board["frozen"]), "operator_live_view": True, "rows": rows})
+    return ok(
+        request,
+        {
+            "division": division.model_dump(mode="json"),
+            "frozen_public_view": bool(public_board and public_board["frozen"]),
+            "operator_live_view": True,
+            "problem_stats": board.get("problem_stats", []),
+            "rows": rows,
+        },
+    )
 
 
 @router.get("/operator/contests/{contest_id}/scoreboard/presentation")
