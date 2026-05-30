@@ -58,37 +58,17 @@ jobs:
   deploy:
     name: Deploy Backend
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zoj-prod, backend]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
     steps:
-      - name: Configure SSH
+      - name: Deploy on server
         env:
-          BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
-          BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
-          BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
-          BACKEND_DEPLOY_SSH_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
-        run: |
-          test -n "$BACKEND_DEPLOY_HOST"
-          test -n "$BACKEND_DEPLOY_USER"
-          test -n "$BACKEND_DEPLOY_SSH_KEY"
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$BACKEND_DEPLOY_SSH_KEY" > ~/.ssh/backend_deploy_key
-          chmod 600 ~/.ssh/backend_deploy_key
-          ssh-keyscan -p "${BACKEND_DEPLOY_PORT:-22}" "$BACKEND_DEPLOY_HOST" >> ~/.ssh/known_hosts
-
-      - name: Deploy over SSH
-        env:
-          BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
-          BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
-          BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
-          BACKEND_DEPLOY_DIR: ${{ secrets.BACKEND_DEPLOY_DIR }}
-          PUBLIC_HEALTH_URL: ${{ secrets.PUBLIC_HEALTH_URL }}
           RELEASE_VERSION: ${{ github.sha }}
         run: |
-          test -n "$BACKEND_DEPLOY_DIR"
-          ssh -i ~/.ssh/backend_deploy_key \
-            -p "${BACKEND_DEPLOY_PORT:-22}" \
-            "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
-            "cd '$BACKEND_DEPLOY_DIR' && PUBLIC_HEALTH_URL='${PUBLIC_HEALTH_URL:-}' RELEASE_VERSION='$RELEASE_VERSION' ./deploy-main-bluegreen.sh"
+          cd ~/zerone-online-judge/backend-v1
+          git fetch origin main
+          git checkout main
+          git pull origin main
+          RELEASE_VERSION="$RELEASE_VERSION" ./deploy/deploy-main-bluegreen.sh
+          curl -f http://127.0.0.1:6001/api/health
