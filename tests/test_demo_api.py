@@ -685,6 +685,25 @@ def test_service_master_has_implicit_contest_access_and_is_not_contest_operator(
     assert remove_master.json()["error"]["code"] == "service_master_operator_immutable"
 
 
+def test_service_manager_list_materializes_service_master_contest_scopes():
+    master = staff_tokens()
+    created = client.post(
+        "/api/admin/contests",
+        headers=auth_headers(master["access_token"]),
+        json={
+            "title": "Scope Materialized Contest",
+            "organization_name": "Zerone",
+        },
+    )
+    assert created.status_code == 200
+    contest_id = created.json()["data"]["contest_id"]
+
+    accounts = client.get("/api/admin/service-managers", headers=auth_headers(master["access_token"]))
+    assert accounts.status_code == 200
+    master_account = next(item for item in accounts.json()["data"] if item["email"] == master["staff"]["email"])
+    assert master_account["contest_scopes"][contest_id] == ["contest.*"]
+
+
 def test_operator_can_create_and_update_division():
     contest_id = first_contest_id()
     set_contest_mutable(contest_id)

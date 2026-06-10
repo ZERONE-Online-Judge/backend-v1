@@ -1208,7 +1208,17 @@ class DbStore:
     def staff_accounts(self) -> dict[str, StaffAccount]:
         with self._session() as db:
             rows = db.scalars(select(StaffAccountRow)).all()
-            return {row.staff_account_id: _staff(row) for row in rows}
+            contest_ids = db.scalars(select(ContestRow.contest_id)).all()
+            accounts = {}
+            for row in rows:
+                account = _staff(row)
+                if account.is_service_master:
+                    account.contest_scopes = {
+                        contest_id: ["contest.*"]
+                        for contest_id in contest_ids
+                    }
+                accounts[row.staff_account_id] = account
+            return accounts
 
     @property
     def mail_queue(self) -> dict[str, MailQueueItem]:
