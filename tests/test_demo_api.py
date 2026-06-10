@@ -1422,6 +1422,14 @@ def test_operator_package_status_and_zip_testcase_import():
     assert ready.json()["data"]["ready"] is True
     assert ready.json()["data"]["active_testcase_count"] == 2
 
+    warmed = client.post(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/judge-bundle:warm",
+        headers=auth_headers(operator["access_token"]),
+    )
+    assert warmed.status_code == 200
+    assert warmed.json()["data"]["testcase_set_id"] == data["testcase_set"]["testcase_set_id"]
+    assert warmed.json()["data"]["queue"]["status"] in {"pending", "running", "succeeded"}
+
 
 def test_package_status_does_not_require_checker_when_testcases_exist():
     contest_id = first_contest_id()

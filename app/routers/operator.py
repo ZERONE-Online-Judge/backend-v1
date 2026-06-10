@@ -1472,6 +1472,19 @@ async def package_status(contest_id: str, problem_id: str, request: Request):
         raise not_found()
 
 
+@router.post("/operator/contests/{contest_id}/problems/{problem_id}/judge-bundle:warm")
+async def warm_judge_bundle(contest_id: str, problem_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    problem = store.problems.get(problem_id)
+    if not problem or problem.contest_id != contest_id:
+        raise not_found()
+    store.enqueue_bundle_warm(contest_id, problem_id)
+    try:
+        return ok(request, store.problem_judge_bundle_status(contest_id, problem_id))
+    except ValueError:
+        raise not_found()
+
+
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/testcase-sets")
 async def create_testcase_set(contest_id: str, problem_id: str, payload: TestcaseSetCreateRequest, request: Request, background_tasks: BackgroundTasks):
     require_contest_staff(request, contest_id)
