@@ -14,6 +14,8 @@ from app.settings import settings
 class ObjectStorage:
     def __init__(self) -> None:
         self.backend = settings.object_storage_backend
+        self._minio_client: Minio | None = None
+        self._minio_client_config: tuple[str, str, str, bool] | None = None
 
     def storage_key(self, contest_id: str, category: str, filename: str) -> str:
         safe_filename = filename.replace("/", "_")
@@ -102,12 +104,22 @@ class ObjectStorage:
         parsed = urlparse(settings.object_storage_endpoint)
         endpoint = parsed.netloc or parsed.path
         secure = settings.object_storage_secure or parsed.scheme == "https"
-        return Minio(
+        config = (
+            endpoint,
+            settings.object_storage_access_key,
+            settings.object_storage_secret_key,
+            secure,
+        )
+        if self._minio_client is not None and self._minio_client_config == config:
+            return self._minio_client
+        self._minio_client = Minio(
             endpoint,
             access_key=settings.object_storage_access_key,
             secret_key=settings.object_storage_secret_key,
             secure=secure,
         )
+        self._minio_client_config = config
+        return self._minio_client
 
     def _local_file_url(self, storage_key: str) -> str:
         path = Path(settings.local_object_storage_root) / storage_key

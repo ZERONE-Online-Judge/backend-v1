@@ -333,6 +333,7 @@ def _problem_package_status(contest_id: str, problem_id: str) -> dict:
         "active_testcase_set": active_set,
         "active_testcase_count": active_count,
         "testcase_set_count": len(testcase_sets),
+        "judge_bundle": store.problem_judge_bundle_status(contest_id, problem_id),
     }
 
 

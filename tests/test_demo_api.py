@@ -3681,6 +3681,73 @@ def test_judge_claim_includes_active_testcases():
     assert empty_claim.json()["data"]["jobs"] == []
 
 
+def test_judge_claim_uses_compact_payload_when_bundle_exists():
+    contest_id, login = participant_login()
+    set_contest_mutable(contest_id)
+    operator = staff_tokens("test4@zoj.com")
+    division_id = login["division"]["division_id"]
+
+    problem = client.post(
+        f"/api/operator/contests/{contest_id}/problems",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "division_id": division_id,
+            "problem_code": f"B{uuid4().hex[:6]}",
+            "title": "Bundled Claim Testcases",
+            "statement": "Use bundled testcase payload.",
+            "time_limit_ms": 1000,
+            "memory_limit_mb": 512,
+            "display_order": 100,
+        },
+    ).json()["data"]
+    testcase_set = client.post(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/testcase-sets",
+        headers=auth_headers(operator["access_token"]),
+        json={"is_active": True},
+    ).json()["data"]
+    input_key = f"contests/{contest_id}/problems/{problem['problem_id']}/testcases/{uuid4().hex}.in"
+    output_key = f"contests/{contest_id}/problems/{problem['problem_id']}/testcases/{uuid4().hex}.out"
+    object_storage.write_text(input_key, "40 2\n")
+    object_storage.write_text(output_key, "42\n")
+    client.post(
+        f"/api/operator/contests/{contest_id}/problems/{problem['problem_id']}/testcase-sets/{testcase_set['testcase_set_id']}/testcases",
+        headers=auth_headers(operator["access_token"]),
+        json={
+            "display_order": 1,
+            "input_storage_key": input_key,
+            "output_storage_key": output_key,
+            "input_sha256": hashlib.sha256(b"40 2\n").hexdigest(),
+            "output_sha256": hashlib.sha256(b"42\n").hexdigest(),
+        },
+    )
+    assert store.warm_problem_judge_bundle(contest_id, problem["problem_id"])
+
+    set_contest_running(contest_id)
+    submission = client.post(
+        f"/api/contests/{contest_id}/problems/{problem['problem_id']}/submissions",
+        headers=auth_headers(login["access_token"]),
+        json={"language": "python313", "source_code": "print(sum(map(int, input().split())))"},
+    )
+    assert submission.status_code == 200
+
+    node = client.post(
+        "/api/internal/judge/nodes/register",
+        json={"node_name": f"pytest-node-{uuid4().hex[:6]}", "node_secret": "demo", "total_slots": 1},
+    )
+    claim = client.post(
+        f"/api/internal/judge/nodes/{node.json()['data']['judge_node_id']}/assignments:claim",
+        json={"node_secret": "demo", "max_count": 1},
+    )
+    assert claim.status_code == 200
+    job = claim.json()["data"]["jobs"][0]
+    assert job["bundle_url"]
+    assert job["testcases"][0]["input_storage_key"] == input_key
+    assert job["testcases"][0]["input_url"].startswith("file://")
+    assert job["testcases"][0]["output_url"].startswith("file://")
+    assert "input_text" not in job["testcases"][0]
+    assert "output_text" not in job["testcases"][0]
+
+
 def test_judge_dispatcher_recovers_expired_leases():
     contest_id, login = participant_login()
     advanced_division = login["division"]

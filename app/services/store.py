@@ -4451,7 +4451,6 @@ class DbStore:
                     active_set = db.scalar(
                         select(TestcaseSetRow).where(TestcaseSetRow.problem_id == submission.problem_id, TestcaseSetRow.is_active.is_(True))
                     )
-                    testcases = []
                     testcase_rows: list[TestcaseRow] = []
                     if active_set:
                         testcase_rows = db.scalars(
@@ -4459,39 +4458,8 @@ class DbStore:
                             .where(TestcaseRow.testcase_set_id == active_set.testcase_set_id)
                             .order_by(TestcaseRow.display_order)
                         ).all()
-                        testcases = []
-                        for case in testcase_rows:
-                            input_text = None
-                            output_text = None
-                            inline_limit = max(0, settings.judge_claim_inline_testcase_max_bytes)
-                            try:
-                                if inline_limit > 0:
-                                    input_bytes = object_storage.read_bytes(case.input_storage_key)
-                                    output_bytes = object_storage.read_bytes(case.output_storage_key)
-                                    if len(input_bytes) <= inline_limit and len(output_bytes) <= inline_limit:
-                                        input_text = input_bytes.decode("utf-8-sig")
-                                        output_text = output_bytes.decode("utf-8-sig")
-                            except Exception:
-                                input_text = None
-                                output_text = None
-                            item = {
-                                **_testcase(case).model_dump(mode="json"),
-                                "input_url": object_storage.internal_presigned_get_url(case.input_storage_key),
-                                "output_url": object_storage.internal_presigned_get_url(case.output_storage_key),
-                            }
-                            if input_text is not None and output_text is not None:
-                                item["input_text"] = input_text
-                                item["output_text"] = output_text
-                            testcases.append(item)
-                    submission.status = SubmissionStatus.PREPARING.value
-                    submission.status_updated_at = now_utc()
-                    submission.compile_message = None
-                    submission.judge_message = None
-                    submission.failed_testcase_order = None
-                    submission.progress_current = 0 if testcases else None
-                    submission.progress_total = len(testcases) if testcases else None
-                    package_files = []
                     package_assets: list[ProblemAssetRow] = []
+                    package_role_assets: list[tuple[str, ProblemAssetRow]] = []
                     if problem:
                         package_assets = db.scalars(
                             select(ProblemAssetRow)
@@ -4505,14 +4473,9 @@ class DbStore:
                                     role = candidate
                                     break
                             if role:
-                                package_files.append(
-                                    {
-                                        **_asset(asset).model_dump(mode="json"),
-                                        "role": role,
-                                        "url": object_storage.internal_presigned_get_url(asset.storage_key),
-                                    }
-                                )
+                                package_role_assets.append((role, asset))
                     bundle_url = None
+                    bundle_available = False
                     if problem and active_set:
                         bundle_key = self._judge_bundle_key(
                             submission.contest_id,
@@ -4521,7 +4484,48 @@ class DbStore:
                             testcase_rows,
                             package_assets,
                         )
-                        bundle_url = object_storage.internal_presigned_get_url(bundle_key)
+                        bundle_available = object_storage.size_bytes(bundle_key) is not None
+                        if bundle_available:
+                            bundle_url = object_storage.internal_presigned_get_url(bundle_key)
+                    testcases = []
+                    if active_set:
+                        for case in testcase_rows:
+                            item = _testcase(case).model_dump(mode="json")
+                            item["input_url"] = object_storage.internal_presigned_get_url(case.input_storage_key)
+                            item["output_url"] = object_storage.internal_presigned_get_url(case.output_storage_key)
+                            if not bundle_available:
+                                input_text = None
+                                output_text = None
+                                inline_limit = max(0, settings.judge_claim_inline_testcase_max_bytes)
+                                try:
+                                    if inline_limit > 0:
+                                        input_bytes = object_storage.read_bytes(case.input_storage_key)
+                                        output_bytes = object_storage.read_bytes(case.output_storage_key)
+                                        if len(input_bytes) <= inline_limit and len(output_bytes) <= inline_limit:
+                                            input_text = input_bytes.decode("utf-8-sig")
+                                            output_text = output_bytes.decode("utf-8-sig")
+                                except Exception:
+                                    input_text = None
+                                    output_text = None
+                                if input_text is not None and output_text is not None:
+                                    item["input_text"] = input_text
+                                    item["output_text"] = output_text
+                            testcases.append(item)
+                    package_files = [
+                        {
+                            **_asset(asset).model_dump(mode="json"),
+                            "role": role,
+                            "url": object_storage.internal_presigned_get_url(asset.storage_key),
+                        }
+                        for role, asset in package_role_assets
+                    ]
+                    submission.status = SubmissionStatus.PREPARING.value
+                    submission.status_updated_at = now_utc()
+                    submission.compile_message = None
+                    submission.judge_message = None
+                    submission.failed_testcase_order = None
+                    submission.progress_current = 0 if testcases else None
+                    submission.progress_total = len(testcases) if testcases else None
                     jobs.append(
                         {
                             **_job(row).model_dump(mode="json"),
@@ -4664,6 +4668,74 @@ class DbStore:
                 .order_by(ProblemAssetRow.created_at)
             ).all()
             return self._ensure_problem_judge_bundle(contest_id, problem, active_set, testcase_rows, package_assets)
+
+    def problem_judge_bundle_status(self, contest_id: str, problem_id: str) -> dict:
+        with self._session() as db:
+            problem = db.get(ProblemRow, problem_id)
+            if not problem or problem.contest_id != contest_id:
+                raise ValueError("problem not found")
+            active_set = db.scalar(
+                select(TestcaseSetRow).where(
+                    TestcaseSetRow.problem_id == problem_id,
+                    TestcaseSetRow.is_active.is_(True),
+                )
+            )
+            latest_queue = db.scalar(
+                select(BundleWarmQueueItemRow)
+                .where(
+                    BundleWarmQueueItemRow.contest_id == contest_id,
+                    BundleWarmQueueItemRow.problem_id == problem_id,
+                )
+                .order_by(BundleWarmQueueItemRow.created_at.desc())
+                .limit(1)
+            )
+            queue = None
+            if latest_queue:
+                queue = {
+                    "status": latest_queue.status,
+                    "attempts": latest_queue.attempts,
+                    "last_error": latest_queue.last_error,
+                    "created_at": latest_queue.created_at.isoformat() if latest_queue.created_at else None,
+                    "started_at": latest_queue.started_at.isoformat() if latest_queue.started_at else None,
+                    "completed_at": latest_queue.completed_at.isoformat() if latest_queue.completed_at else None,
+                }
+            if not active_set:
+                return {
+                    "ready": False,
+                    "status": "no_active_testcase_set",
+                    "storage_key": None,
+                    "size_bytes": None,
+                    "testcase_set_id": None,
+                    "version_hash": None,
+                    "queue": queue,
+                }
+            testcase_rows = db.scalars(
+                select(TestcaseRow)
+                .where(TestcaseRow.testcase_set_id == active_set.testcase_set_id)
+                .order_by(TestcaseRow.display_order)
+            ).all()
+            package_assets = db.scalars(
+                select(ProblemAssetRow)
+                .where(ProblemAssetRow.problem_id == problem.problem_id, ProblemAssetRow.storage_key.contains("/package-files/"))
+                .order_by(ProblemAssetRow.created_at)
+            ).all()
+            bundle_key = self._judge_bundle_key(contest_id, problem, active_set.testcase_set_id, testcase_rows, package_assets)
+            size = object_storage.size_bytes(bundle_key)
+            if size is not None:
+                status = "ready"
+            elif latest_queue and latest_queue.status in {"pending", "running", "failed"}:
+                status = latest_queue.status
+            else:
+                status = "missing"
+            return {
+                "ready": size is not None,
+                "status": status,
+                "storage_key": bundle_key,
+                "size_bytes": size,
+                "testcase_set_id": active_set.testcase_set_id,
+                "version_hash": bundle_key.rsplit("-", 1)[-1].replace(".json.gz", ""),
+                "queue": queue,
+            }
 
     def claim_bundle_warm_jobs(self, limit: int = 10) -> list[tuple[str, str, str, int]]:
         with self._session() as db:
