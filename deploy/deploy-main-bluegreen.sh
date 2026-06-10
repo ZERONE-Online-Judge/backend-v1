@@ -106,6 +106,9 @@ target="$(inactive_color "$active")"
 
 log "active=$active, target=$target, release=$release_version"
 
+log "ensure background workers"
+RELEASE_VERSION="$release_version" compose up -d --build mail-worker notice-worker bundle-worker
+
 log "deploy api-$target"
 RELEASE_VERSION="$release_version" "$BLUEGREEN" deploy "$target"
 
