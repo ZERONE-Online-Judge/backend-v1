@@ -50,6 +50,17 @@ class ContestDivisionRow(Base):
     contest: Mapped[ContestRow] = relationship(back_populates="divisions")
 
 
+class ScoreboardReleaseRow(Base):
+    __tablename__ = "scoreboard_releases"
+
+    division_id: Mapped[str] = mapped_column(ForeignKey("contest_divisions.division_id"), primary_key=True)
+    contest_id: Mapped[str] = mapped_column(ForeignKey("contests.contest_id"), index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="partial")
+    snapshot_rows: Mapped[list] = mapped_column(JSON, default=list)
+    revealed_ranks: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
 class TeamMemberRow(Base):
     __tablename__ = "team_members"
     __table_args__ = (UniqueConstraint("contest_id", "email", name="uq_team_member_contest_email"),)

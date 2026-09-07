@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -1234,6 +1235,32 @@ async def division_internal_scoreboard(contest_id: str, division_id: str, reques
     )
 
 
+class ScoreboardReleaseRequest(BaseModel):
+    action: Literal["start", "rank", "all"]
+    rank: int | None = Field(default=None, ge=1)
+
+
+@router.get("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/release")
+async def scoreboard_release(contest_id: str, division_id: str, request: Request):
+    require_contest_staff(request, contest_id)
+    result = store.scoreboard_release(contest_id, division_id)
+    if result is None:
+        raise not_found()
+    return ok(request, result)
+
+
+@router.post("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/release")
+async def update_scoreboard_release(contest_id: str, division_id: str, payload: ScoreboardReleaseRequest, request: Request):
+    require_contest_staff(request, contest_id)
+    try:
+        result = store.update_scoreboard_release(contest_id, division_id, payload.action, payload.rank)
+    except ValueError as error:
+        if str(error) == "division not found":
+            raise not_found()
+        raise AppError(409, "scoreboard_release_conflict", str(error))
+    return ok(request, result)
+
+
 @router.get("/operator/contests/{contest_id}/scoreboard/presentation")
 async def presentation_scoreboard(contest_id: str, request: Request):
     require_contest_staff(request, contest_id)
@@ -1258,6 +1285,7 @@ async def presentation_scoreboard(contest_id: str, request: Request):
                 "frozen": bool(board["frozen"]),
                 "problems": [problem.model_dump(mode="json") for problem in problems],
                 "rows": board["rows"],
+                "release": board.get("release"),
             }
         )
 

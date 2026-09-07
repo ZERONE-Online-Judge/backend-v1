@@ -1,5 +1,17 @@
 # Production Compose Runtime
 
+## Division ranking release
+
+Final ranking releases require migration `0023_scoreboard_releases` before deploying the corresponding frontend.
+After a contest ends, operators can start an individual release or reveal all ranks for a single division.
+The release stores a fixed ranking snapshot after that division's participant judging finishes. Later rejudging does not change this snapshot.
+Revealing a rank reveals all teams tied at that rank. Other divisions retain their existing state.
+
+- `GET /api/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/release`: release state and rank choices (no hidden team identities).
+- `POST` to the same endpoint with `{"action":"start"}`, `{"action":"rank","rank":2}`, or `{"action":"all"}`.
+- Public scoreboards and the presentation use the same persisted state. Unrevealed rows omit team identities and results on the server.
+- The operator internal scoreboard remains live for review. Existing access policies still determine who can view the public scoreboard.
+
 ## 1. Generate Runtime Env Files
 
 ```bash

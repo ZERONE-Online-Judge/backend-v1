@@ -6,6 +6,7 @@ import json
 import math
 import secrets
 from zoneinfo import ZoneInfo
+from fastapi.encoders import jsonable_encoder
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -68,6 +69,7 @@ from app.orm_models import (
     StaffAccountRow,
     StaffSessionRow,
     SubmissionRow,
+    ScoreboardReleaseRow,
     TeamMemberRow,
     TeamSessionRow,
     TestcaseRow,
@@ -3739,11 +3741,106 @@ class DbStore:
             db.refresh(submission)
             return _submission(submission)
 
+    def scoreboard_release(self, contest_id: str, division_id: str) -> dict | None:
+        with self._session() as db:
+            division = db.get(ContestDivisionRow, division_id)
+            if not division or division.contest_id != contest_id:
+                return None
+            return self._release_summary(db.get(ScoreboardReleaseRow, division_id))
+
+    @staticmethod
+    def _release_summary(release: ScoreboardReleaseRow | None) -> dict:
+        if release is None:
+            return {"mode": "not_started", "ranks": [], "revealed_count": 0, "total_count": 0}
+        ranks = sorted({row["rank"] for row in release.snapshot_rows})
+        revealed = set(release.revealed_ranks)
+        return {
+            "mode": release.mode,
+            "ranks": [{"rank": rank, "team_count": sum(row["rank"] == rank for row in release.snapshot_rows), "revealed": rank in revealed} for rank in ranks],
+            "revealed_count": sum(row["rank"] in revealed for row in release.snapshot_rows),
+            "total_count": len(release.snapshot_rows),
+        }
+
+    def update_scoreboard_release(self, contest_id: str, division_id: str, action: str, rank: int | None = None) -> dict:
+        with self._session() as db:
+            # Serialize updates, including first creation, across workers.
+            contest = db.scalar(select(ContestRow).where(ContestRow.contest_id == contest_id).with_for_update())
+            division = db.get(ContestDivisionRow, division_id)
+            if not contest or not division or division.contest_id != contest_id:
+                raise ValueError("division not found")
+            ended = contest.status in {"ended", "finalized", "archived"} or (
+                contest.status not in {"draft", "schedule_tbd"} and now_utc() >= _aware(contest.end_at)
+            )
+            if not ended:
+                raise ValueError("대회 종료 후에 순위를 공개할 수 있습니다.")
+            if action not in {"start", "rank", "all"}:
+                raise ValueError("지원하지 않는 공개 방식입니다.")
+            release = db.get(ScoreboardReleaseRow, division_id)
+            if release is None:
+                if action == "rank":
+                    raise ValueError("개별 공개를 먼저 시작하세요.")
+                pending = db.scalar(select(SubmissionRow.submission_id).where(
+                    SubmissionRow.contest_id == contest_id,
+                    SubmissionRow.division_id == division_id,
+                    SubmissionRow.submission_kind == "participant",
+                    SubmissionRow.status.in_(["waiting", "preparing", "judging"]),
+                ).limit(1))
+                if pending:
+                    raise ValueError("이 유형의 채점이 끝난 뒤 순위 공개를 시작하세요.")
+                board = self.scoreboard_rows(contest_id, division_id, public_view=False)
+                release = ScoreboardReleaseRow(
+                    contest_id=contest_id, division_id=division_id, mode="partial",
+                    snapshot_rows=jsonable_encoder(board["rows"]), revealed_ranks=[],
+                )
+                db.add(release)
+            ranks = {row["rank"] for row in release.snapshot_rows}
+            revealed = set(release.revealed_ranks)
+            if action == "rank":
+                if rank not in ranks:
+                    raise ValueError("공개할 순위가 없습니다.")
+                revealed.add(rank)
+            elif action == "all":
+                revealed = ranks
+            release.revealed_ranks = sorted(revealed)
+            release.mode = "all" if ranks <= revealed else "partial"
+            db.commit()
+            return self._release_summary(release)
+
+    def _released_scoreboard(self, release: ScoreboardReleaseRow) -> dict:
+        revealed = set(release.revealed_ranks)
+        rows = []
+        for index, original in enumerate(release.snapshot_rows):
+            if original["rank"] not in revealed:
+                rows.append({
+                    "rank": original["rank"], "team_id": f"unrevealed-{index}",
+                    "team_name": "아직 공개되지 않은 순위", "division_id": release.division_id,
+                    "division": None, "solved": 0, "penalty": None,
+                    "submission_count": 0, "problem_scores": [], "is_revealed": False,
+                })
+                continue
+            row = {**original, "is_revealed": True, "last_solved_at": None}
+            if not settings.feature_public_scoreboard_penalty:
+                row["penalty"] = None
+            row["problem_scores"] = [{
+                **score, "penalty": None, "solved_at": None,
+                "best_submission_id": None, "best_submitted_at": None,
+            } for score in original["problem_scores"]]
+            rows.append(row)
+        return {"frozen": release.mode != "all", "rows": rows, "release": self._release_summary(release)}
+
     def scoreboard_rows(self, contest_id: str, division_id: str | None = None, public_view: bool = False) -> dict | None:
         with self._session() as db:
             contest = db.get(ContestRow, contest_id)
             if not contest:
                 return None
+
+            if public_view and division_id:
+                ended = contest.status in {"ended", "finalized", "archived"} or (
+                    contest.status not in {"draft", "schedule_tbd"} and now_utc() >= _aware(contest.end_at)
+                )
+                release = db.get(ScoreboardReleaseRow, division_id) if ended else None
+                if release:
+                    return self._released_scoreboard(release)
 
             cutoff_at = None
             frozen = False
