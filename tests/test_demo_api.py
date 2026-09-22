@@ -805,17 +805,17 @@ def test_operator_mutations_are_locked_during_running_contest():
     )
     assert time_update.status_code == 200
     emergency_body = time_update.json()["data"]["emergency_notice"]
-    assert "운영시간이 변경되었습니다" in emergency_body
-    assert "오픈:" in emergency_body
-    assert "프리즈:" in emergency_body
-    assert "마감:" in emergency_body
-    assert "KST" in emergency_body
+    assert "시작 시간이" in emergency_body
+    assert "프리즈 시간이" in emergency_body
+    assert "종료 시간이" in emergency_body
+    assert "KST" not in emergency_body
+    assert "자동 적용" not in emergency_body
     notices = client.get(
         f"/api/operator/contests/{contest_id}/notices",
         headers=auth_headers(operator["access_token"]),
     )
     assert notices.status_code == 200
-    assert any(item["title"] == "대회 운영 시간이 변경되었습니다" and item["emergency"] for item in notices.json()["data"])
+    assert any(item["title"] == "대회 일정 변경" and item["emergency"] for item in notices.json()["data"])
 
 
 def test_auto_time_notice_only_lists_changed_time_fields():
@@ -828,13 +828,18 @@ def test_auto_time_notice_only_lists_changed_time_fields():
     update = client.patch(
         f"/api/operator/contests/{contest_id}/settings",
         headers=headers,
-        json={"freeze_at": (contest.freeze_at + timedelta(minutes=10)).isoformat()},
+        json={
+            "start_at": contest.start_at.replace(second=0, microsecond=0).isoformat(),
+            "freeze_at": (contest.freeze_at + timedelta(minutes=10)).isoformat(),
+            "end_at": contest.end_at.replace(second=0, microsecond=0).isoformat(),
+        },
     )
     assert update.status_code == 200
     emergency_body = update.json()["data"]["emergency_notice"]
-    assert "프리즈:" in emergency_body
-    assert "오픈:" not in emergency_body
-    assert "마감:" not in emergency_body
+    assert "프리즈 시간이" in emergency_body
+    assert "시작 시간이" not in emergency_body
+    assert "종료 시간이" not in emergency_body
+    assert emergency_body.count("변경되었습니다.") == 1
 
 
 def test_admin_can_create_contest_with_operator_email_only():
@@ -2635,7 +2640,7 @@ def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
     )
     ended_count = store.enqueue_due_contest_emergency_notices()
     duplicate_ended_count = store.enqueue_due_contest_emergency_notices()
-    assert ended_count >= 2
+    assert ended_count >= 1
     assert duplicate_ended_count == 0
 
     ended_notice = client.get(
@@ -2651,7 +2656,7 @@ def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
         and "대회가 종료되었습니다" in item["body"]
         for item in ended_notices
     )
-    assert any(
+    assert not any(
         item["title"] == "스코어보드 공개됨"
         and item["emergency"]
         and item["pinned"]

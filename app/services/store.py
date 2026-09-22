@@ -79,6 +79,7 @@ from app.orm_models import (
     TestcaseSetRow,
 )
 from app.services.contest_roles import permissions_for_roles, roles_for_scopes, title_for_roles, title_for_scopes
+from app.services.automatic_notices import compact_automatic_notice, legacy_scheduled_notice, scheduled_notice_copy, scheduled_notice_id
 from app.services.security import decode_session_token, hash_password, new_session_token, token_hash, verify_password
 from app.services.storage import object_storage
 from app.services.mail_templates import (
@@ -171,7 +172,7 @@ def _contest(row: ContestRow) -> Contest:
         mock_judging_enabled=bool(row.mock_judging_enabled),
         participant_progress_visible=bool(row.participant_progress_visible),
         mock_judging_progress_visible=bool(row.mock_judging_progress_visible),
-        emergency_notice=row.emergency_notice,
+        emergency_notice=compact_automatic_notice(row.emergency_notice),
         created_at=_aware(row.created_at),
     )
 
@@ -446,11 +447,18 @@ def _notice(row: ServiceNoticeRow) -> ServiceNotice:
 
 
 def _contest_notice(row: ContestNoticeRow) -> ContestNotice:
+    body = compact_automatic_notice(row.body) if row.emergency else row.body
+    title = row.title
+    if body != row.body:
+        if title == "대회 운영 시간이 변경되었습니다":
+            title = "대회 일정 변경"
+        elif title == "스코어보드 공개됨":
+            title = "스코어보드 안내"
     return ContestNotice(
         contest_notice_id=row.contest_notice_id,
         contest_id=row.contest_id,
-        title=row.title,
-        body=row.body,
+        title=title,
+        body=body,
         pinned=row.pinned,
         emergency=row.emergency,
         visibility=row.visibility,
@@ -2591,6 +2599,7 @@ class DbStore:
         emergency: bool = False,
         visibility: str = "public",
         created_by_email: str | None = None,
+        notice_id: str | None = None,
     ) -> ContestNotice:
         with self._session() as db:
             contest = db.get(ContestRow, contest_id)
@@ -2605,6 +2614,8 @@ class DbStore:
                 visibility=visibility,
                 created_by_email=created_by_email,
             )
+            if notice_id is not None:
+                row.contest_notice_id = notice_id
             db.add(row)
             if emergency:
                 contest.emergency_notice = body
@@ -4497,18 +4508,15 @@ class DbStore:
             return 0
 
         windows = [
-            ("30m", timedelta(minutes=30), timedelta(minutes=10), "30분"),
-            ("10m", timedelta(minutes=10), timedelta(minutes=5), "10분"),
-            ("5m", timedelta(minutes=5), timedelta(minutes=1), "5분"),
-            ("1m", timedelta(minutes=1), timedelta(0), "1분"),
+            (timedelta(minutes=30), timedelta(minutes=10), "30분"),
+            (timedelta(minutes=10), timedelta(minutes=5), "10분"),
+            (timedelta(minutes=5), timedelta(minutes=1), "5분"),
+            (timedelta(minutes=1), timedelta(0), "1분"),
         ]
-        targets = [
-            ("freeze", "스코어보드 프리즈", "freeze_at"),
-            ("end", "대회 종료", "end_at"),
-        ]
+        targets = [("freeze", "freeze_at"), ("end", "end_at")]
         event_window = timedelta(minutes=10)
         now = now_utc()
-        due: list[tuple[str, str, str]] = []
+        due: list[tuple[str, str, str, str]] = []
 
         with self._session() as db:
             contests = db.scalars(
@@ -4524,126 +4532,58 @@ class DbStore:
                 )
             ).all()
             for contest in contests:
-                for target_code, target_label, field_name in targets:
+                previous = db.scalars(select(ContestNoticeRow).where(
+                    ContestNoticeRow.contest_id == contest.contest_id,
+                    ContestNoticeRow.emergency.is_(True),
+                )).all()
+                seen = {notice.contest_notice_id for notice in previous}
+                for notice in previous:
+                    legacy = legacy_scheduled_notice(notice.body)
+                    if legacy and legacy[0] == notice.title:
+                        seen.add(scheduled_notice_id(contest.contest_id, legacy[0], legacy[1]))
+                for target, field_name in targets:
+                    if target == "freeze" and contest.scoreboard_freeze_mode == ScoreboardFreezeMode.LIVE.value:
+                        continue
                     target_at = _aware(getattr(contest, field_name))
                     if not target_at:
                         continue
                     remaining = target_at - now
-                    kst_time = target_at.astimezone(KST)
-                    formatted_time = f"{kst_time.year}. {kst_time.month}. {kst_time.day}. {kst_time:%H:%M} KST"
-                    candidates: list[tuple[str, str]] = []
+                    candidate = None
                     if timedelta(0) < remaining and contest.status != ContestStatus.ENDED.value:
-                        for window_code, upper_bound, lower_bound, label in windows:
-                            if remaining > upper_bound or remaining <= lower_bound:
-                                continue
-                            title = f"{target_label} {label} 전"
-                            if target_code == "freeze":
-                                body = "\n".join(
-                                    [
-                                        f"스코어보드 프리즈까지 {label} 남았습니다.",
-                                        "",
-                                        f"- 프리즈 시각: {formatted_time}",
-                                        "- 프리즈 이후 제출 결과는 대회 종료 전까지 스코어보드에 반영되지 않을 수 있습니다.",
-                                    ]
-                                )
-                            else:
-                                body = "\n".join(
-                                    [
-                                        f"대회 종료까지 {label} 남았습니다.",
-                                        "",
-                                        f"- 종료 시각: {formatted_time}",
-                                        "- 종료 이후에는 제출이 제한될 수 있으니 남은 시간을 확인해 주세요.",
-                                    ]
-                                )
-                            candidates.append((title, body))
-                            break
-                    elif now - target_at <= event_window:
-                        if target_code == "freeze" and contest.scoreboard_freeze_mode != ScoreboardFreezeMode.LIVE.value:
-                            candidates.append(
-                                (
-                                    "스코어보드 프리즈 시작",
-                                    "\n".join(
-                                        [
-                                            "스코어보드가 프리즈되었습니다.",
-                                            "",
-                                            f"- 프리즈 시각: {formatted_time}",
-                                            "- 프리즈 이후 제출 결과는 대회 종료 전까지 공개 스코어보드에 반영되지 않을 수 있습니다.",
-                                        ]
-                                    ),
-                                )
-                            )
-                        elif target_code == "end":
-                            candidates.append(
-                                (
-                                    "대회 종료",
-                                    "\n".join(
-                                        [
-                                            "대회가 종료되었습니다.",
-                                            "",
-                                            f"- 종료 시각: {formatted_time}",
-                                            "- 종료 이후에는 제출이 제한됩니다.",
-                                        ]
-                                    ),
-                                )
-                            )
-                            if contest.scoreboard_access_after_end != ContestResourceAccess.PRIVATE.value:
-                                access_label = "전체 공개" if contest.scoreboard_access_after_end == ContestResourceAccess.PUBLIC.value else "참가자 공개"
-                                candidates.append(
-                                    (
-                                        "스코어보드 공개됨",
-                                        "\n".join(
-                                            [
-                                                "스코어보드가 공개되었습니다.",
-                                                "",
-                                                f"- 공개 범위: {access_label}",
-                                                f"- 공개 시각: {formatted_time}",
-                                            ]
-                                        ),
-                                    )
-                                )
-                    for title, body in candidates:
-                        exists = db.scalar(
-                            select(ContestNoticeRow.contest_notice_id)
-                            .where(
-                                ContestNoticeRow.contest_id == contest.contest_id,
-                                ContestNoticeRow.title == title,
-                                ContestNoticeRow.body == body,
-                                ContestNoticeRow.emergency.is_(True),
-                            )
-                            .limit(1)
-                        )
-                        if exists:
-                            continue
-                        due.append((contest.contest_id, title, body))
+                        for upper_bound, lower_bound, label in windows:
+                            if lower_bound < remaining <= upper_bound:
+                                candidate = scheduled_notice_copy(target, label)
+                                break
+                    elif timedelta(0) <= now - target_at <= event_window:
+                        candidate = scheduled_notice_copy(target)
+                    if candidate is None:
+                        continue
+                    title, body = candidate
+                    notice_id = scheduled_notice_id(contest.contest_id, title, target_at)
+                    if notice_id not in seen:
+                        due.append((contest.contest_id, title, body, notice_id))
 
         queued_count = 0
-        for contest_id, title, body in due:
+        for contest_id, title, body, notice_id in due:
             with self._session() as db:
-                contest = db.get(ContestRow, contest_id)
-                if not contest:
+                if not db.get(ContestRow, contest_id) or db.get(ContestNoticeRow, notice_id):
                     continue
-                exists = db.scalar(
-                    select(ContestNoticeRow.contest_notice_id)
-                    .where(
-                        ContestNoticeRow.contest_id == contest_id,
-                        ContestNoticeRow.title == title,
-                        ContestNoticeRow.body == body,
-                        ContestNoticeRow.emergency.is_(True),
-                    )
-                    .limit(1)
+            try:
+                self.create_contest_notice(
+                    contest_id,
+                    title,
+                    body,
+                    pinned=True,
+                    emergency=True,
+                    visibility="participants",
+                    notice_id=notice_id,
                 )
-                if exists:
-                    continue
-                contest.emergency_notice = body
-                db.commit()
-            self.create_contest_notice(
-                contest_id,
-                title,
-                body,
-                pinned=True,
-                emergency=True,
-                visibility="participants",
-            )
+            except IntegrityError:
+                # Another worker may have inserted the same scheduled event.
+                with self._session() as db:
+                    if db.get(ContestNoticeRow, notice_id):
+                        continue
+                raise
             queued_count += 1
         return queued_count
 

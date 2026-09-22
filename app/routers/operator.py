@@ -7,7 +7,6 @@ from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlencode
-from zoneinfo import ZoneInfo
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
@@ -15,6 +14,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, ScoreboardReleaseMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import has_contest_permission, is_contest_master, require_contest_staff, require_staff
+from app.services.automatic_notices import time_update_notice_body
 from app.services.contest_roles import ContestOperatorCreateRequest, ContestOperatorUpdateRequest, title_for_roles
 from app.services.errors import AppError, not_found, permission_denied
 from app.services.mail_templates import absolute_url, operator_assignment_mail, render_branded_email
@@ -28,7 +28,6 @@ from app.services.testcase_verifier import UploadedTestcase, build_verified_test
 router = APIRouter(tags=["operator"])
 
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
-KST = ZoneInfo("Asia/Seoul")
 SUPPORTED_JUDGE_LANGUAGES = {"c99", "cpp17", "python313", "java8"}
 
 
@@ -257,33 +256,6 @@ class PresignUploadRequest(BaseModel):
     category: str
     filename: str
     content_type: str = "application/octet-stream"
-
-
-def _format_datetime_for_notice(value: datetime) -> str:
-    return value.astimezone(KST).strftime("%y년 %m월 %d일 %H시 %M분 KST")
-
-
-def _time_update_notice_body(contest_title: str, changed_fields: list[tuple[str, datetime, datetime]]) -> str:
-    labels = {
-        "start_at": "오픈",
-        "freeze_at": "프리즈",
-        "end_at": "마감",
-    }
-    lines = [
-        f"{contest_title} 운영시간이 변경되었습니다.",
-        "",
-    ]
-    lines.extend(
-        f"- {labels[field]}: {_format_datetime_for_notice(old_value)} -> {_format_datetime_for_notice(new_value)}"
-        for field, old_value, new_value in changed_fields
-    )
-    lines.extend(
-        [
-            "",
-            "변경된 시간 기준으로 대회 접근, 제출 가능 여부, 스코어보드 프리즈가 자동 적용됩니다.",
-        ]
-    )
-    return "\n".join(lines)
 
 
 def _problem_package_status(contest_id: str, problem_id: str) -> dict:
@@ -666,9 +638,9 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
         for key in time_fields
         if key in updates and getattr(contest, key) != updates[key]
     ]
-    time_changed = bool(changed_time_fields)
+    auto_notice = time_update_notice_body(contest.title, changed_time_fields)
+    time_changed = bool(auto_notice)
     if time_changed and settings.feature_emergency_notice_auto:
-        auto_notice = _time_update_notice_body(contest.title, changed_time_fields)
         manual_notice = updates.get("emergency_notice")
         updates["emergency_notice"] = f"{auto_notice}\n\n{manual_notice}".strip() if manual_notice else auto_notice
     try:
@@ -689,7 +661,7 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
         if time_changed and settings.feature_emergency_notice_auto:
             store.create_contest_notice(
                 contest_id,
-                "대회 운영 시간이 변경되었습니다",
+                "대회 일정 변경",
                 updates["emergency_notice"],
                 pinned=True,
                 emergency=True,
