@@ -230,7 +230,7 @@ def _not_found(path: str) -> dict:
 def _private_page_title(path: str) -> str | None:
     if path == "/login":
         return "로그인"
-    if re.fullmatch(r"/admin(?:/(?:contests|judge|audit-logs|inquiries))?", path):
+    if re.fullmatch(r"/admin(?:/(?:contests|judge|analytics|audit-logs|inquiries))?", path):
         return "서비스 관리자"
     if re.fullmatch(r"/operator(?:/contests/[^/]+(?:/(?:settings|operators|notices|board|participants|problems|problem-review|submissions|scoreboard(?:/presentation)?|audit-logs))?)?", path):
         return "대회 운영"
