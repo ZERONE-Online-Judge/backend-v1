@@ -2354,11 +2354,48 @@ class DbStore:
             db.refresh(account)
             return _staff(account)
 
-    def update_contest_operator(self, contest_id: str, email: str, display_name: str, roles: list[str]) -> StaffAccount | None:
+    def update_contest_operator(
+        self, contest_id: str, email: str, display_name: str, roles: list[str],
+        *, new_email: str | None = None, actor: StaffAccount | None = None,
+    ) -> StaffAccount | None:
+        from app.services.errors import AppError
+        from app.services.staff_identity import rename_staff_identity
+
         normalized_email = email.strip().lower()
-        if not any(str(account.email).lower() == normalized_email for account in self.contest_operator_accounts(contest_id)):
-            return None
-        return self.upsert_contest_operator(contest_id, email, display_name, roles)
+        permissions = permissions_for_roles(roles)
+        if not display_name.strip():
+            raise ValueError("display name is required")
+        try:
+            with self._session() as db:
+                account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email).with_for_update())
+                if not account or account.is_service_master:
+                    return None
+                scopes = json.loads(account.contest_scopes or "{}")
+                if not scopes.get(contest_id):
+                    return None
+                selections = json.loads(account.contest_roles or "{}")
+                protected = json.loads(account.protected_master_contests or "[]")
+                if contest_id in protected and roles != ["master"]:
+                    raise AppError(409, "assigned_master_immutable", "서비스 관리자가 할당한 대회 마스터는 변경하거나 제거할 수 없습니다.")
+                if new_email:
+                    rename_staff_identity(db, account, actor.staff_account_id if actor else None, new_email)
+                participant_conflicts = self._contest_participant_email_conflicts(db, contest_id, [account.email])
+                if participant_conflicts:
+                    raise AppError(409, "email_change_participant_identity", "이 이메일은 같은 대회의 참가자 계정에도 연결되어 있어 운영자 정보를 변경할 수 없습니다.")
+                if selections.get(contest_id) == ["participant_preview"] and roles != ["participant_preview"]:
+                    db.execute(delete(ParticipantPreviewSessionRow).where(ParticipantPreviewSessionRow.staff_account_id == account.staff_account_id, ParticipantPreviewSessionRow.contest_id == contest_id))
+                scopes[contest_id] = permissions
+                selections[contest_id] = roles
+                account.display_name = display_name.strip()
+                account.contest_scopes = json.dumps(scopes)
+                account.contest_roles = json.dumps(selections)
+                db.commit()
+                db.refresh(account)
+                return _staff(account)
+        except IntegrityError as error:
+            if new_email and new_email.strip().lower() != normalized_email:
+                raise AppError(409, "email_already_in_use", "이미 다른 계정에서 사용한 이메일입니다. 다른 이메일을 입력해 주세요.") from error
+            raise
 
     def remove_contest_operator(self, contest_id: str, email: str) -> StaffAccount | None:
         with self._session() as db:

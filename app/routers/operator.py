@@ -429,7 +429,7 @@ def _contest_staff_payload(account, contest_id: str) -> dict:
 
 
 def _check_staff_assignment(actor, contest_id: str, email: str, roles: list[str] | None) -> None:
-    target = next((item for item in store.contest_operator_accounts(contest_id) if str(item.email).lower() == email.lower()), None)
+    target = next((item for item in store.contest_operator_accounts(contest_id) if str(item.email).lower() == email.strip().lower()), None)
     target_master = target and is_contest_master(target, contest_id)
     if (target_master or roles == ["master"]) and not is_contest_master(actor, contest_id):
         raise permission_denied("대회 마스터 권한은 대회 마스터만 변경할 수 있습니다.")
@@ -754,7 +754,7 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
 async def update_contest_operator(contest_id: str, operator_email: str, payload: ContestOperatorUpdateRequest, request: Request):
     account = require_contest_staff(request, contest_id, "contest.staff.manage")
     _check_staff_assignment(account, contest_id, operator_email, payload.roles)
-    operator = store.update_contest_operator(contest_id, operator_email, payload.display_name, payload.roles)
+    operator = store.update_contest_operator(contest_id, operator_email, payload.display_name, payload.roles, new_email=str(payload.email) if payload.email is not None else None, actor=account)
     if not operator:
         raise not_found()
     return ok(request, _contest_staff_payload(operator, contest_id))

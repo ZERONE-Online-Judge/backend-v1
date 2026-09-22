@@ -73,8 +73,14 @@ def title_for_scopes(scopes: list[str]) -> str | None:
 
 
 class ContestOperatorUpdateRequest(BaseModel):
+    email: EmailStr | None = None
     display_name: str = Field(min_length=1, max_length=120)
     roles: list[str] = Field(min_length=1, max_length=len(ROLE_PERMISSIONS))
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalized_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
 
     @field_validator("display_name")
     @classmethod

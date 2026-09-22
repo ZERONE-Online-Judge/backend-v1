@@ -254,6 +254,7 @@ async def operational_audit_middleware(request: Request, call_next):
     path = request.url.path
     scope = _audit_scope(path)
     payload_details: dict[str, Any] = {}
+    account = None
     if request.method.upper() in AUDITED_METHODS and scope:
         request, payload_details = await _audit_request_payload(request)
         payload_details["entities"] = _audit_path_entities(path)
@@ -261,6 +262,15 @@ async def operational_audit_middleware(request: Request, call_next):
             payload_details.get("body"),
             _audit_existing_values(path),
         )
+        # Keep the actor's identity at the time of the request, including when
+        # the action changes their email and revokes the token being used.
+        try:
+            token = bearer_token(request)
+            account = store.get_staff_by_access_token(token) if token else None
+            if not account and token:
+                account = store.get_staff_by_general_access_token(token)
+        except Exception:
+            pass
 
     response = await call_next(request)
     if request.method.upper() not in AUDITED_METHODS or not scope:
@@ -274,10 +284,6 @@ async def operational_audit_middleware(request: Request, call_next):
         }
         if request.url.query:
             details["query"] = request.url.query
-        token = bearer_token(request)
-        account = store.get_staff_by_access_token(token) if token else None
-        if not account and token:
-            account = store.get_staff_by_general_access_token(token)
         actor_role = None
         if account:
             actor_role = "service_master" if account.is_service_master else "operator"
