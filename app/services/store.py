@@ -281,7 +281,7 @@ def _staff_title(row: StaffAccountRow, contest_id: str) -> str | None:
 
 
 def _submission_staff_titles(rows, db: Session) -> dict[tuple[str, str], str | None]:
-    owners = {(row.contest_id, row.submitted_by_email.lower()) for row in rows if row.submission_kind == "operator_test" and row.submitted_by_email}
+    owners = {(row.contest_id, row.submitted_by_email.lower()) for row in rows if row.submission_kind in {"operator_test", "participant_preview"} and row.submitted_by_email}
     if not owners:
         return {}
     accounts = db.scalars(select(StaffAccountRow).where(func.lower(StaffAccountRow.email).in_({email for _, email in owners}))).all()
@@ -1084,6 +1084,7 @@ class DbStore:
         problem_id: str | None = None,
         participant_team_id: str | None = None,
         exclude_operator_tests: bool = False,
+        include_participant_previews: bool = False,
         include_source: bool = False,
         limit: int = 100,
         cursor: str | None = None,
@@ -1093,7 +1094,9 @@ class DbStore:
             offset = max(0, int(cursor or "0"))
         except ValueError:
             offset = 0
-        filters = [SubmissionRow.submission_kind != "participant_preview"]
+        filters = []
+        if not include_participant_previews:
+            filters.append(SubmissionRow.submission_kind != "participant_preview")
         if contest_id:
             filters.append(SubmissionRow.contest_id == contest_id)
         if division_id:

@@ -1092,6 +1092,7 @@ async def operator_submissions(
         problem_id=problem_id,
         participant_team_id=participant_team_id,
         include_source=include_source,
+        include_participant_previews=True,
         limit=limit,
         cursor=cursor,
     )
@@ -1130,7 +1131,7 @@ async def operator_submissions(
 async def operator_submission_detail(contest_id: str, submission_id: str, request: Request):
     require_contest_staff(request, contest_id, "contest.submission.view")
     submission = store.get_submission(submission_id)
-    if not submission or submission.contest_id != contest_id or submission.submission_kind == "participant_preview":
+    if not submission or submission.contest_id != contest_id:
         raise not_found()
     team = store.teams_by_ids([submission.participant_team_id]).get(submission.participant_team_id)
     member = next((item for item in (team.members if team else []) if item.team_member_id == submission.team_member_id), None)
@@ -1153,7 +1154,7 @@ async def operator_wait_submission_status(
 ):
     require_contest_staff(request, contest_id, "contest.submission.view")
     submission = store.get_submission(submission_id, include_source=False)
-    if not submission or submission.contest_id != contest_id or submission.submission_kind == "participant_preview":
+    if not submission or submission.contest_id != contest_id:
         raise not_found()
     wait_budget = max(0.0, min(wait_seconds, 10.0))
     poll = max(0.1, min(poll_interval_seconds, 1.0))

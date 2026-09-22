@@ -157,8 +157,17 @@ def test_preview_submission_runs_real_judge_without_official_submission_or_score
     assert store.scoreboard_rows(c["cid"], c["divisions"][0].division_id, public_view=True) == before_board
     master = general_login("test3@zoj.com")
     operator_base = f"/api/operator/contests/{c['cid']}/submissions"
-    assert client.get(operator_base, headers=headers(master)).json()["data"] == []
-    assert client.get(operator_base + "/" + sid, headers=headers(master)).status_code == 404
+    listed = client.get(operator_base, headers=headers(master)).json()["data"]
+    assert [item["submission_id"] for item in listed] == [sid]
+    assert listed[0]["submitted_by_title"] == "참가자 미리보기"
+    assert listed[0]["source_code"] is None
+    detail = client.get(operator_base + "/" + sid, headers=headers(master))
+    assert detail.status_code == 200
+    assert detail.json()["data"]["source_code"] == "int main(){}"
+    assert detail.json()["data"]["judge_message"] == "SECRET JUDGE DATA"
+    waited = client.get(operator_base + f"/{sid}/status:wait?wait_seconds=0", headers=headers(master))
+    assert waited.status_code == 200
+    assert waited.json()["data"]["status"] == "accepted"
     real_running(c)
     assert client.get(c["base"] + "/submissions", headers=headers(c["real_session"])).json()["data"] == []
     assert client.get(c["base"] + f"/submissions/{sid}", headers=headers(c["real_session"])).status_code == 404
@@ -269,3 +278,48 @@ def test_operator_contest_list_preserves_legacy_partial_permission_assignments(p
     response = client.get("/api/operator/contests", headers=headers(general_login(str(account.email))))
     assert response.status_code == 200
     assert [contest["contest_id"] for contest in response.json()["data"]] == [c["cid"]]
+
+
+def test_operator_log_includes_preview_and_problem_review_with_scoped_access(preview):
+    c = preview
+    select_division(c)
+    before_board = store.scoreboard_rows(c["cid"], c["divisions"][0].division_id, public_view=True)
+    source = "int main(){return 0;}"
+    created = client.post(c["base"] + f"/problems/{c['problems'][0].problem_id}/submissions", headers=headers(c["sessions"][0]), json={"language": "cpp17", "source_code": source})
+    preview_id = created.json()["data"]["submission_id"]
+    reviewer = store.upsert_contest_operator(c["cid"], f"reviewer-{uuid4().hex}@zoj.com", "검수 담당", ["problem_reviewer"])
+    review_token = headers(general_login(str(reviewer.email)))
+    created_review = client.post(f"/api/operator/contests/{c['cid']}/problems/{c['problems'][1].problem_id}/test-submissions", headers=review_token, json={"language": "cpp17", "source_code": source})
+    assert created_review.status_code == 200
+    review_id = created_review.json()["data"]["submission_id"]
+    viewer = store.upsert_contest_operator(c["cid"], f"viewer-{uuid4().hex}@zoj.com", "제출 확인 담당", ["submissions_viewer"])
+    viewer_token = headers(general_login(str(viewer.email)))
+    base = f"/api/operator/contests/{c['cid']}/submissions"
+    listed = client.get(base + "?limit=1", headers=viewer_token)
+    assert listed.status_code == 200, listed.text
+    payload = listed.json()
+    assert payload["page"]["total_count"] == 2
+    assert payload["data"][0]["submission_id"] == review_id
+    assert payload["data"][0]["submitted_by_title"] == "검수자"
+    second = client.get(base, params={"limit": 1, "cursor": payload["page"]["next_cursor"]}, headers=viewer_token).json()
+    assert second["data"][0]["submission_id"] == preview_id
+    for sid in [preview_id, review_id]:
+        detail = client.get(base + f"/{sid}", headers=viewer_token)
+        assert detail.status_code == 200 and detail.json()["data"]["source_code"] == source
+        assert client.get(base + f"/{sid}/status:wait?wait_seconds=0", headers=viewer_token).status_code == 200
+        assert client.get(base + f"/{sid}", headers=review_token).status_code == 403
+        assert client.get(base + f"/{sid}/status:wait?wait_seconds=0", headers=headers(c["sessions"][0])).status_code == 403
+    filtered = client.get(base, params={"division_id": c["divisions"][0].division_id, "problem_id": c["problems"][0].problem_id}, headers=viewer_token).json()
+    assert [item["submission_id"] for item in filtered["data"]] == [preview_id]
+    team_filtered = client.get(base, params={"participant_team_id": c["real_team"].participant_team_id}, headers=viewer_token).json()
+    assert team_filtered["data"] == []
+    other = store.create_contest("Other", "Test", "Other contest")
+    master = headers(general_login("test3@zoj.com"))
+    other_base = f"/api/operator/contests/{other.contest_id}/submissions"
+    for sid in [preview_id, review_id]:
+        assert client.get(other_base + f"/{sid}", headers=master).status_code == 404
+        assert client.get(other_base + f"/{sid}/status:wait?wait_seconds=0", headers=master).status_code == 404
+    # Opting into the operational log must never make these official records.
+    official, _, count = store.list_submissions(contest_id=c["cid"], exclude_operator_tests=True)
+    assert official == [] and count == 0
+    assert store.scoreboard_rows(c["cid"], c["divisions"][0].division_id, public_view=True) == before_board
