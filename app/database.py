@@ -237,12 +237,24 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN editorial_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
                 if "scoreboard_freeze_mode" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN scoreboard_freeze_mode VARCHAR(32) DEFAULT 'auto' NOT NULL"))
+                if "scoreboard_release_mode" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN scoreboard_release_mode VARCHAR(32) DEFAULT 'manual' NOT NULL"))
+                if "scoreboard_frozen_at" not in columns:
+                    connection.execute(text("ALTER TABLE contests ADD COLUMN scoreboard_frozen_at DATETIME"))
+                    connection.execute(text("UPDATE contests SET scoreboard_frozen_at = CURRENT_TIMESTAMP WHERE scoreboard_freeze_mode = 'frozen'"))
                 if "mock_judging_enabled" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN mock_judging_enabled BOOLEAN DEFAULT 0 NOT NULL"))
                 if "participant_progress_visible" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN participant_progress_visible BOOLEAN DEFAULT 1 NOT NULL"))
                 if "mock_judging_progress_visible" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN mock_judging_progress_visible BOOLEAN DEFAULT 0 NOT NULL"))
+        if "scoreboard_releases" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("scoreboard_releases")}
+            with engine.begin() as connection:
+                if "strategy" not in columns:
+                    connection.execute(text("ALTER TABLE scoreboard_releases ADD COLUMN strategy VARCHAR(32) DEFAULT 'manual' NOT NULL"))
+                if "resolver_state" not in columns:
+                    connection.execute(text("ALTER TABLE scoreboard_releases ADD COLUMN resolver_state JSON"))
         if "mail_queue" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("mail_queue")}
             if "body_html" not in columns:

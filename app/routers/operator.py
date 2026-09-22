@@ -13,7 +13,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, SubmissionStatus, TeamMemberRole, now_utc
+from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, ScoreboardReleaseMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import has_contest_permission, is_contest_master, require_contest_staff, require_staff
 from app.services.contest_roles import ContestOperatorCreateRequest, ContestOperatorUpdateRequest, title_for_roles
 from app.services.errors import AppError, not_found, permission_denied
@@ -119,6 +119,7 @@ class ContestSettingsUpdateRequest(BaseModel):
     notice_access_after_end: ContestResourceAccess | None = None
     editorial_access_after_end: ContestResourceAccess | None = None
     scoreboard_freeze_mode: ScoreboardFreezeMode | None = None
+    scoreboard_release_mode: ScoreboardReleaseMode | None = None
     mock_judging_enabled: bool | None = None
     participant_progress_visible: bool | None = None
     mock_judging_progress_visible: bool | None = None
@@ -670,7 +671,10 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
         auto_notice = _time_update_notice_body(contest.title, changed_time_fields)
         manual_notice = updates.get("emergency_notice")
         updates["emergency_notice"] = f"{auto_notice}\n\n{manual_notice}".strip() if manual_notice else auto_notice
-    updated = store.update_contest_settings(contest_id, **updates)
+    try:
+        updated = store.update_contest_settings(contest_id, **updates)
+    except ValueError as error:
+        raise AppError(409, "scoreboard_release_conflict", str(error))
     if not updated:
         raise not_found()
     if not store._contest_accepts_participant_invites(contest.status.value) and store._contest_accepts_participant_invites(updated.status.value):
@@ -1303,8 +1307,9 @@ async def division_internal_scoreboard(contest_id: str, division_id: str, reques
 
 
 class ScoreboardReleaseRequest(BaseModel):
-    action: Literal["start", "rank", "all"]
+    action: Literal["start", "rank", "next", "all"]
     rank: int | None = Field(default=None, ge=1)
+    expected_step: int | None = Field(default=None, ge=0)
 
 
 @router.get("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/release")
@@ -1320,7 +1325,7 @@ async def scoreboard_release(contest_id: str, division_id: str, request: Request
 async def update_scoreboard_release(contest_id: str, division_id: str, payload: ScoreboardReleaseRequest, request: Request):
     require_contest_staff(request, contest_id, "contest.scoreboard.manage")
     try:
-        result = store.update_scoreboard_release(contest_id, division_id, payload.action, payload.rank)
+        result = store.update_scoreboard_release(contest_id, division_id, payload.action, payload.rank, payload.expected_step)
     except ValueError as error:
         if str(error) == "division not found":
             raise not_found()

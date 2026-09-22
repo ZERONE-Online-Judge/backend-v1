@@ -37,6 +37,12 @@ class ScoreboardFreezeMode(StrEnum):
     FROZEN = "frozen"
 
 
+class ScoreboardReleaseMode(StrEnum):
+    MANUAL = "manual"
+    IMMEDIATE = "immediate"
+    RESOLVER = "resolver"
+
+
 class SubmissionStatus(StrEnum):
     WAITING = "waiting"
     PREPARING = "preparing"
@@ -112,6 +118,8 @@ class Contest(BaseModel):
     notice_access_after_end: ContestResourceAccess = ContestResourceAccess.PUBLIC
     editorial_access_after_end: ContestResourceAccess = ContestResourceAccess.PRIVATE
     scoreboard_freeze_mode: ScoreboardFreezeMode = ScoreboardFreezeMode.AUTO
+    scoreboard_release_mode: ScoreboardReleaseMode = ScoreboardReleaseMode.MANUAL
+    scoreboard_release_locked: bool = False
     mock_judging_enabled: bool = False
     participant_progress_visible: bool = True
     mock_judging_progress_visible: bool = False
