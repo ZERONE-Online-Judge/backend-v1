@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 from typing import Literal
 
@@ -14,9 +15,9 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import has_contest_permission, is_contest_master, require_contest_staff, require_staff
-from app.services.contest_roles import ContestOperatorCreateRequest, ContestOperatorUpdateRequest
+from app.services.contest_roles import ContestOperatorCreateRequest, ContestOperatorUpdateRequest, title_for_roles
 from app.services.errors import AppError, not_found, permission_denied
-from app.services.mail_templates import absolute_url, render_branded_email
+from app.services.mail_templates import absolute_url, operator_assignment_mail, render_branded_email
 from app.services.package_builder import PackageBuildError, package_role
 from app.services.responses import ok, page
 from app.settings import settings
@@ -734,18 +735,25 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
         raise AppError(404, "not_found", message)
     contest = store.contests.get(contest_id)
     if contest:
+        roles = operator.contest_roles.get(contest_id, payload.roles)
+        console_path = f"/contests/{contest_id}" if "participant_preview" in roles else f"/operator/contests/{contest_id}"
+        if "participant_preview" in roles:
+            # Draft contests are intentionally unavailable through the public API.
+            console_path = "/login?" + urlencode({"moveTo": console_path})
+        content = operator_assignment_mail(
+            contest_title=contest.title,
+            organization_name=contest.organization_name,
+            display_name=operator.display_name,
+            role_label=title_for_roles(roles) or "운영자",
+            starts_at=None if contest.status in {ContestStatus.DRAFT, ContestStatus.SCHEDULE_TBD} else contest.start_at,
+            console_url=absolute_url(console_path),
+        )
         store.enqueue_mail(
             "contest_operator_assigned",
             str(payload.email),
-            f"[ZOJ] {contest.title} operator assignment",
-            "\n".join(
-                [
-                    f"Contest: {contest.title}",
-                    f"Assigned by: {account.display_name} <{account.email}>",
-                    f"Status: {contest.status}",
-                    f"Start: {contest.start_at.isoformat()}",
-                ]
-            ),
+            content.subject,
+            content.body_text,
+            content.body_html,
         )
     return ok(request, _contest_staff_payload(operator, contest_id))
 
@@ -869,10 +877,11 @@ async def create_answer(contest_id: str, question_id: str, payload: ContestAnswe
         recipient_emails = store.participant_team_member_emails(contest_id, question.participant_team_id)
         subject = f"[ZOJ] 질문 답변 등록 · {contest.title}"
         question_url = absolute_url(f"/contests/{contest_id}/board?questionId={question.contest_question_id}")
+        visibility_label = "전체 공개" if answer.visibility == "public" else "질문자에게만 공개"
         body_lines = [
             f"대회: {contest.title}",
             f"질문 제목: {question.title}",
-            f"답변 공개 범위: {answer.visibility}",
+            f"답변 공개 범위: {visibility_label}",
             f"답변자: {account.display_name} <{account.email}>",
             "",
             "답변 본문:",
@@ -888,12 +897,13 @@ async def create_answer(contest_id: str, question_id: str, payload: ContestAnswe
                 "\n".join(body_lines),
                 render_branded_email(
                     title="질문에 답변이 등록되었습니다",
+                    eyebrow="질문 답변",
                     preheader=question.title,
                     body=[f"{contest.title} 질문에 답변이 등록되었습니다."],
                     meta=[
                         ("대회", contest.title),
                         ("질문 제목", question.title),
-                        ("공개 범위", answer.visibility),
+                        ("공개 범위", visibility_label),
                         ("답변자", f"{account.display_name} <{account.email}>"),
                     ],
                     sections=[("답변 본문", answer.body), ("질문 본문", question.body)],

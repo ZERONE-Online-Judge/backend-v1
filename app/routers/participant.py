@@ -685,12 +685,13 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
         ]
         subject = f"[ZOJ] 새 질문 · {contest.title}"
         question_url = absolute_url(f"/operator/contests/{contest_id}/board?questionId={question.contest_question_id}")
+        visibility_label = "전체 공개" if question.visibility == "public" else "비공개"
         body_lines = [
             f"대회: {contest.title}",
             f"유형: {participant['division'].name}",
             f"팀: {participant['team'].team_name}",
             f"작성자: {participant['member'].name} <{participant['member'].email}>",
-            f"공개 범위: {question.visibility}",
+            f"공개 범위: {visibility_label}",
             f"제목: {question.title}",
             "",
             "질문 본문:",
@@ -710,6 +711,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
                 subject,
                 "\n".join(body_lines),
                 render_branded_email(
+                    eyebrow="새 질문 알림",
                     title="새 질문이 등록되었습니다",
                     preheader=question.title,
                     body=[f"{contest.title}에 새 질문이 등록되었습니다."],
@@ -718,7 +720,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
                         ("유형", participant["division"].name),
                         ("팀", participant["team"].team_name),
                         ("작성자", f"{participant['member'].name} <{participant['member'].email}>"),
-                        ("공개 범위", question.visibility),
+                        ("공개 범위", visibility_label),
                         ("제목", question.title),
                     ],
                     sections=[("질문 본문", question.body)],

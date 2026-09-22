@@ -82,6 +82,7 @@ from app.services.storage import object_storage
 from app.services.mail_templates import (
     absolute_url,
     contest_reminder_mail,
+    login_verification_mail,
     participant_invite_mail,
     render_basic_html,
 )
@@ -1654,11 +1655,13 @@ class DbStore:
                     )
                 )
             db.commit()
+            content = login_verification_mail(code=code, ttl_seconds=settings.otp_ttl_seconds, audience="staff")
             self.enqueue_mail(
                 mail_type="staff_otp",
                 recipient_email=email,
-                subject="[ZOJ] Staff login verification code",
-                body_text=f"Your staff login verification code is {code}. It expires in {settings.otp_ttl_seconds // 60} minutes.",
+                subject=content.subject,
+                body_text=content.body_text,
+                body_html=content.body_html,
             )
             return code
 
@@ -1720,11 +1723,13 @@ class DbStore:
                     )
                 )
             db.commit()
+            content = login_verification_mail(code=code, ttl_seconds=settings.otp_ttl_seconds, audience="general")
             self.enqueue_mail(
                 mail_type="general_otp",
                 recipient_email=email,
-                subject="[ZOJ] Login verification code",
-                body_text=f"인증번호는 {code} 입니다. {settings.otp_ttl_seconds // 60}분 안에 입력하세요.",
+                subject=content.subject,
+                body_text=content.body_text,
+                body_html=content.body_html,
             )
             return code
 
@@ -4482,16 +4487,14 @@ class DbStore:
                         expires_at=now_utc() + timedelta(seconds=settings.otp_ttl_seconds),
                     )
                 )
+            content = login_verification_mail(code=code, ttl_seconds=settings.otp_ttl_seconds, audience="participant")
             db.add(
                 MailQueueItemRow(
                     mail_type="participant_otp",
                     recipient_email=email,
-                    subject="Zerone Online Judge 인증번호",
-                    body_text=f"인증번호는 {code} 입니다. {settings.otp_ttl_seconds // 60}분 안에 입력하세요.",
-                    body_html=render_basic_html(
-                        "Zerone Online Judge 인증번호",
-                        f"인증번호는 {code} 입니다. {settings.otp_ttl_seconds // 60}분 안에 입력하세요.",
-                    ),
+                    subject=content.subject,
+                    body_text=content.body_text,
+                    body_html=content.body_html,
                 )
             )
             db.commit()

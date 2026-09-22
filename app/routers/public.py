@@ -8,7 +8,7 @@ from app.settings import settings
 from app.services.authz import bearer_token
 from app.services.contest_visibility import contest_payload_for_view
 from app.services.errors import not_found
-from app.services.mail_templates import render_branded_email
+from app.services.mail_templates import absolute_url, format_korean_datetime, render_branded_email
 from app.services.responses import ok, page
 from app.services.store import store
 
@@ -113,6 +113,8 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
         payload.body.strip(),
     )
     subject = f"[ZOJ] 서비스 문의 접수: {inquiry.title}"
+    received_at = f"{format_korean_datetime(inquiry.created_at)} KST"
+    inquiry_url = absolute_url("/admin/inquiries")
     body_text = "\n".join(
         [
             "서비스 문의가 접수되었습니다.",
@@ -121,12 +123,13 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
             f"제목: {inquiry.title}",
             f"이름: {inquiry.sender_name}",
             f"이메일: {inquiry.sender_email}",
-            f"접수 시각: {inquiry.created_at.isoformat()}",
+            f"접수 시각: {received_at}",
             "",
             "문의 본문:",
             inquiry.body,
             "",
             "서비스 관리자 페이지에서 답변을 등록하면 문의자에게 이메일이 발송됩니다.",
+            f"바로가기: {inquiry_url}",
         ]
     )
     for email in _service_master_emails():
@@ -136,6 +139,7 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
             subject,
             body_text,
             render_branded_email(
+                eyebrow="서비스 문의 접수",
                 title="서비스 문의가 접수되었습니다",
                 preheader=inquiry.title,
                 body=[
@@ -147,9 +151,11 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
                     ("제목", inquiry.title),
                     ("이름", inquiry.sender_name),
                     ("이메일", str(inquiry.sender_email)),
-                    ("접수 시각", inquiry.created_at.isoformat()),
+                    ("접수 시각", received_at),
                 ],
                 sections=[("문의 본문", inquiry.body)],
+                button_label="문의 확인하기",
+                button_url=inquiry_url,
             ),
         )
     return ok(request, inquiry.model_dump(mode="json"))

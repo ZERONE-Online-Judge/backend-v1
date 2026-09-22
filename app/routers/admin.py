@@ -7,8 +7,9 @@ from pydantic import BaseModel, EmailStr
 from app.models import ContestStatus, JudgeNode, now_utc
 from app.settings import settings
 from app.services.authz import require_service_master
+from app.services.contest_roles import title_for_roles
 from app.services.errors import AppError, not_found
-from app.services.mail_templates import render_branded_email
+from app.services.mail_templates import absolute_url, format_korean_datetime, operator_assignment_mail, render_branded_email
 from app.services.responses import ok, page
 from app.services.store import SERVICE_MASTER_OPERATOR_ERROR, store
 
@@ -146,7 +147,7 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
     )
     if payload.operator_email:
         try:
-            store.upsert_contest_operator(contest.contest_id, str(payload.operator_email), str(payload.operator_email), protected_master=True)
+            operator = store.upsert_contest_operator(contest.contest_id, str(payload.operator_email), str(payload.operator_email), protected_master=True)
         except ValueError as exc:
             message = str(exc)
             if message == SERVICE_MASTER_OPERATOR_ERROR:
@@ -154,20 +155,20 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
             if message.startswith("operator email cannot be participant email:"):
                 raise AppError(422, "validation_error", message, {"field": "operator_email_conflict"})
             raise AppError(404, "not_found", message)
+        content = operator_assignment_mail(
+            contest_title=contest.title,
+            organization_name=contest.organization_name,
+            display_name=operator.display_name,
+            role_label=title_for_roles(operator.contest_roles.get(contest.contest_id, ["master"])) or "마스터",
+            starts_at=None if contest.status in {ContestStatus.DRAFT, ContestStatus.SCHEDULE_TBD} else contest.start_at,
+            console_url=absolute_url(f"/operator/contests/{contest.contest_id}"),
+        )
         store.enqueue_mail(
             "contest_operator_assigned",
             str(payload.operator_email),
-            f"[ZOJ] {contest.title} operator assignment",
-            "\n".join(
-                [
-                    f"You have been assigned as an operator for {contest.title}.",
-                    f"Organization: {contest.organization_name}",
-                    f"Status: {contest.status}",
-                    f"Open at: {contest.start_at.isoformat()}",
-                    "",
-                    "Log in to the operator console to configure divisions, problems, and teams.",
-                ]
-            ),
+            content.subject,
+            content.body_text,
+            content.body_html,
         )
     return ok(request, contest.model_dump(mode="json"))
 
@@ -210,18 +211,20 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
         raise AppError(404, "not_found", message)
     contest = store.contests.get(contest_id)
     if contest:
+        content = operator_assignment_mail(
+            contest_title=contest.title,
+            organization_name=contest.organization_name,
+            display_name=operator.display_name,
+            role_label=title_for_roles(operator.contest_roles.get(contest_id, ["master"])) or "마스터",
+            starts_at=None if contest.status in {ContestStatus.DRAFT, ContestStatus.SCHEDULE_TBD} else contest.start_at,
+            console_url=absolute_url(f"/operator/contests/{contest_id}"),
+        )
         store.enqueue_mail(
             "contest_operator_assigned",
             str(payload.email),
-            f"[ZOJ] {contest.title} operator assignment",
-            "\n".join(
-                [
-                    f"You have been assigned as an operator for {contest.title}.",
-                    f"Organization: {contest.organization_name}",
-                    f"Status: {contest.status}",
-                    f"Open at: {contest.start_at.isoformat()}",
-                ]
-            ),
+            content.subject,
+            content.body_text,
+            content.body_html,
         )
     return ok(request, operator.model_dump(mode="json"))
 
@@ -364,6 +367,7 @@ async def answer_contact_inquiry(inquiry_id: str, payload: ContactInquiryAnswerR
         ),
         render_branded_email(
             title=f"문의 답변: {inquiry.title}",
+            eyebrow="서비스 문의 답변",
             preheader="문의하신 내용에 대한 답변을 전달드립니다.",
             body=[
                 f"{inquiry.sender_name}님, 안녕하세요.",
@@ -372,7 +376,7 @@ async def answer_contact_inquiry(inquiry_id: str, payload: ContactInquiryAnswerR
             meta=[
                 ("문의 제목", inquiry.title),
                 ("답변자", str(account.email)),
-                ("답변 시각", inquiry.answered_at.isoformat() if inquiry.answered_at else "-"),
+                ("답변 시각", f"{format_korean_datetime(inquiry.answered_at)} KST" if inquiry.answered_at else "-"),
             ],
             sections=[
                 ("새 답변", answer_body),
