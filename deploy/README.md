@@ -209,3 +209,35 @@ paths/queries after deploying. Existing browser login state and local code
 drafts are origin-specific and do not automatically move to zoj.kr. Accounts
 and submissions on the server remain unchanged. Keep token signing keys and
 database/storage credentials unchanged during this migration.
+
+## 검색엔진용 공개 문서
+
+운영 Nginx는 `/`, 소개, 대회·공지와 지원 안내 등 페이지 요청을
+`/api/public/seo/document`로 전달합니다. API는 읽기 전용으로 마운트한
+`/frontend/index.html`의 JS/CSS 진입점을 유지하면서 페이지별 제목, 설명,
+canonical, Open Graph, JSON-LD와 공개 본문을 함께 내려줍니다. 브라우저와
+검색 로봇에 같은 HTML을 제공하며, React가 실행되면 기존 화면이 렌더링됩니다.
+
+- `PUBLIC_BASE_URL=https://zoj.kr`: 대표 주소. 요청의 Host 헤더로 만들지 않습니다.
+- `FRONTEND_HTML_PATH=/frontend/index.html`: API 안의 빌드된 HTML 경로.
+- API와 Nginx가 같은 프런트엔드 `dist` 디렉터리를 읽어야 합니다.
+- `GOOGLE_SITE_VERIFICATION`, `NAVER_SITE_VERIFICATION`: 선택적인 소유권 확인 값.
+  비어 있으면 프런트엔드 HTML에 이미 설정한 확인 태그를 그대로 보존합니다.
+- `/sitemap.xml`: 공개 대회와 서비스 공지가 추가·삭제되면 자동 반영됩니다.
+  관리자·참가자 전용 화면이나 문제 원문·제출은 포함하지 않습니다.
+- `/robots.txt`: 크롤링 경로와 사이트맵을 안내합니다. 로그인·운영자 화면은
+  접근 제어와 `noindex`를 사용하며, 비공개 여부를 robots.txt에 의존하지 않습니다.
+- 존재하지 않거나 공개되지 않은 대회/공지의 페이지 요청은 HTTP 404입니다.
+- 테스트 도메인은 `X-Robots-Tag: noindex, nofollow`를 반환합니다.
+
+Google Search Console 및 네이버 서치어드바이저에서 제출할 사이트맵은
+`https://zoj.kr/sitemap.xml`입니다. 제출 이후 수집·색인 상태는 각 도구에서
+확인해야 하며, 사이트맵 제출이 검색 순위나 즉시 색인을 보장하지는 않습니다.
+
+Nginx 설정은 `deploy/nginx` 디렉터리 전체를 마운트합니다. 배포 스크립트는
+새 API의 상태 확인 후 별도 컨테이너에서 Nginx 설정을 검사하고, 변경된
+마운트를 반영한 뒤 리로드합니다. 개별 파일 마운트에서 전환하는 첫 배포에는
+Nginx 컨테이너가 한 번 재생성됩니다.
+
+SEO 엔드포인트가 없는 이전 API로 롤백할 때에는 Nginx의 HTML 전달 설정도
+함께 이전 버전으로 복구한 뒤 문법 검사와 리로드를 진행해야 합니다.

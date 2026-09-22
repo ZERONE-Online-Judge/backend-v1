@@ -71,6 +71,10 @@ healthcheck() {
 
 apply_nginx() {
   expected_color=$(normalize_color "${1:-}")
+  # Validate the current files and synchronize mounts before switching. A Git
+  # checkout can replace a file inode; binding the directory keeps reloads fresh.
+  compose run --rm --no-deps nginx nginx -t
+  compose up -d --no-deps nginx
   if ! compose exec -T nginx sh -c "grep -q 'server api-$expected_color:8000;' /etc/nginx/conf.d/api-upstream.conf"; then
     echo "nginx container does not see api-$expected_color upstream config" >&2
     return 1

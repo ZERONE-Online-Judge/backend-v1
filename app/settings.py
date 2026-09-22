@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     release_color: str = "local"
     release_version: str | None = None
     public_base_url: str = "http://localhost:5173"
+    frontend_html_path: str = "/frontend/index.html"
+    google_site_verification: str | None = None
+    naver_site_verification: str | None = None
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     cors_allow_origin_regex: str | None = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     database_url: str = "sqlite:////private/tmp/zerone_online_judge_demo_v5.db"

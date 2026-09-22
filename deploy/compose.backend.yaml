@@ -3,6 +3,8 @@ x-api-service: &api-service
     context: ..
   env_file:
     - ./env/backend.env
+  volumes:
+    - ${FRONTEND_DIST_PATH:-../../frontend/dist}:/frontend:ro
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -25,8 +27,7 @@ services:
     volumes:
       - ${FRONTEND_DIST_PATH:-../../frontend/dist}:/usr/share/nginx/html:ro
       - ${TEST_FRONTEND_DIST_PATH:-../../test-frontend/dist}:/usr/share/nginx/html-test:ro
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./nginx/api-upstream.conf:/etc/nginx/conf.d/api-upstream.conf:ro
+      - ./nginx:/etc/nginx/conf.d:ro
     restart: unless-stopped
 
   api-blue:
