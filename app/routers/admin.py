@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import ContestStatus, JudgeNode, now_utc
 from app.settings import settings
@@ -76,6 +76,14 @@ class ContestCreateRequest(BaseModel):
     end_at: datetime | None = None
     freeze_at: datetime | None = None
     operator_email: EmailStr | None = None
+    operator_display_name: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @field_validator("operator_display_name")
+    @classmethod
+    def nonblank_operator_name(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("표시 이름을 입력해 주세요.")
+        return value.strip() if value is not None else None
 
 
 class ContestDivisionCreateRequest(BaseModel):
@@ -147,7 +155,7 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
     )
     if payload.operator_email:
         try:
-            operator = store.upsert_contest_operator(contest.contest_id, str(payload.operator_email), str(payload.operator_email), protected_master=True)
+            operator = store.upsert_contest_operator(contest.contest_id, str(payload.operator_email), payload.operator_display_name or str(payload.operator_email), protected_master=True)
         except ValueError as exc:
             message = str(exc)
             if message == SERVICE_MASTER_OPERATOR_ERROR:

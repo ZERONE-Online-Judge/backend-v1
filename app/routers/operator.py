@@ -408,7 +408,7 @@ def _check_staff_assignment(actor, contest_id: str, email: str, roles: list[str]
     if (target_master or roles == ["master"]) and not is_contest_master(actor, contest_id):
         raise permission_denied("대회 마스터 권한은 대회 마스터만 변경할 수 있습니다.")
     if target and contest_id in target.protected_master_contests and roles != ["master"]:
-        raise AppError(409, "assigned_master_immutable", "서비스 관리자가 할당한 대회 마스터는 변경하거나 제거할 수 없습니다.")
+        raise AppError(409, "contest_owner_immutable", "대회 총괄은 강등하거나 제거할 수 없습니다. 먼저 다른 운영자에게 총괄을 위임해 주세요.")
     if target_master and roles != ["master"]:
         masters = [item for item in store.contest_operator_accounts(contest_id) if is_contest_master(item, contest_id)]
         if len(masters) <= 1:
@@ -696,12 +696,23 @@ async def contest_operators(contest_id: str, request: Request):
     return page(request, [_contest_staff_payload(account, contest_id) for account in store.contest_operator_accounts(contest_id)])
 
 
+class ContestOwnerTransferRequest(BaseModel):
+    email: EmailStr
+
+
+@router.post("/operator/contests/{contest_id}/owner:transfer")
+async def transfer_contest_owner(contest_id: str, payload: ContestOwnerTransferRequest, request: Request):
+    account = require_contest_staff(request, contest_id, "contest.staff.manage")
+    changed = store.transfer_contest_owner(contest_id, str(payload.email), account)
+    return ok(request, [_contest_staff_payload(item, contest_id) for item in changed])
+
+
 @router.post("/operator/contests/{contest_id}/operators")
 async def create_contest_operator(contest_id: str, payload: ContestOperatorCreateRequest, request: Request):
     account = require_contest_staff(request, contest_id, "contest.staff.manage")
     _check_staff_assignment(account, contest_id, str(payload.email), payload.roles)
     try:
-        operator = store.upsert_contest_operator(contest_id, str(payload.email), payload.display_name, payload.roles)
+        operator = store.upsert_contest_operator(contest_id, str(payload.email), payload.display_name, payload.roles, actor=account)
     except ValueError as exc:
         message = str(exc)
         if message == SERVICE_MASTER_OPERATOR_ERROR:
@@ -758,7 +769,7 @@ async def delete_contest_operator(contest_id: str, operator_email: str, request:
         raise AppError(409, "self_remove_denied", "현재 로그인한 운영자 자신은 제거할 수 없습니다.")
     if len(current_operators) <= 1:
         raise AppError(409, "last_operator", "마지막 대회 운영자는 제거할 수 없습니다.")
-    removed = store.remove_contest_operator(contest_id, operator_email)
+    removed = store.remove_contest_operator(contest_id, operator_email, actor=account)
     if not removed:
         raise not_found()
     return ok(request, _contest_staff_payload(removed, contest_id))

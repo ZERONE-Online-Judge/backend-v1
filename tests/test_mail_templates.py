@@ -270,7 +270,7 @@ def test_admin_assignment_mail_identifies_protected_master_and_unknown_schedule(
         asyncio.run(admin.create_contest_operator(contest_id, payload, request))
 
     item, = isolated_store.mail_queue.values()
-    assert "마스터" in item.subject
+    assert "총괄" in item.subject
     assert "일정 확정 전" in item.body_text
     assert f"https://zoj.kr/operator/contests/{contest_id}" in item.body_text
     assert "일정 확정 전" in "".join(ParsedMail(item.body_html).text)

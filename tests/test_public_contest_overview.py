@@ -32,6 +32,7 @@ def contest_context():
         freeze_at=now - timedelta(hours=2), status=ContestStatus.ENDED,
     )
     cid = contest.contest_id
+    store.upsert_contest_operator(cid, f"owner-{uuid4().hex}@zoj.com", "Owner", ["master"])
     divisions = [store.create_contest_division(cid, code, code) for code in ["junior", "senior"]]
     problem = store.create_problem(cid, divisions[0].division_id, "A", "Public problem", "Statement", 1000, 128, {}, 1)
     store.update_problem(cid, problem.problem_id, editorial="Participant-only editorial")

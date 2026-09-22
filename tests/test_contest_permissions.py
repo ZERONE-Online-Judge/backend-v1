@@ -36,7 +36,7 @@ def context():
     tokens = {}
     accounts = {}
     for role in ROLE_PERMISSIONS:
-        account = store.upsert_contest_operator(cid, f"{role}-{uuid4().hex}@zoj.com", role, [role], protected_master=role == "master")
+        account = store.upsert_contest_operator(cid, f"{role}-{uuid4().hex}@zoj.com", role, ["master"] if role == "owner" else [role])
         accounts[role] = account
         tokens[role] = login(str(account.email))
     return {"cid": cid, "division": division, "problem": problem, "tokens": tokens, "accounts": accounts, "prefix": f"/api/operator/contests/{cid}"}
@@ -62,18 +62,18 @@ def test_read_permission_matrix(context, role):
     }
     for path, permission in routes.items():
         response = client.get(c["prefix"] + path, headers=c["tokens"][role])
-        allowed = role == "master" or (permission is None and role != "participant_preview") or permission in permissions
+        allowed = role in {"owner", "master"} or (permission is None and role != "participant_preview") or permission in permissions
         assert response.status_code == (200 if allowed else 403), (role, path, response.text)
     if role == "participant_preview":
         return
     dashboard = client.get(c["prefix"] + "/dashboard", headers=c["tokens"][role]).json()["data"]
-    if role not in {"master", "staff_manager"}:
+    if role not in {"owner", "master", "staff_manager"}:
         assert dashboard["operators"] == []
-    if role not in {"master", "submissions_viewer"}:
+    if role not in {"owner", "master", "submissions_viewer"}:
         assert dashboard["submission_count"] == dashboard["pending_jobs"] == 0
 
 
-@pytest.mark.parametrize("role", [role for role in ROLE_PERMISSIONS if role != "master"])
+@pytest.mark.parametrize("role", [role for role in ROLE_PERMISSIONS if role not in {"owner", "master"}])
 def test_denied_mutations_are_checked_server_side(context, role):
     c = context
     permissions = ROLE_PERMISSIONS[role]
@@ -126,7 +126,7 @@ def test_role_selection_validation_multiselect_and_protected_master(context):
     assert update.status_code == 200
     assert client.get(c["prefix"] + "/participants", headers=multi_headers).status_code == 403
     staff_headers = c["tokens"]["staff_manager"]
-    master_email = str(c["accounts"]["master"].email)
+    master_email = str(c["accounts"]["owner"].email)
     for target, roles in [(email, ["master"]), (master_email, ["problem_reviewer"]), (master_email, ["master"])]:
         for method, path in [("post", "/operators"), ("patch", "/operators/" + target)]:
             response = client.request(method, c["prefix"] + path, headers=staff_headers, json={"email": target, "display_name": "Escalation", "roles": roles})
@@ -144,14 +144,14 @@ def test_admin_assignment_always_protected_master(context):
     assert response.status_code == 200, response.text
     cid = response.json()["data"]["contest_id"]
     assigned = next(account for account in store.contest_operator_accounts(cid) if str(account.email) == email)
-    assert assigned.contest_roles[cid] == ["master"]
-    assert assigned.contest_scopes[cid] == ["contest.*"]
+    assert assigned.contest_roles[cid] == ["owner"]
+    assert assigned.contest_scopes[cid] == ["contest.*", "contest.owner"]
     assert cid in assigned.protected_master_contests
     other = f"assigned-{uuid4().hex}@zoj.com"
     response = client.post(f"/api/admin/contests/{cid}/operators", headers=headers, json={"email": other, "roles": ["problem_reviewer"]})
     assert response.status_code == 200
     assert response.json()["data"]["contest_roles"][cid] == ["master"]
-    assert cid in response.json()["data"]["protected_master_contests"]
+    assert cid not in response.json()["data"]["protected_master_contests"]
 
 
 def test_reviewer_ownership_and_private_assets(context):
@@ -252,10 +252,10 @@ def test_legacy_wildcard_and_last_master_protection():
         db.commit()
     headers = login(str(legacy.email))
     prefix = f"/api/operator/contests/{contest.contest_id}"
-    assert client.get(prefix + "/operators", headers=headers).json()["data"][0]["contest_roles"][contest.contest_id] == ["master"]
+    assert client.get(prefix + "/operators", headers=headers).json()["data"][0]["contest_roles"][contest.contest_id] == ["owner"]
     result = client.patch(prefix + "/operators/" + str(legacy.email), headers=headers, json={"display_name": "Legacy", "roles": ["problem_reviewer"]})
     assert result.status_code == 409
-    assert result.json()["error"]["code"] == "last_contest_master"
+    assert result.json()["error"]["code"] == "contest_owner_immutable"
 
 
 def test_historical_assignment_recovery_requires_success_and_exact_contest():
@@ -305,7 +305,7 @@ def test_private_question_notifications_only_reach_authorized_posts_staff(contex
     response = client.post(f"/api/contests/{c['cid']}/boards", headers={"Authorization": "Bearer " + logged_in.json()["data"]["access_token"]}, json={"title": "Private", "body": "Private participant question", "visibility": "private"})
     assert response.status_code == 200
     recipients = {str(mail.recipient_email) for key, mail in store.mail_queue.items() if key not in before and mail.mail_type == "contest_question_created"}
-    assert recipients == {str(c["accounts"][role].email) for role in ("master", "posts_manager")}
+    assert recipients == {str(c["accounts"][role].email) for role in ("owner", "master", "posts_manager")}
 
 
 def test_notice_management_is_independent_from_board_management(context):
@@ -326,7 +326,7 @@ def test_notice_management_is_independent_from_board_management(context):
 
 def test_all_nonmaster_roles_can_be_selected_together(context):
     c = context
-    roles = [role for role in ROLE_PERMISSIONS if role not in {"master", "participant_preview"}]
+    roles = [role for role in ROLE_PERMISSIONS if role not in {"owner", "master", "participant_preview"}]
     assert len(roles) == 11
     email = f"all-roles-{uuid4().hex}@zoj.com"
     response = client.post(c["prefix"] + "/operators", headers=c["tokens"]["master"], json={"email": email, "display_name": "All selected", "roles": roles})

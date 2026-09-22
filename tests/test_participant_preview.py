@@ -33,6 +33,7 @@ def headers(session):
 def preview():
     contest = store.create_contest("Hidden preview", "Test", "Preview testing", start_at=now_utc() + timedelta(days=2), status=ContestStatus.DRAFT)
     cid = contest.contest_id
+    store.upsert_contest_operator(cid, f"owner-{uuid4().hex}@zoj.com", "Owner", ["master"])
     divisions = [store.create_contest_division(cid, name, name) for name in ("A", "B")]
     problems = [store.create_problem(cid, division.division_id, "A", "Preview problem", "Visible statement", 1000, 128, {}, 1) for division in divisions]
     for problem in problems:

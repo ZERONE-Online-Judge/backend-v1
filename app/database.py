@@ -97,6 +97,9 @@ def create_schema() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_operational_audit_actor_created ON operational_audit_logs (actor_email, created_at DESC, operational_audit_log_id DESC)"))
     if settings.database_url.startswith("sqlite"):
         inspector = inspect(engine)
+        if "owner_staff_account_id" not in {column["name"] for column in inspector.get_columns("contests")}:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE contests ADD COLUMN owner_staff_account_id VARCHAR(36) REFERENCES staff_accounts(staff_account_id)"))
         if "staff_accounts" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("staff_accounts")}
             with engine.begin() as connection:
@@ -106,6 +109,8 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE staff_accounts ADD COLUMN protected_master_contests TEXT NOT NULL DEFAULT '[]'"))
                     backfill_assigned_contest_masters(connection)
                 backfill_separate_notice_roles(connection)
+                from app.services.contest_ownership import backfill_contest_owners
+                backfill_contest_owners(connection)
         if "judge_jobs" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("judge_jobs")}
             if "leased_at" not in columns:

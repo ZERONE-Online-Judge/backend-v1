@@ -285,6 +285,7 @@ def test_release_modes_preserve_after_end_access_controls(race):
 
 
 def test_settings_and_scoreboard_management_permissions_remain_separate(race):
+    store.upsert_contest_operator(race["cid"], f"owner-{uuid4().hex}@zoj.com", "Owner", ["master"])
     tokens = {}
     for role in ("scoreboard_viewer", "scoreboard_manager", "settings_manager"):
         account = store.upsert_contest_operator(race["cid"], f"release-{role}-{uuid4().hex}@zoj.com", role, [role])

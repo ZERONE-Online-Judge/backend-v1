@@ -9,11 +9,12 @@ import secrets
 from zoneinfo import ZoneInfo
 from fastapi.encoders import jsonable_encoder
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only, object_session, selectinload
 
 from app.database import SessionLocal, create_schema
+from app.services.errors import AppError, permission_denied
 from app.settings import settings
 from app.models import (
     AccessLog,
@@ -624,6 +625,10 @@ class DbStore:
         if settings.enable_demo_seed:
             self.seed()
             self.ensure_demo_fixtures()
+            from app.services.contest_ownership import backfill_contest_owners
+            with self._session() as db:
+                backfill_contest_owners(db.connection())
+                db.commit()
         self.ensure_bootstrap_service_master()
 
     def _session(self) -> Session:
@@ -1526,7 +1531,10 @@ class DbStore:
                         )
                     )
                 elif not is_master:
-                    account.contest_scopes = json.dumps(scopes)
+                    current_scopes = json.loads(account.contest_scopes or "{}")
+                    for cid, grants in scopes.items():
+                        current_scopes.setdefault(cid, grants)
+                    account.contest_scopes = json.dumps(current_scopes)
 
             for email, name, team_name, division in [
                 ("test1@zoj.com", "Test One", "ZOJ Test Beginner", beginner),
@@ -2355,22 +2363,29 @@ class DbStore:
 
     def upsert_contest_operator(
         self, contest_id: str, email: str, display_name: str,
-        roles: list[str] | None = None, *, protected_master: bool = False,
+        roles: list[str] | None = None, *, protected_master: bool = False, actor: StaffAccount | None = None,
     ) -> StaffAccount:
         # Default is retained for internal/bootstrap callers; HTTP operator requests
         # always require an explicit validated role selection.
+        # The legacy protected_master flag now requests full access; only the
+        # first assignment becomes the owner, later assignments remain masters.
         roles = ["master"] if protected_master or roles is None else roles
+        if "owner" in roles:
+            raise AppError(409, "contest_owner_immutable", "대회 총괄은 권한 위임으로만 변경할 수 있습니다.")
         permissions = permissions_for_roles(roles)
         if not display_name.strip():
             raise ValueError("display name is required")
         with self._session() as db:
-            if not db.get(ContestRow, contest_id):
+            contest = db.scalar(select(ContestRow).where(ContestRow.contest_id == contest_id).with_for_update())
+            if not contest:
                 raise ValueError("contest not found")
+            if not contest.owner_staff_account_id and roles != ["master"]:
+                raise AppError(409, "contest_owner_required", "첫 운영자는 대회 마스터로 배정해 주세요. 최초 배정 시 대회 총괄이 됩니다.")
             normalized_email = email.strip().lower()
             participant_conflicts = self._contest_participant_email_conflicts(db, contest_id, [normalized_email])
             if participant_conflicts:
                 raise ValueError(f"operator email cannot be participant email: {participant_conflicts[0]}")
-            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email))
+            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email).with_for_update())
             if account and account.is_service_master:
                 raise ValueError(SERVICE_MASTER_OPERATOR_ERROR)
             if not account:
@@ -2379,13 +2394,20 @@ class DbStore:
             scopes = json.loads(account.contest_scopes or "{}")
             selections = json.loads(account.contest_roles or "{}")
             protected = json.loads(account.protected_master_contests or "[]")
-            if contest_id in protected and roles != ["master"]:
-                raise ValueError("assigned contest master is protected")
+            self._check_operator_mutation(db, contest, account, roles, actor)
+            if not contest.owner_staff_account_id:
+                db.flush()
+                claimed = db.execute(update(ContestRow).where(ContestRow.contest_id == contest_id, ContestRow.owner_staff_account_id.is_(None)).values(owner_staff_account_id=account.staff_account_id))
+                if claimed.rowcount != 1:
+                    raise AppError(409, "contest_owner_changed", "총괄이 이미 배정되었습니다. 운영자 목록을 새로 확인해 주세요.")
+            if contest.owner_staff_account_id == account.staff_account_id:
+                roles = ["owner"]
+                permissions = permissions_for_roles(roles)
             if selections.get(contest_id) == ["participant_preview"] and roles != ["participant_preview"]:
                 db.execute(delete(ParticipantPreviewSessionRow).where(ParticipantPreviewSessionRow.staff_account_id == account.staff_account_id, ParticipantPreviewSessionRow.contest_id == contest_id))
             scopes[contest_id] = permissions
             selections[contest_id] = roles
-            if protected_master and contest_id not in protected:
+            if contest.owner_staff_account_id == account.staff_account_id and contest_id not in protected:
                 protected.append(contest_id)
             account.display_name = display_name.strip()
             account.contest_scopes = json.dumps(scopes)
@@ -2403,11 +2425,16 @@ class DbStore:
         from app.services.staff_identity import rename_staff_identity
 
         normalized_email = email.strip().lower()
+        if "owner" in roles:
+            raise AppError(409, "contest_owner_immutable", "대회 총괄은 권한 위임으로만 변경할 수 있습니다.")
         permissions = permissions_for_roles(roles)
         if not display_name.strip():
             raise ValueError("display name is required")
         try:
             with self._session() as db:
+                contest = db.scalar(select(ContestRow).where(ContestRow.contest_id == contest_id).with_for_update())
+                if not contest:
+                    return None
                 account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email).with_for_update())
                 if not account or account.is_service_master:
                     return None
@@ -2415,9 +2442,10 @@ class DbStore:
                 if not scopes.get(contest_id):
                     return None
                 selections = json.loads(account.contest_roles or "{}")
-                protected = json.loads(account.protected_master_contests or "[]")
-                if contest_id in protected and roles != ["master"]:
-                    raise AppError(409, "assigned_master_immutable", "서비스 관리자가 할당한 대회 마스터는 변경하거나 제거할 수 없습니다.")
+                self._check_operator_mutation(db, contest, account, roles, actor)
+                if contest.owner_staff_account_id == account.staff_account_id:
+                    roles = ["owner"]
+                    permissions = permissions_for_roles(roles)
                 if new_email:
                     rename_staff_identity(db, account, actor.staff_account_id if actor else None, new_email)
                 participant_conflicts = self._contest_participant_email_conflicts(db, contest_id, [account.email])
@@ -2438,17 +2466,19 @@ class DbStore:
                 raise AppError(409, "email_already_in_use", "이미 다른 계정에서 사용한 이메일입니다. 다른 이메일을 입력해 주세요.") from error
             raise
 
-    def remove_contest_operator(self, contest_id: str, email: str) -> StaffAccount | None:
+    def remove_contest_operator(self, contest_id: str, email: str, *, actor: StaffAccount | None = None) -> StaffAccount | None:
         with self._session() as db:
+            contest = db.scalar(select(ContestRow).where(ContestRow.contest_id == contest_id).with_for_update())
+            if not contest:
+                return None
             normalized_email = email.strip().lower()
-            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email))
+            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email).with_for_update())
             if not account or account.is_service_master:
                 return None
             scopes = json.loads(account.contest_scopes or "{}")
             if not scopes.get(contest_id):
                 return None
-            if contest_id in json.loads(account.protected_master_contests or "[]"):
-                raise ValueError("assigned contest master is protected")
+            self._check_operator_mutation(db, contest, account, None, actor)
             db.execute(delete(ParticipantPreviewSessionRow).where(ParticipantPreviewSessionRow.staff_account_id == account.staff_account_id, ParticipantPreviewSessionRow.contest_id == contest_id))
             scopes.pop(contest_id, None)
             selections = json.loads(account.contest_roles or "{}")
@@ -2458,6 +2488,62 @@ class DbStore:
             db.commit()
             db.refresh(account)
             return _staff(account)
+
+    def _check_operator_mutation(self, db, contest, target, roles, actor) -> None:
+        # Called after locking the contest: a concurrent transfer cannot turn the
+        # target into an owner between the permission check and the mutation.
+        cid = contest.contest_id
+        if actor:
+            current_actor = db.get(StaffAccountRow, actor.staff_account_id)
+            scopes = json.loads(current_actor.contest_scopes or "{}").get(cid, []) if current_actor else []
+            target_master = "contest.*" in json.loads(target.contest_scopes or "{}").get(cid, [])
+            if not current_actor or (not current_actor.is_service_master and (
+                "contest.*" not in scopes and (
+                    "contest.staff.manage" not in scopes or target_master or roles == ["master"]
+                )
+            )):
+                raise permission_denied()
+        if contest.owner_staff_account_id == target.staff_account_id and roles != ["master"]:
+            raise AppError(409, "contest_owner_immutable", "대회 총괄은 강등하거나 제거할 수 없습니다. 먼저 다른 운영자에게 총괄을 위임해 주세요.")
+
+    def transfer_contest_owner(self, contest_id: str, target_email: str, actor: StaffAccount) -> list[StaffAccount]:
+        with self._session() as db:
+            contest = db.scalar(select(ContestRow).where(ContestRow.contest_id == contest_id).with_for_update())
+            if not contest:
+                raise AppError(404, "not_found", "대회를 찾을 수 없습니다.")
+            # The authoritative owner id is checked again under the same lock as
+            # the update; stale tokens and concurrent requests cannot take over.
+            if contest.owner_staff_account_id != actor.staff_account_id:
+                raise AppError(403, "contest_owner_transfer_denied", "현재 대회 총괄만 총괄 권한을 위임할 수 있습니다.")
+            accounts = db.scalars(select(StaffAccountRow).where(
+                (StaffAccountRow.staff_account_id == actor.staff_account_id) |
+                (func.lower(StaffAccountRow.email) == target_email.strip().lower())
+            ).order_by(StaffAccountRow.staff_account_id).with_for_update()).all()
+            previous = next((a for a in accounts if a.staff_account_id == actor.staff_account_id), None)
+            target = next((a for a in accounts if a.email.lower() == target_email.strip().lower()), None)
+            if not target or target.is_service_master or not json.loads(target.contest_scopes or "{}").get(contest_id):
+                raise AppError(422, "contest_owner_target_invalid", "이 대회에 등록된 운영자를 선택해 주세요.")
+            if target is previous:
+                raise AppError(422, "contest_owner_target_invalid", "다른 운영자에게 위임해 주세요.")
+            if self._contest_participant_email_conflicts(db, contest_id, [target.email]):
+                raise AppError(409, "contest_owner_target_invalid", "같은 대회의 참가자 계정에는 위임할 수 없습니다.")
+            for account, roles in [(previous, ["master"]), (target, ["owner"])]:
+                scopes = json.loads(account.contest_scopes or "{}")
+                selections = json.loads(account.contest_roles or "{}")
+                protected = [cid for cid in json.loads(account.protected_master_contests or "[]") if cid != contest_id]
+                scopes[contest_id] = permissions_for_roles(roles)
+                selections[contest_id] = roles
+                if account is target:
+                    protected.append(contest_id)
+                account.contest_scopes = json.dumps(scopes)
+                account.contest_roles = json.dumps(selections)
+                account.protected_master_contests = json.dumps(protected)
+            db.execute(delete(ParticipantPreviewSessionRow).where(ParticipantPreviewSessionRow.staff_account_id == target.staff_account_id, ParticipantPreviewSessionRow.contest_id == contest_id))
+            claimed = db.execute(update(ContestRow).where(ContestRow.contest_id == contest_id, ContestRow.owner_staff_account_id == actor.staff_account_id).values(owner_staff_account_id=target.staff_account_id))
+            if claimed.rowcount != 1:
+                raise AppError(409, "contest_owner_changed", "총괄이 이미 변경되었습니다. 운영자 목록을 새로 확인해 주세요.")
+            db.commit()
+            return [_staff(previous), _staff(target)]
 
     def contest_operator_accounts(self, contest_id: str) -> list[StaffAccount]:
         with self._session() as db:

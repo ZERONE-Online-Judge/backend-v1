@@ -11,6 +11,7 @@ class ContestRow(Base):
     __tablename__ = "contests"
 
     contest_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_staff_account_id: Mapped[str | None] = mapped_column(ForeignKey("staff_accounts.staff_account_id", name="fk_contest_owner"), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
     organization_name: Mapped[str] = mapped_column(String(255))
     overview: Mapped[str] = mapped_column(Text)

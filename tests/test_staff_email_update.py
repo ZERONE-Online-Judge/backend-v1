@@ -39,6 +39,7 @@ def fresh_email(prefix="staff"):
 def context():
     contest = store.create_contest("Email changes", "Test", "Test", now_utc() + timedelta(days=1), status=ContestStatus.DRAFT)
     cid = contest.contest_id
+    store.upsert_contest_operator(cid, f"owner-{uuid4().hex}@zoj.com", "Owner", ["master"])
     division = store.create_contest_division(cid, "A", "A")
     problem = store.create_problem(cid, division.division_id, "A", "Problem", "Statement", 1000, 128, {}, 1)
     actor = store.upsert_contest_operator(cid, fresh_email("actor"), "Manager", ["staff_manager"])
@@ -164,6 +165,7 @@ def test_email_collision_is_atomic_and_keeps_original_session(context, collision
 def test_cross_contest_staff_and_master_permissions_are_required(context):
     c = context
     other = store.create_contest("Other scope", "Other", "Other")
+    store.upsert_contest_operator(other.contest_id, fresh_email("owner"), "Owner", ["master"])
     store.upsert_contest_operator(other.contest_id, str(c["target"].email), c["target"].display_name, ["master"])
     destination = fresh_email("global")
     denied = patch(c, destination)
@@ -196,7 +198,7 @@ def test_protected_master_email_needs_service_master_even_in_another_contest(con
     with store._session() as db:
         row = db.get(StaffAccountRow, c["target"].staff_account_id)
         assert other.contest_id in json.loads(row.protected_master_contests)
-        assert json.loads(row.contest_roles)[other.contest_id] == ["master"]
+        assert json.loads(row.contest_roles)[other.contest_id] == ["owner"]
 
 
 def test_old_participant_identity_and_its_answers_cannot_be_transferred(context):

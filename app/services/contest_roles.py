@@ -2,6 +2,7 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "owner": {"contest.*", "contest.owner"},
     "master": {"contest.*"},
     "settings_manager": {"contest.settings.manage", "contest.update_organization", "contest.update_overview", "contest.update_rule", "contest.update_schedule"},
     "participants_manager": {"contest.participant.view", "contest.participant.manage", "contest.participant.create", "contest.participant.update", "contest.participant.remove", "contest.participant.bulk_create", "contest.access_log.view"},
@@ -22,13 +23,15 @@ def validate_roles(roles: list[str]) -> list[str]:
     if not roles or any(role not in ROLE_PERMISSIONS for role in roles):
         raise ValueError("하나 이상의 올바른 권한을 선택해야 합니다.")
     roles = list(dict.fromkeys(roles))
-    if any(role in {"master", "participant_preview"} for role in roles) and len(roles) != 1:
-        raise ValueError("대회 마스터와 참가자 미리보기는 각각 단독으로 선택해야 합니다.")
+    if any(role in {"owner", "master", "participant_preview"} for role in roles) and len(roles) != 1:
+        raise ValueError("대회 총괄, 마스터와 참가자 미리보기는 각각 단독 권한입니다.")
     return roles
 
 
 def permissions_for_roles(roles: list[str]) -> list[str]:
     roles = validate_roles(roles)
+    if roles == ["owner"]:
+        return ["contest.*", "contest.owner"]
     if roles == ["master"]:
         return ["contest.*"]
     if roles == ["participant_preview"]:
@@ -38,12 +41,16 @@ def permissions_for_roles(roles: list[str]) -> list[str]:
 
 def roles_for_scopes(scopes: list[str]) -> list[str]:
     """Compatibility for accounts created before roles were persisted."""
+    if "contest.owner" in scopes:
+        return ["owner"]
     if "contest.*" in scopes:
         return ["master"]
     return [role for role, permissions in ROLE_PERMISSIONS.items() if permissions <= set(scopes)]
 
 
 def title_for_roles(roles: list[str]) -> str | None:
+    if "owner" in roles:
+        return "총괄"
     if "master" in roles:
         return "마스터"
     if "problem_author" in roles:
@@ -56,6 +63,8 @@ def title_for_roles(roles: list[str]) -> str | None:
 
 
 def title_for_scopes(scopes: list[str]) -> str | None:
+    if "contest.owner" in scopes:
+        return "총괄"
     if any(scope in {"*", "master", "contest.*"} for scope in scopes):
         return "마스터"
     author_scopes = {"contest.problem", "contest.problem.*", "contest.problem.view", "contest.problem.manage", "contest.problem.create", "contest.problem.update", "contest.problem.delete", "contest.problem.reorder"}
@@ -92,6 +101,8 @@ class ContestOperatorUpdateRequest(BaseModel):
     @field_validator("roles")
     @classmethod
     def valid_roles(cls, value: list[str]) -> list[str]:
+        if "owner" in value:
+            raise ValueError("대회 총괄은 권한 위임으로만 변경할 수 있습니다.")
         return validate_roles(value)
 
 

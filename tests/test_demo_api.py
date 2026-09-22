@@ -638,7 +638,7 @@ def test_admin_can_bootstrap_contest_divisions_and_operator():
         json={"email": "operator-bootstrap@zoj.com", "display_name": "Bootstrap Operator"},
     )
     assert operator.status_code == 200
-    assert operator.json()["data"]["contest_scopes"][contest_id] == ["contest.*"]
+    assert operator.json()["data"]["contest_scopes"][contest_id] == ["contest.*", "contest.owner"]
 
 
 def test_service_master_has_implicit_contest_access_and_is_not_contest_operator():
@@ -859,7 +859,7 @@ def test_admin_can_create_contest_with_operator_email_only():
 
     accounts = client.get("/api/admin/service-managers", headers=auth_headers(master["access_token"]))
     operator = next(item for item in accounts.json()["data"] if item["email"] == "email-only-operator@zoj.com")
-    assert operator["contest_scopes"][contest["contest_id"]] == ["contest.*"]
+    assert operator["contest_scopes"][contest["contest_id"]] == ["contest.*", "contest.owner"]
 
     mail_queue = client.get("/api/admin/mail-queue", headers=auth_headers(master["access_token"]))
     queued = [item for item in mail_queue.json()["data"] if item["recipient_email"] == "email-only-operator@zoj.com"]
