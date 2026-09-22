@@ -4,8 +4,8 @@ import sqlalchemy as sa
 
 from app.services.contest_ownership import backfill_contest_owners
 
-revision = "0028_contest_owner"
-down_revision = "0027_scoreboard_release_modes"
+revision = "0029_contest_owner"
+down_revision = "0028_usage_analytics"
 branch_labels = None
 depends_on = None
 

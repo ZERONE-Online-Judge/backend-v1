@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routers import admin, auth, internal_judge, operator, participant, public, seo, seo_documents, storage
+from app.routers import admin, analytics, auth, internal_judge, operator, participant, public, seo, seo_documents, storage
 from app.services.errors import AppError
 from app.services.authz import bearer_token
 from app.services.store import store
@@ -322,6 +322,7 @@ async def health(request: Request):
 
 
 app.include_router(public.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
 app.include_router(seo.router, prefix="/api")
 app.include_router(seo_documents.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
