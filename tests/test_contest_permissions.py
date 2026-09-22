@@ -304,3 +304,69 @@ def test_private_question_notifications_only_reach_authorized_posts_staff(contex
     assert response.status_code == 200
     recipients = {str(mail.recipient_email) for key, mail in store.mail_queue.items() if key not in before and mail.mail_type == "contest_question_created"}
     assert recipients == {str(c["accounts"][role].email) for role in ("master", "posts_manager")}
+
+
+def test_notice_management_is_independent_from_board_management(context):
+    c = context
+    headers = c["tokens"]["notices_manager"]
+    board_headers = c["tokens"]["posts_manager"]
+    endpoint = c["prefix"] + "/notices"
+    created = client.post(endpoint, headers=headers, json={"title": "Notice", "body": "Body", "emergency": True})
+    assert created.status_code == 200
+    notice_id = created.json()["data"]["contest_notice_id"]
+    assert client.patch(endpoint + "/" + notice_id, headers=headers, json={"title": "Updated"}).status_code == 200
+    assert client.patch(c["prefix"] + "/settings", headers=headers, json={"emergency_notice": "Emergency"}).status_code == 200
+    assert client.get(c["prefix"] + "/boards", headers=headers).status_code == 403
+    assert client.get(endpoint, headers=board_headers).status_code == 403
+    assert client.patch(endpoint + "/" + notice_id, headers=board_headers, json={"title": "Forbidden"}).status_code == 403
+    assert client.delete(endpoint + "/" + notice_id, headers=headers).status_code == 200
+
+
+def test_all_nonmaster_roles_can_be_selected_together(context):
+    c = context
+    roles = [role for role in ROLE_PERMISSIONS if role != "master"]
+    assert len(roles) == 11
+    email = f"all-roles-{uuid4().hex}@zoj.com"
+    response = client.post(c["prefix"] + "/operators", headers=c["tokens"]["master"], json={"email": email, "display_name": "All selected", "roles": roles})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["contest_roles"][c["cid"]] == roles
+    headers = login(email)
+    for path in ["/notices", "/boards", "/audit-logs", "/access-logs"]:
+        assert client.get(c["prefix"] + path, headers=headers).status_code == 200
+    response = client.patch(c["prefix"] + "/operators/" + email, headers=c["tokens"]["master"], json={"display_name": "All selected", "roles": roles})
+    assert response.status_code == 200
+    # Removing the standalone notice role revokes its scope immediately, even
+    # though the account still has board, settings and every other limited role.
+    response = client.patch(c["prefix"] + "/operators/" + email, headers=c["tokens"]["master"], json={"display_name": "Without notices", "roles": [role for role in roles if role != "notices_manager"]})
+    assert response.status_code == 200
+    assert client.get(c["prefix"] + "/notices", headers=headers).status_code == 403
+    assert client.get(c["prefix"] + "/boards", headers=headers).status_code == 200
+    assert client.post(c["prefix"] + "/operators", headers=c["tokens"]["master"], json={"email": email, "display_name": "Invalid mix", "roles": ["master", *roles]}).status_code == 422
+
+
+def test_legacy_combined_notice_grants_migrate_without_new_board_role_escalation():
+    import json
+    from sqlalchemy import create_engine, text
+    from app.database import backfill_separate_notice_roles
+
+    engine = create_engine("sqlite://")
+    scopes = {
+        "legacy": ["contest.view", "contest.board.question.manage", "contest.notice.manage"],
+        "new-board-only": ["contest.view", "contest.board.question.manage"],
+        "already-split": ["contest.view", "contest.board.question.manage", "contest.notice.manage"],
+        "master": ["contest.*"],
+    }
+    roles = {
+        "legacy": ["posts_manager", "problem_reviewer"],
+        "new-board-only": ["posts_manager"],
+        "already-split": ["posts_manager", "notices_manager"],
+        "master": ["master"],
+    }
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE staff_accounts (staff_account_id TEXT, contest_scopes TEXT, contest_roles TEXT)"))
+        connection.execute(text("INSERT INTO staff_accounts VALUES ('one', :scopes, :roles)"), {"scopes": json.dumps(scopes), "roles": json.dumps(roles)})
+        backfill_separate_notice_roles(connection)
+        backfill_separate_notice_roles(connection)
+        saved_scopes, saved_roles = connection.execute(text("SELECT contest_scopes, contest_roles FROM staff_accounts")).one()
+        assert json.loads(saved_scopes) == scopes
+        assert json.loads(saved_roles) == {**roles, "legacy": ["posts_manager", "problem_reviewer", "notices_manager"]}

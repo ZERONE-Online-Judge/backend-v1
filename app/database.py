@@ -54,6 +54,31 @@ def backfill_assigned_contest_masters(connection) -> None:
         connection.execute(text("UPDATE staff_accounts SET contest_roles = :roles, protected_master_contests = :protected WHERE staff_account_id = :account_id"), {"roles": json.dumps(roles), "protected": json.dumps(sorted(protected | recovered)), "account_id": row["staff_account_id"]})
 
 
+def backfill_separate_notice_roles(connection) -> None:
+    """Make the existing combined board/notice grant explicit without losing access.
+
+    Newly assigned board-only roles have no notice scope and are left unchanged.
+    This makes the correction safe both as a one-time migration and on SQLite
+    startup, where schema upgrades run without Alembic.
+    """
+    rows = connection.execute(text("SELECT staff_account_id, contest_scopes, contest_roles FROM staff_accounts")).mappings()
+    for row in rows:
+        scopes = json.loads(row["contest_scopes"] or "{}")
+        roles = json.loads(row["contest_roles"] or "{}")
+        changed = False
+        for contest_id, selected in roles.items():
+            if (
+                "posts_manager" in selected
+                and "notices_manager" not in selected
+                and "master" not in selected
+                and "contest.notice.manage" in scopes.get(contest_id, [])
+            ):
+                selected.append("notices_manager")
+                changed = True
+        if changed:
+            connection.execute(text("UPDATE staff_accounts SET contest_roles = :roles WHERE staff_account_id = :account_id"), {"roles": json.dumps(roles), "account_id": row["staff_account_id"]})
+
+
 def create_schema() -> None:
     from app import orm_models  # noqa: F401
 
@@ -80,6 +105,7 @@ def create_schema() -> None:
                 if "protected_master_contests" not in columns:
                     connection.execute(text("ALTER TABLE staff_accounts ADD COLUMN protected_master_contests TEXT NOT NULL DEFAULT '[]'"))
                     backfill_assigned_contest_masters(connection)
+                backfill_separate_notice_roles(connection)
         if "judge_jobs" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("judge_jobs")}
             if "leased_at" not in columns:

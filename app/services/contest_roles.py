@@ -5,7 +5,9 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "master": {"contest.*"},
     "settings_manager": {"contest.settings.manage", "contest.update_organization", "contest.update_overview", "contest.update_rule", "contest.update_schedule"},
     "participants_manager": {"contest.participant.view", "contest.participant.manage", "contest.participant.create", "contest.participant.update", "contest.participant.remove", "contest.participant.bulk_create", "contest.access_log.view"},
-    "posts_manager": {"contest.notice.view", "contest.notice.manage", "contest.notice.create", "contest.notice.update", "contest.notice.delete", "contest.notice.emergency_publish", "contest.board.question.view", "contest.board.question.manage", "contest.board.answer.create"},
+    "posts_manager": {"contest.board.question.view", "contest.board.question.manage", "contest.board.answer.create"},
+    "notices_manager": {"contest.notice.view", "contest.notice.manage", "contest.notice.create", "contest.notice.update", "contest.notice.delete", "contest.notice.emergency_publish"},
+    "audit_viewer": {"contest.audit.view", "contest.access_log.view"},
     "staff_manager": {"contest.staff.view", "contest.staff.manage"},
     "submissions_viewer": {"contest.submission.view", "contest.submission.source.view"},
     "scoreboard_viewer": {"contest.scoreboard.view"},
@@ -40,7 +42,7 @@ def roles_for_scopes(scopes: list[str]) -> list[str]:
 
 class ContestOperatorUpdateRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=120)
-    roles: list[str] = Field(min_length=1, max_length=10)
+    roles: list[str] = Field(min_length=1, max_length=len(ROLE_PERMISSIONS))
 
     @field_validator("display_name")
     @classmethod
