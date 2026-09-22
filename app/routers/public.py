@@ -1,16 +1,31 @@
 from datetime import timedelta
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 
 from app.models import now_utc
 from app.settings import settings
+from app.services.authz import bearer_token
+from app.services.contest_visibility import contest_payload_for_view
 from app.services.errors import not_found
 from app.services.mail_templates import render_branded_email
 from app.services.responses import ok, page
 from app.services.store import store
 
 router = APIRouter(tags=["public"])
+
+
+def _contest_payload(contest, request: Request) -> dict:
+    payload = contest_payload_for_view(contest)
+    if contest.emergency_notice and payload["emergency_notice"] is None:
+        token = bearer_token(request)
+        participant = (
+            store.get_participant_by_access_token(contest.contest_id, token)
+            or store.get_participant_by_general_access_token(contest.contest_id, token)
+        ) if token else None
+        if participant:
+            return contest_payload_for_view(contest, participant)
+    return payload
 
 
 class ContactInquiryCreateRequest(BaseModel):
@@ -51,20 +66,25 @@ async def home(request: Request):
 
 
 @router.get("/public/contests")
-async def contests(request: Request):
-    return page(request, [contest.model_dump(mode="json") for contest in store.visible_public_contests()])
+async def contests(request: Request, response: Response):
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Authorization"
+    return page(request, [_contest_payload(contest, request) for contest in store.visible_public_contests()])
 
 
 @router.get("/public/contests/{contest_id}")
-async def contest_detail(contest_id: str, request: Request):
+async def contest_detail(contest_id: str, request: Request, response: Response):
     contest = store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Authorization"
     return ok(
         request,
         {
-            "contest": contest.model_dump(mode="json"),
+            "contest": _contest_payload(contest, request),
             "divisions": [division.model_dump(mode="json") for division in store.contest_divisions(contest_id)],
+            **store.contest_participation_counts(contest_id),
         },
     )
 

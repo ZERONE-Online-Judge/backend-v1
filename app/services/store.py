@@ -2220,6 +2220,23 @@ class DbStore:
                 return None
             return _contest(row)
 
+    def contest_participation_counts(self, contest_id: str) -> dict[str, int]:
+        """Return aggregate registration counts without loading participant data."""
+        with self._session() as db:
+            team_count, participant_count = db.execute(
+                select(
+                    func.count(func.distinct(ParticipantTeamRow.participant_team_id)),
+                    func.count(TeamMemberRow.team_member_id),
+                )
+                .select_from(ParticipantTeamRow)
+                .outerjoin(TeamMemberRow, TeamMemberRow.participant_team_id == ParticipantTeamRow.participant_team_id)
+                .where(
+                    ParticipantTeamRow.contest_id == contest_id,
+                    ~ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX),
+                )
+            ).one()
+            return {"participant_count": participant_count, "team_count": team_count}
+
     def create_contest(
         self,
         title: str | None,

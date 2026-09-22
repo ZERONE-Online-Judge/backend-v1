@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, now_utc
 from app.services.access_logging import write_access_log
 from app.services.authz import bearer_token, has_contest_permission, require_participant
+from app.services.contest_visibility import contest_has_ended, contest_payload_for_view
 from app.services.errors import AppError, authentication_required, invalid_state, not_found, permission_denied
 from app.services.mail_templates import absolute_url, render_branded_email
 from app.services.responses import ok, page
@@ -103,9 +104,7 @@ class QuestionAnswerCreateRequest(BaseModel):
 
 
 def _is_ended(contest) -> bool:
-    if contest.status == ContestStatus.SCHEDULE_TBD:
-        return False
-    return contest.status in {ContestStatus.ENDED, ContestStatus.FINALIZED, ContestStatus.ARCHIVED} or now_utc() >= contest.end_at
+    return contest_has_ended(contest)
 
 
 def _has_started(contest) -> bool:
@@ -432,14 +431,15 @@ async def workspace(contest_id: str, request: Request, team_member_email: str | 
         raise not_found("Contest division is not configured.")
     problems = _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division.division_id])
     solve_statuses = _problem_solve_statuses(contest_id, participant)
+    contest_payload = contest_payload_for_view(contest, participant)
     return ok(
         request,
         {
-            "contest": contest.model_dump(mode="json"),
+            "contest": contest_payload,
             "division": division.model_dump(mode="json"),
             "divisions": [item.model_dump(mode="json") for item in divisions],
             "problems": [_problem_payload(p, solve_statuses) for p in problems],
-            "emergency_notice": contest.emergency_notice,
+            "emergency_notice": contest_payload["emergency_notice"],
             "is_preview": bool(participant and participant.get("is_preview")),
         },
     )
@@ -453,13 +453,14 @@ async def division_workspace(contest_id: str, division_id: str, request: Request
         raise not_found()
     problems = _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])
     solve_statuses = _problem_solve_statuses(contest_id, participant)
+    contest_payload = contest_payload_for_view(contest, participant)
     return ok(
         request,
         {
-            "contest": contest.model_dump(mode="json"),
+            "contest": contest_payload,
             "division": division.model_dump(mode="json"),
             "problems": [_problem_payload(p, solve_statuses) for p in problems],
-            "emergency_notice": contest.emergency_notice,
+            "emergency_notice": contest_payload["emergency_notice"],
             "is_preview": bool(participant and participant.get("is_preview")),
         },
     )
