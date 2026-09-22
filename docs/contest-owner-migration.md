@@ -5,7 +5,7 @@ owner; later master assignments remain ordinary masters. Only the current owner
 can transfer ownership to another existing contest operator. The former owner
 keeps master access. Ordinary role edits and removals cannot remove ownership.
 
-Migration `0028_contest_owner` keeps the existing protected master when there is
+Migration `0029_contest_owner` (after `0028_usage_analytics`) keeps the existing protected master when there is
 exactly one, or the only master when there is just one master. Contests with no
 staff remain without an owner until their first assignment.
 

@@ -101,3 +101,24 @@ def test_participant_answers_and_submissions_have_no_staff_title(workspace):
     assert answer.created_by_role == "participant"
     assert answer.created_by_title is None
     assert store.get_submission(submission.submission_id).submitted_by_title is None
+
+
+def test_owner_titles_follow_delegation_in_existing_answers_and_submissions(workspace):
+    w = workspace
+    original = next(account for account in store.contest_operator_accounts(w['cid']) if account.contest_roles[w['cid']] == ['owner'])
+    recipient = store.upsert_contest_operator(w['cid'], f'next-owner-{uuid4().hex}@zoj.com', '새 총괄', ['problem_author'])
+    submissions, answers = [], []
+    for account in [original, recipient]:
+        submissions.append(store.create_operator_test_submission(w['cid'], w['problem'].problem_id, 'cpp17', 'int main(){}', submitted_by_email=str(account.email), submitted_by_name=account.display_name))
+        answers.append(store.create_answer(w['cid'], w['question'].contest_question_id, '총괄 표시 확인', 'public', str(account.email)))
+    assert [item.submitted_by_title for item in submissions] == ['총괄', '출제자']
+    assert [item.created_by_title for item in answers] == ['총괄', '출제자']
+    result = client.post(f"/api/operator/contests/{w['cid']}/owner:transfer", headers=w['master'], json={'email': str(recipient.email)})
+    assert result.status_code == 200, result.text
+    assert [store.get_submission(item.submission_id).submitted_by_title for item in submissions] == ['마스터', '총괄']
+    for prefix, auth in [('/api/operator', w['master']), ('/api', w['participant_headers'])]:
+        response = client.get(f"{prefix}/contests/{w['cid']}/boards", headers=auth)
+        assert response.status_code == 200
+        question = next(item for item in response.json()['data'] if item['contest_question_id'] == w['question'].contest_question_id)
+        titles = {answer['contest_answer_id']: answer['created_by_title'] for answer in question['answers']}
+        assert [titles[answer.contest_answer_id] for answer in answers] == ['마스터', '총괄']
