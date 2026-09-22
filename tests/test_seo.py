@@ -164,7 +164,7 @@ def test_metadata_and_sitemap_follow_publish_unpublish_and_notice_edits(public_c
 
 
 @pytest.mark.parametrize("path", [
-    "/login", "/admin", "/admin/contests", "/operator", "/operator/contests/any-id/settings",
+    "/login", "/admin", "/admin/contests", "/admin/analytics", "/operator", "/operator/contests/any-id/settings",
     "/operator/contests/any-id/scoreboard/presentation", "/contests/any-id/problems",
     "/contests/any-id/problems/problem-id/editorial", "/contests/any-id/submissions",
     "/contests/any-id/scoreboard", "/contests/any-id/board",
