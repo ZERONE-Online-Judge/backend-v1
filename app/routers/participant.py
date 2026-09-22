@@ -5,7 +5,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, now_utc
 from app.services.access_logging import write_access_log
-from app.services.authz import bearer_token, require_participant
+from app.services.authz import bearer_token, has_contest_permission, require_participant
 from app.services.errors import AppError, authentication_required, invalid_state, not_found
 from app.services.mail_templates import absolute_url, render_branded_email
 from app.services.responses import ok, page
@@ -643,7 +643,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
         operator_accounts = [
             account
             for account in store.contest_operator_accounts(contest_id)
-            if not account.is_service_master
+            if not account.is_service_master and has_contest_permission(account, contest_id, "contest.board.question.view")
         ]
         subject = f"[ZOJ] 새 질문 · {contest.title}"
         question_url = absolute_url(f"/operator/contests/{contest_id}/board?questionId={question.contest_question_id}")

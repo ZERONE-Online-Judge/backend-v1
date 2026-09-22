@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import time
 from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
@@ -18,20 +21,37 @@ class ObjectStorage:
         self._minio_client_config: tuple[str, str, str, bool] | None = None
 
     def storage_key(self, contest_id: str, category: str, filename: str) -> str:
-        safe_filename = filename.replace("/", "_")
-        return f"contests/{contest_id}/{category}/{safe_filename}"
+        safe_filename = filename.replace("/", "_").replace("\\", "_")
+        key = f"contests/{contest_id}/{category}/{safe_filename}"
+        self.validate_key(key)
+        return key
+
+    @staticmethod
+    def validate_key(storage_key: str) -> None:
+        if not storage_key or storage_key.startswith("/") or "\\" in storage_key or "\0" in storage_key or any(part in {"", ".", ".."} for part in storage_key.split("/")):
+            raise ValueError("Invalid storage key")
+
+    @staticmethod
+    def _signature(method: str, storage_key: str, expires: int) -> str:
+        message = f"storage\n{method}\n{storage_key}\n{expires}".encode()
+        return hmac.new(settings.auth_token_secret.encode(), message, hashlib.sha256).hexdigest()
+
+    def valid_signature(self, method: str, storage_key: str, expires: int, signature: str) -> bool:
+        return expires >= int(time.time()) and hmac.compare_digest(self._signature(method, storage_key, expires), signature)
+
+    def _signed_browser_url(self, method: str, storage_key: str) -> str:
+        self.validate_key(storage_key)
+        expires = int(time.time()) + settings.object_storage_presign_ttl_seconds
+        return f"{self._browser_proxy_url(storage_key)}?expires={expires}&signature={self._signature(method, storage_key, expires)}"
 
     def presigned_put_url(self, storage_key: str) -> str:
-        if self.backend == "minio":
-            return self._browser_proxy_url(storage_key)
-        return self._local_file_url(storage_key)
+        return self._signed_browser_url("PUT", storage_key)
 
     def presigned_get_url(self, storage_key: str) -> str:
-        if self.backend == "minio":
-            return self._browser_proxy_url(storage_key)
-        return self._local_file_url(storage_key)
+        return self._signed_browser_url("GET", storage_key)
 
     def internal_presigned_get_url(self, storage_key: str) -> str:
+        self.validate_key(storage_key)
         if self.backend != "minio":
             return self._local_file_url(storage_key)
         raw_url = self._client().presigned_get_object(
@@ -46,6 +66,7 @@ class ObjectStorage:
         return urlunsplit((public_parts.scheme, public_parts.netloc, path, raw_parts.query, ""))
 
     def read_bytes(self, storage_key: str) -> bytes:
+        self.validate_key(storage_key)
         if self.backend == "minio":
             response = self._client().get_object(settings.object_storage_bucket, storage_key)
             try:
@@ -60,6 +81,7 @@ class ObjectStorage:
         return self.read_bytes(storage_key).decode("utf-8")
 
     def size_bytes(self, storage_key: str) -> int | None:
+        self.validate_key(storage_key)
         if self.backend == "minio":
             try:
                 stat = self._client().stat_object(
@@ -76,6 +98,7 @@ class ObjectStorage:
             return None
 
     def write_bytes(self, storage_key: str, content: bytes, content_type: str = "application/octet-stream") -> None:
+        self.validate_key(storage_key)
         if self.backend == "minio":
             self._client().put_object(
                 settings.object_storage_bucket,
@@ -93,6 +116,7 @@ class ObjectStorage:
         self.write_bytes(storage_key, content.encode("utf-8"), content_type)
 
     def delete(self, storage_key: str) -> None:
+        self.validate_key(storage_key)
         if self.backend == "minio":
             self._client().remove_object(settings.object_storage_bucket, storage_key)
             return

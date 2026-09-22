@@ -71,6 +71,8 @@ class StaffAccount(BaseModel):
     is_service_master: bool = False
     permissions: list[str] = Field(default_factory=list)
     contest_scopes: dict[str, list[str]] = Field(default_factory=dict)
+    contest_roles: dict[str, list[str]] = Field(default_factory=dict)
+    protected_master_contests: list[str] = Field(default_factory=list)
 
 
 class TeamMember(BaseModel):

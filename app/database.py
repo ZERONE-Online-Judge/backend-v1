@@ -1,3 +1,5 @@
+import json
+import re
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, inspect, text
@@ -23,6 +25,35 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def backfill_assigned_contest_masters(connection) -> None:
+    """Recover only administrator assignments with an explicit contest in the audit trail.
+
+    Old contest-creation events did not record the new contest id, so they are not
+    guessed here. Legacy wildcard accounts retain master access in all cases.
+    """
+    if "operational_audit_logs" not in inspect(connection).get_table_names():
+        return
+    logs = connection.execute(text("SELECT path, details FROM operational_audit_logs WHERE scope = 'admin' AND method = 'POST' AND status_code >= 200 AND status_code < 300"))
+    assignments: dict[str, set[str]] = {}
+    for path, details in logs:
+        match = re.fullmatch(r"/api/admin/contests/([^/]+)/operators", path)
+        if not match:
+            continue
+        body = json.loads(details or "{}").get("body", {})
+        if isinstance(body, dict) and isinstance(body.get("email"), str):
+            assignments.setdefault(body["email"].strip().lower(), set()).add(match.group(1))
+    for row in connection.execute(text("SELECT staff_account_id, email, contest_scopes, contest_roles, protected_master_contests FROM staff_accounts")).mappings():
+        scopes = json.loads(row["contest_scopes"] or "{}")
+        roles = json.loads(row["contest_roles"] or "{}")
+        protected = set(json.loads(row["protected_master_contests"] or "[]"))
+        recovered = {cid for cid in assignments.get(row["email"].lower(), set()) if "contest.*" in scopes.get(cid, [])}
+        if not recovered - protected:
+            continue
+        for cid in recovered:
+            roles[cid] = ["master"]
+        connection.execute(text("UPDATE staff_accounts SET contest_roles = :roles, protected_master_contests = :protected WHERE staff_account_id = :account_id"), {"roles": json.dumps(roles), "protected": json.dumps(sorted(protected | recovered)), "account_id": row["staff_account_id"]})
+
+
 def create_schema() -> None:
     from app import orm_models  # noqa: F401
 
@@ -41,6 +72,14 @@ def create_schema() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_operational_audit_actor_created ON operational_audit_logs (actor_email, created_at DESC, operational_audit_log_id DESC)"))
     if settings.database_url.startswith("sqlite"):
         inspector = inspect(engine)
+        if "staff_accounts" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("staff_accounts")}
+            with engine.begin() as connection:
+                if "contest_roles" not in columns:
+                    connection.execute(text("ALTER TABLE staff_accounts ADD COLUMN contest_roles TEXT NOT NULL DEFAULT '{}'"))
+                if "protected_master_contests" not in columns:
+                    connection.execute(text("ALTER TABLE staff_accounts ADD COLUMN protected_master_contests TEXT NOT NULL DEFAULT '[]'"))
+                    backfill_assigned_contest_masters(connection)
         if "judge_jobs" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("judge_jobs")}
             if "leased_at" not in columns:

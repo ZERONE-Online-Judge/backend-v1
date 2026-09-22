@@ -13,8 +13,9 @@ from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, SubmissionStatus, TeamMemberRole, now_utc
-from app.services.authz import require_contest_staff, require_staff
-from app.services.errors import AppError, not_found
+from app.services.authz import has_contest_permission, is_contest_master, require_contest_staff, require_staff
+from app.services.contest_roles import ContestOperatorCreateRequest, ContestOperatorUpdateRequest
+from app.services.errors import AppError, not_found, permission_denied
 from app.services.mail_templates import absolute_url, render_branded_email
 from app.services.package_builder import PackageBuildError, package_role
 from app.services.responses import ok, page
@@ -121,15 +122,6 @@ class ContestSettingsUpdateRequest(BaseModel):
     participant_progress_visible: bool | None = None
     mock_judging_progress_visible: bool | None = None
     emergency_notice: str | None = None
-
-
-class ContestOperatorCreateRequest(BaseModel):
-    email: EmailStr
-    display_name: str | None = None
-
-
-class ContestOperatorUpdateRequest(BaseModel):
-    display_name: str
 
 
 class ContestNoticeCreateRequest(BaseModel):
@@ -418,6 +410,52 @@ def _schedule_bundle_warm(background_tasks: BackgroundTasks, contest_id: str, pr
     store.enqueue_bundle_warm(contest_id, problem_id)
 
 
+def _require_storage_namespace(contest_id: str, *keys: str) -> None:
+    for key in keys:
+        try:
+            object_storage.validate_key(key)
+        except ValueError:
+            raise AppError(422, "invalid_storage_key", "Invalid storage key.")
+        if not key.startswith(f"contests/{contest_id}/"):
+            raise permission_denied("Storage objects must belong to this contest.")
+
+
+def _contest_staff_payload(account, contest_id: str) -> dict:
+    payload = account.model_dump(mode="json")
+    payload["contest_scopes"] = {contest_id: account.contest_scopes.get(contest_id, [])}
+    payload["contest_roles"] = {contest_id: account.contest_roles.get(contest_id, [])}
+    payload["protected_master_contests"] = [contest_id] if contest_id in account.protected_master_contests else []
+    return payload
+
+
+def _check_staff_assignment(actor, contest_id: str, email: str, roles: list[str] | None) -> None:
+    target = next((item for item in store.contest_operator_accounts(contest_id) if str(item.email).lower() == email.lower()), None)
+    target_master = target and is_contest_master(target, contest_id)
+    if (target_master or roles == ["master"]) and not is_contest_master(actor, contest_id):
+        raise permission_denied("대회 마스터 권한은 대회 마스터만 변경할 수 있습니다.")
+    if target and contest_id in target.protected_master_contests and roles != ["master"]:
+        raise AppError(409, "assigned_master_immutable", "서비스 관리자가 할당한 대회 마스터는 변경하거나 제거할 수 없습니다.")
+    if target_master and roles != ["master"]:
+        masters = [item for item in store.contest_operator_accounts(contest_id) if is_contest_master(item, contest_id)]
+        if len(masters) <= 1:
+            raise AppError(409, "last_contest_master", "마지막 대회 마스터는 변경하거나 제거할 수 없습니다.")
+
+
+def _check_test_submission_access(account, contest_id: str, submission) -> None:
+    if not submission or submission.contest_id != contest_id or submission.submission_kind != "operator_test":
+        raise not_found()
+    if not has_contest_permission(account, contest_id, "contest.submission.view") and str(submission.submitted_by_email or "").lower() != str(account.email).lower():
+        raise permission_denied()
+
+
+def _test_submission_payload(account, contest_id: str, submission) -> dict:
+    payload = submission.model_dump(mode="json")
+    if not has_contest_permission(account, contest_id, "contest.problem.resource.view") and not has_contest_permission(account, contest_id, "contest.submission.view"):
+        # Judge diagnostics contain private inputs, reference outputs and checker paths.
+        payload["judge_message"] = None
+    return payload
+
+
 @router.get("/operator/contests")
 async def operator_contests(request: Request):
     account = require_staff(request)
@@ -427,7 +465,7 @@ async def operator_contests(request: Request):
 
 @router.get("/operator/contests/{contest_id}/dashboard")
 async def operator_dashboard(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id)
     contest = store.contests.get(contest_id)
     if not contest:
         raise not_found()
@@ -441,16 +479,16 @@ async def operator_dashboard(contest_id: str, request: Request):
         {
             "contest": contest.model_dump(mode="json"),
             "divisions": [division.model_dump(mode="json") for division in store.contest_divisions(contest_id)],
-            "participant_count": len(participant_teams),
-            "submission_count": store.count_submissions(contest_id=contest_id),
-            "pending_jobs": store.count_judge_jobs(contest_id=contest_id, status="pending"),
-            "operators": [account.model_dump(mode="json") for account in store.contest_operator_accounts(contest_id)],
+            "participant_count": len(participant_teams) if has_contest_permission(account, contest_id, "contest.participant.view") else 0,
+            "submission_count": store.count_submissions(contest_id=contest_id) if has_contest_permission(account, contest_id, "contest.submission.view") else 0,
+            "pending_jobs": store.count_judge_jobs(contest_id=contest_id, status="pending") if has_contest_permission(account, contest_id, "contest.submission.view") else 0,
+            "operators": [_contest_staff_payload(item, contest_id) for item in store.contest_operator_accounts(contest_id)] if has_contest_permission(account, contest_id, "contest.staff.manage") else [],
             "participant_count_by_division": {
                 division.division_id: len(
                     [team for team in participant_teams if team.division_id == division.division_id]
                 )
                 for division in store.contest_divisions(contest_id)
-            },
+            } if has_contest_permission(account, contest_id, "contest.participant.view") else {},
         },
     )
 
@@ -463,7 +501,7 @@ async def operator_audit_logs(
     limit: int = 100,
     cursor: str | None = None,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.audit.view")
     if contest_id not in store.contests:
         raise not_found()
     logs, next_cursor, total_count = store.list_operational_audit_logs(
@@ -490,7 +528,7 @@ async def operator_access_logs(
     limit: int = 100,
     cursor: str | None = None,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.access_log.view")
     if contest_id not in store.contests:
         raise not_found()
     logs, next_cursor, total_count = store.list_access_logs(
@@ -511,7 +549,7 @@ async def operator_access_logs(
 
 @router.get("/operator/contests/{contest_id}/access-log-stats")
 async def operator_access_log_stats(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.access_log.view")
     if contest_id not in store.contests:
         raise not_found()
     return ok(request, store.access_log_stats(contest_id=contest_id))
@@ -527,7 +565,7 @@ async def divisions(contest_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/divisions")
 async def create_division(contest_id: str, payload: DivisionCreateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.settings.manage")
     _require_contest_mutation_open(contest_id)
     try:
         division = store.create_contest_division(
@@ -547,7 +585,7 @@ async def create_division(contest_id: str, payload: DivisionCreateRequest, reque
 
 @router.patch("/operator/contests/{contest_id}/divisions/{division_id}")
 async def update_division(contest_id: str, division_id: str, payload: DivisionUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.settings.manage")
     _require_contest_mutation_open(contest_id)
     try:
         division = store.update_contest_division(contest_id, division_id, **payload.model_dump(exclude_unset=True))
@@ -565,6 +603,14 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
     if not contest:
         raise not_found()
     updates = payload.model_dump(exclude_unset=True)
+    for field in updates:
+        permission = (
+            "contest.scoreboard.manage" if field == "scoreboard_freeze_mode"
+            else "contest.notice.manage" if field == "emergency_notice"
+            else "contest.settings.manage"
+        )
+        if not has_contest_permission(account, contest_id, permission):
+            raise permission_denied()
     if _settings_update_changes_operation(contest, updates):
         _require_contest_mutation_open(contest_id)
 
@@ -667,17 +713,18 @@ async def update_contest_settings(contest_id: str, payload: ContestSettingsUpdat
 
 @router.get("/operator/contests/{contest_id}/operators")
 async def contest_operators(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.staff.manage")
     if contest_id not in store.contests:
         raise not_found()
-    return page(request, [account.model_dump(mode="json") for account in store.contest_operator_accounts(contest_id)])
+    return page(request, [_contest_staff_payload(account, contest_id) for account in store.contest_operator_accounts(contest_id)])
 
 
 @router.post("/operator/contests/{contest_id}/operators")
 async def create_contest_operator(contest_id: str, payload: ContestOperatorCreateRequest, request: Request):
-    account = require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.staff.manage")
+    _check_staff_assignment(account, contest_id, str(payload.email), payload.roles)
     try:
-        operator = store.upsert_contest_operator(contest_id, str(payload.email), payload.display_name or str(payload.email))
+        operator = store.upsert_contest_operator(contest_id, str(payload.email), payload.display_name, payload.roles)
     except ValueError as exc:
         message = str(exc)
         if message == SERVICE_MASTER_OPERATOR_ERROR:
@@ -700,21 +747,23 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
                 ]
             ),
         )
-    return ok(request, operator.model_dump(mode="json"))
+    return ok(request, _contest_staff_payload(operator, contest_id))
 
 
 @router.patch("/operator/contests/{contest_id}/operators/{operator_email}")
 async def update_contest_operator(contest_id: str, operator_email: str, payload: ContestOperatorUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id)
-    operator = store.update_contest_operator(contest_id, operator_email, payload.display_name)
+    account = require_contest_staff(request, contest_id, "contest.staff.manage")
+    _check_staff_assignment(account, contest_id, operator_email, payload.roles)
+    operator = store.update_contest_operator(contest_id, operator_email, payload.display_name, payload.roles)
     if not operator:
         raise not_found()
-    return ok(request, operator.model_dump(mode="json"))
+    return ok(request, _contest_staff_payload(operator, contest_id))
 
 
 @router.delete("/operator/contests/{contest_id}/operators/{operator_email}")
 async def delete_contest_operator(contest_id: str, operator_email: str, request: Request):
-    account = require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.staff.manage")
+    _check_staff_assignment(account, contest_id, operator_email, None)
     current_operators = store.contest_operator_accounts(contest_id)
     normalized_email = operator_email.strip().lower()
     if store.is_service_master_email(operator_email):
@@ -728,12 +777,12 @@ async def delete_contest_operator(contest_id: str, operator_email: str, request:
     removed = store.remove_contest_operator(contest_id, operator_email)
     if not removed:
         raise not_found()
-    return ok(request, removed.model_dump(mode="json"))
+    return ok(request, _contest_staff_payload(removed, contest_id))
 
 
 @router.get("/operator/contests/{contest_id}/notices")
 async def operator_notices(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.notice.view")
     if contest_id not in store.contests:
         raise not_found()
     return page(request, [notice.model_dump(mode="json") for notice in store.contest_notices_for_view(contest_id, operator=True)])
@@ -741,7 +790,7 @@ async def operator_notices(contest_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/notices")
 async def create_notice(contest_id: str, payload: ContestNoticeCreateRequest, request: Request):
-    account = require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.notice.manage")
     if payload.visibility not in {"public", "participants"}:
         raise AppError(422, "validation_error", "Unsupported notice visibility.")
     notice = store.create_contest_notice(
@@ -758,7 +807,7 @@ async def create_notice(contest_id: str, payload: ContestNoticeCreateRequest, re
 
 @router.patch("/operator/contests/{contest_id}/notices/{notice_id}")
 async def update_notice(contest_id: str, notice_id: str, payload: ContestNoticeUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.notice.manage")
     updates = payload.model_dump(exclude_unset=True)
     if "visibility" in updates and updates["visibility"] not in {"public", "participants"}:
         raise AppError(422, "validation_error", "Unsupported notice visibility.")
@@ -770,7 +819,7 @@ async def update_notice(contest_id: str, notice_id: str, payload: ContestNoticeU
 
 @router.delete("/operator/contests/{contest_id}/notices/{notice_id}")
 async def delete_notice(contest_id: str, notice_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.notice.manage")
     deleted = store.delete_contest_notice(contest_id, notice_id)
     if not deleted:
         raise not_found()
@@ -779,7 +828,7 @@ async def delete_notice(contest_id: str, notice_id: str, request: Request):
 
 @router.get("/operator/contests/{contest_id}/boards")
 async def operator_board(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.board.question.view")
     if contest_id not in store.contests:
         raise not_found()
     return page(request, [question.model_dump(mode="json") for question in store.questions_for_view(contest_id, operator=True)])
@@ -787,7 +836,7 @@ async def operator_board(contest_id: str, request: Request):
 
 @router.patch("/operator/contests/{contest_id}/boards/{question_id}")
 async def update_question(contest_id: str, question_id: str, payload: ContestQuestionUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.board.question.manage")
     updates = payload.model_dump(exclude_unset=True)
     if "visibility" in updates and updates["visibility"] not in {"public", "private"}:
         raise AppError(422, "validation_error", "Unsupported question visibility.")
@@ -799,7 +848,7 @@ async def update_question(contest_id: str, question_id: str, payload: ContestQue
 
 @router.delete("/operator/contests/{contest_id}/boards/{question_id}")
 async def delete_question(contest_id: str, question_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.board.question.manage")
     deleted = store.delete_question(contest_id, question_id)
     if not deleted:
         raise not_found()
@@ -808,7 +857,7 @@ async def delete_question(contest_id: str, question_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/boards/{question_id}/answers")
 async def create_answer(contest_id: str, question_id: str, payload: ContestAnswerCreateRequest, request: Request):
-    account = require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.board.question.manage")
     if payload.visibility not in {"public", "questioner"}:
         raise AppError(422, "validation_error", "Unsupported answer visibility.")
     answer = store.create_answer(contest_id, question_id, payload.body, payload.visibility, str(account.email))
@@ -857,7 +906,7 @@ async def create_answer(contest_id: str, question_id: str, payload: ContestAnswe
 
 @router.patch("/operator/contests/{contest_id}/boards/{question_id}/answers/{answer_id}")
 async def update_answer(contest_id: str, question_id: str, answer_id: str, payload: ContestAnswerUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.board.question.manage")
     updates = payload.model_dump(exclude_unset=True)
     if "visibility" in updates and updates["visibility"] not in {"public", "questioner"}:
         raise AppError(422, "validation_error", "Unsupported answer visibility.")
@@ -869,7 +918,7 @@ async def update_answer(contest_id: str, question_id: str, answer_id: str, paylo
 
 @router.delete("/operator/contests/{contest_id}/boards/{question_id}/answers/{answer_id}")
 async def delete_answer(contest_id: str, question_id: str, answer_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.board.question.manage")
     deleted = store.delete_answer(contest_id, question_id, answer_id)
     if not deleted:
         raise not_found()
@@ -878,7 +927,7 @@ async def delete_answer(contest_id: str, question_id: str, answer_id: str, reque
 
 @router.get("/operator/contests/{contest_id}/participants")
 async def participants(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.participant.view")
     items = []
     for team in store.participant_teams_for_operator(contest_id):
         division = store.get_division(contest_id, team.division_id)
@@ -888,7 +937,7 @@ async def participants(contest_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/participants")
 async def create_participant(contest_id: str, payload: ParticipantCreateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     if not store.get_division(contest_id, payload.division_id):
         raise not_found("Contest division is not configured.")
     try:
@@ -908,7 +957,7 @@ async def create_participant(contest_id: str, payload: ParticipantCreateRequest,
 
 @router.post("/operator/contests/{contest_id}/participants:bulk-create")
 async def bulk_create_participants(contest_id: str, payload: ParticipantBulkCreateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     created = []
     errors = []
     for index, item in enumerate(payload.teams, start=1):
@@ -937,7 +986,7 @@ async def bulk_create_participants(contest_id: str, payload: ParticipantBulkCrea
 
 @router.patch("/operator/contests/{contest_id}/participants/{participant_team_id}")
 async def update_participant(contest_id: str, participant_team_id: str, payload: ParticipantTeamUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     if payload.status is not None and payload.status not in {"invited", "active", "disabled", "disqualified"}:
         raise AppError(422, "validation_error", "Unsupported participant team status.")
     if payload.team_name is not None or payload.division_id is not None or payload.status is not None:
@@ -960,7 +1009,7 @@ async def update_participant(contest_id: str, participant_team_id: str, payload:
 
 @router.delete("/operator/contests/{contest_id}/participants/{participant_team_id}")
 async def delete_participant(contest_id: str, participant_team_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     deleted, reason = store.delete_participant_team(contest_id, participant_team_id)
     if not deleted:
         if reason == "has_submission":
@@ -973,7 +1022,7 @@ async def delete_participant(contest_id: str, participant_team_id: str, request:
 
 @router.post("/operator/contests/{contest_id}/participants/{participant_team_id}/members")
 async def add_participant_member(contest_id: str, participant_team_id: str, payload: TeamMemberCreateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     try:
         member = store.add_team_member(
             contest_id=contest_id,
@@ -991,7 +1040,7 @@ async def add_participant_member(contest_id: str, participant_team_id: str, payl
 
 @router.patch("/operator/contests/{contest_id}/participants/{participant_team_id}/members/{team_member_id}")
 async def update_participant_member(contest_id: str, participant_team_id: str, team_member_id: str, payload: TeamMemberUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     try:
         member = store.update_team_member(
             contest_id=contest_id,
@@ -1009,11 +1058,20 @@ async def update_participant_member(contest_id: str, participant_team_id: str, t
 
 @router.post("/operator/contests/{contest_id}/participants/{participant_team_id}/members/{team_member_id}/sessions:revoke")
 async def revoke_participant_member_sessions(contest_id: str, participant_team_id: str, team_member_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     member = store.revoke_team_member_sessions(contest_id, participant_team_id, team_member_id)
     if not member:
         raise not_found()
     return ok(request, member.model_dump(mode="json"))
+
+
+@router.get("/operator/contests/{contest_id}/submission-filters")
+async def submission_filters(contest_id: str, request: Request):
+    require_contest_staff(request, contest_id, "contest.submission.view")
+    return ok(request, {
+        "problems": [{key: getattr(problem, key) for key in ("problem_id", "problem_code", "title", "division_id")} for problem in store.problems.values() if problem.contest_id == contest_id],
+        "teams": [{key: getattr(team, key) for key in ("participant_team_id", "team_name", "division_id")} for team in store.participant_teams_for_operator(contest_id)],
+    })
 
 
 @router.get("/operator/contests/{contest_id}/submissions")
@@ -1027,7 +1085,7 @@ async def operator_submissions(
     problem_id: str | None = None,
     participant_team_id: str | None = None,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.submission.view")
     submissions, next_cursor, total_count = store.list_submissions(
         contest_id=contest_id,
         division_id=division_id,
@@ -1070,7 +1128,7 @@ async def operator_submissions(
 
 @router.get("/operator/contests/{contest_id}/submissions/{submission_id}")
 async def operator_submission_detail(contest_id: str, submission_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.submission.view")
     submission = store.get_submission(submission_id)
     if not submission or submission.contest_id != contest_id:
         raise not_found()
@@ -1093,7 +1151,7 @@ async def operator_wait_submission_status(
     wait_seconds: float = 2.0,
     poll_interval_seconds: float = 0.25,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.submission.view")
     submission = store.get_submission(submission_id, include_source=False)
     if not submission or submission.contest_id != contest_id:
         raise not_found()
@@ -1121,7 +1179,7 @@ async def operator_wait_submission_status(
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/test-submissions")
 async def create_operator_test_submission(contest_id: str, problem_id: str, payload: OperatorTestSubmissionRequest, request: Request):
-    account = require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.problem.test")
     if payload.language not in {"c99", "cpp17", "python313", "java8"}:
         raise AppError(422, "validation_error", "Unsupported language.", {"fields": [{"path": "body.language", "code": "invalid_enum"}]})
     if not payload.source_code.strip():
@@ -1142,11 +1200,10 @@ async def create_operator_test_submission(contest_id: str, problem_id: str, payl
 
 @router.get("/operator/contests/{contest_id}/test-submissions/{submission_id}")
 async def operator_test_submission_detail(contest_id: str, submission_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.problem.test", "contest.submission.view")
     submission = store.get_submission(submission_id)
-    if not submission or submission.contest_id != contest_id:
-        raise not_found()
-    return ok(request, submission.model_dump(mode="json"))
+    _check_test_submission_access(account, contest_id, submission)
+    return ok(request, _test_submission_payload(account, contest_id, submission))
 
 
 @router.get("/operator/contests/{contest_id}/test-submissions/{submission_id}/status:wait")
@@ -1157,10 +1214,9 @@ async def operator_wait_test_submission_status(
     wait_seconds: float = 2.0,
     poll_interval_seconds: float = 0.25,
 ):
-    require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.problem.test", "contest.submission.view")
     submission = store.get_submission(submission_id)
-    if not submission or submission.contest_id != contest_id:
-        raise not_found()
+    _check_test_submission_access(account, contest_id, submission)
     wait_budget = max(0.0, min(wait_seconds, 10.0))
     poll = max(0.1, min(poll_interval_seconds, 1.0))
     loops = max(1, int(wait_budget / poll))
@@ -1169,17 +1225,17 @@ async def operator_wait_test_submission_status(
         if not updated:
             raise not_found()
         if updated.status not in {"waiting", "preparing", "judging"}:
-            return ok(request, updated.model_dump(mode="json"))
+            return ok(request, _test_submission_payload(account, contest_id, updated))
         await asyncio.sleep(poll)
     latest = store.get_submission(submission_id)
     if not latest:
         raise not_found()
-    return ok(request, latest.model_dump(mode="json"))
+    return ok(request, _test_submission_payload(account, contest_id, latest))
 
 
 @router.get("/operator/contests/{contest_id}/judge-history")
 async def judge_history(contest_id: str, request: Request, limit: int = 100, cursor: str | None = None):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.submission.view")
     jobs = [job.model_dump(mode="json") for job in store.judge_jobs.values() if job.contest_id == contest_id]
     jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
     sliced, next_cursor = _page_slice(jobs, limit, cursor)
@@ -1195,7 +1251,7 @@ async def judge_history(contest_id: str, request: Request, limit: int = 100, cur
 
 @router.get("/operator/contests/{contest_id}/scoreboard/internal")
 async def internal_scoreboard(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.scoreboard.view")
     board = store.scoreboard_rows(contest_id, public_view=False)
     public_board = store.scoreboard_rows(contest_id, public_view=True)
     if not board:
@@ -1214,7 +1270,7 @@ async def internal_scoreboard(contest_id: str, request: Request):
 
 @router.get("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/internal")
 async def division_internal_scoreboard(contest_id: str, division_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.scoreboard.view")
     division = store.get_division(contest_id, division_id)
     if not division:
         raise not_found()
@@ -1242,7 +1298,7 @@ class ScoreboardReleaseRequest(BaseModel):
 
 @router.get("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/release")
 async def scoreboard_release(contest_id: str, division_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.scoreboard.view")
     result = store.scoreboard_release(contest_id, division_id)
     if result is None:
         raise not_found()
@@ -1251,7 +1307,7 @@ async def scoreboard_release(contest_id: str, division_id: str, request: Request
 
 @router.post("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/release")
 async def update_scoreboard_release(contest_id: str, division_id: str, payload: ScoreboardReleaseRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.scoreboard.manage")
     try:
         result = store.update_scoreboard_release(contest_id, division_id, payload.action, payload.rank)
     except ValueError as error:
@@ -1263,7 +1319,7 @@ async def update_scoreboard_release(contest_id: str, division_id: str, payload: 
 
 @router.get("/operator/contests/{contest_id}/scoreboard/presentation")
 async def presentation_scoreboard(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.scoreboard.view")
     contest = store.contests.get(contest_id)
     if not contest:
         raise not_found()
@@ -1283,7 +1339,7 @@ async def presentation_scoreboard(contest_id: str, request: Request):
             {
                 "division": division.model_dump(mode="json"),
                 "frozen": bool(board["frozen"]),
-                "problems": [problem.model_dump(mode="json") for problem in problems],
+                "problems": [{key: getattr(problem, key) for key in ("problem_id", "contest_id", "division_id", "problem_code", "title", "display_order")} for problem in problems],
                 "rows": board["rows"],
                 "release": board.get("release"),
             }
@@ -1300,9 +1356,11 @@ async def presentation_scoreboard(contest_id: str, request: Request):
 
 @router.get("/operator/contests/{contest_id}/problems")
 async def operator_problems(contest_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.problem.review")
     problems = [p for p in store.problems.values() if p.contest_id == contest_id]
     problems.sort(key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
+    if not has_contest_permission(account, contest_id, "contest.problem.view"):
+        return page(request, [{**problem.model_dump(mode="json"), "editorial": ""} for problem in problems])
     teams = [
         team
         for team in store.teams.values()
@@ -1333,9 +1391,12 @@ async def operator_problems(contest_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/storage/presign-upload")
 async def presign_upload(contest_id: str, payload: PresignUploadRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
-    storage_key = object_storage.storage_key(contest_id, payload.category, payload.filename)
+    try:
+        storage_key = object_storage.storage_key(contest_id, payload.category, payload.filename)
+    except ValueError:
+        raise AppError(422, "invalid_storage_key", "Invalid storage category or filename.")
     return ok(
         request,
         {
@@ -1349,7 +1410,7 @@ async def presign_upload(contest_id: str, payload: PresignUploadRequest, request
 
 @router.post("/operator/contests/{contest_id}/problems")
 async def create_problem(contest_id: str, payload: ProblemCreateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     try:
         problem = store.create_problem(
@@ -1370,7 +1431,7 @@ async def create_problem(contest_id: str, payload: ProblemCreateRequest, request
 
 @router.post("/operator/contests/{contest_id}/problems:copy")
 async def copy_problem(contest_id: str, payload: ProblemCopyRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     try:
         problem = store.copy_problem_to_division(
@@ -1390,7 +1451,7 @@ async def copy_problem(contest_id: str, payload: ProblemCopyRequest, request: Re
 
 @router.patch("/operator/contests/{contest_id}/problems/{problem_id}")
 async def update_problem(contest_id: str, problem_id: str, payload: ProblemUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     try:
         values = payload.model_dump(exclude_unset=True)
@@ -1408,7 +1469,7 @@ async def update_problem(contest_id: str, problem_id: str, payload: ProblemUpdat
 
 @router.delete("/operator/contests/{contest_id}/problems/{problem_id}")
 async def delete_problem(contest_id: str, problem_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     problem = store.delete_problem(contest_id, problem_id)
     if not problem:
@@ -1418,9 +1479,16 @@ async def delete_problem(contest_id: str, problem_id: str, request: Request):
 
 @router.get("/operator/contests/{contest_id}/problems/{problem_id}/assets")
 async def problem_assets(contest_id: str, problem_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    account = require_contest_staff(request, contest_id, "contest.problem.review")
     try:
         assets = store.problem_assets_for_problem(contest_id, problem_id)
+        if not has_contest_permission(account, contest_id, "contest.problem.resource.view"):
+            statement_prefixes = (
+                f"contests/{contest_id}/problems/{problem_id}/assets/",
+                f"contests/{contest_id}/problems/{problem_id}/problem-assets/",
+                f"contests/{contest_id}/problem-assets/",
+            )
+            assets = [asset for asset in assets if asset.mime_type.startswith("image/") and asset.storage_key.startswith(statement_prefixes) and package_role(asset) is None]
     except ValueError:
         raise not_found()
     return page(
@@ -1431,8 +1499,9 @@ async def problem_assets(contest_id: str, problem_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/assets")
 async def create_problem_asset(contest_id: str, problem_id: str, payload: ProblemAssetCreateRequest, request: Request, background_tasks: BackgroundTasks):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
+    _require_storage_namespace(contest_id, payload.storage_key)
     candidate_asset = ProblemAsset(
         contest_id=contest_id,
         problem_id=problem_id,
@@ -1468,7 +1537,7 @@ async def create_problem_asset(contest_id: str, problem_id: str, payload: Proble
 
 @router.delete("/operator/contests/{contest_id}/problems/{problem_id}/assets/{asset_id}")
 async def delete_problem_asset(contest_id: str, problem_id: str, asset_id: str, request: Request, background_tasks: BackgroundTasks):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     item = store.delete_problem_asset(contest_id, problem_id, asset_id)
     if not item:
@@ -1479,7 +1548,7 @@ async def delete_problem_asset(contest_id: str, problem_id: str, asset_id: str, 
 
 @router.get("/operator/contests/{contest_id}/problems/{problem_id}/testcase-sets")
 async def testcase_sets(contest_id: str, problem_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     try:
         items = store.testcase_sets_for_problem(
             contest_id,
@@ -1493,7 +1562,7 @@ async def testcase_sets(contest_id: str, problem_id: str, request: Request):
 
 @router.get("/operator/contests/{contest_id}/problems/{problem_id}/package-status")
 async def package_status(contest_id: str, problem_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     try:
         return ok(request, _problem_package_status(contest_id, problem_id))
     except ValueError:
@@ -1502,7 +1571,7 @@ async def package_status(contest_id: str, problem_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/judge-bundle:warm")
 async def warm_judge_bundle(contest_id: str, problem_id: str, request: Request):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     problem = store.problems.get(problem_id)
     if not problem or problem.contest_id != contest_id:
         raise not_found()
@@ -1515,7 +1584,7 @@ async def warm_judge_bundle(contest_id: str, problem_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/testcase-sets")
 async def create_testcase_set(contest_id: str, problem_id: str, payload: TestcaseSetCreateRequest, request: Request, background_tasks: BackgroundTasks):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     try:
         item = store.create_testcase_set(contest_id, problem_id, payload.is_active)
@@ -1534,7 +1603,7 @@ async def update_testcase_set(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     item = store.update_testcase_set(contest_id, problem_id, testcase_set_id, **payload.model_dump(exclude_unset=True))
     if not item:
@@ -1552,8 +1621,9 @@ async def create_testcase(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
+    _require_storage_namespace(contest_id, payload.input_storage_key, payload.output_storage_key)
     try:
         item = store.add_testcase(
             contest_id=contest_id,
@@ -1581,7 +1651,7 @@ async def delete_testcase_set(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     item = store.delete_testcase_set(contest_id, problem_id, testcase_set_id)
     if not item:
@@ -1599,7 +1669,7 @@ async def delete_testcase(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     item = store.delete_testcase(contest_id, problem_id, testcase_set_id, testcase_id)
     if not item:
@@ -1616,7 +1686,7 @@ async def create_verified_testcase_set_from_zip(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
     archive = await file.read()
     if len(archive) > 128 * 1024 * 1024:
@@ -1657,8 +1727,10 @@ async def create_verified_testcase_set(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    require_contest_staff(request, contest_id)
+    require_contest_staff(request, contest_id, "contest.problem.manage")
     _require_contest_mutation_open(contest_id)
+    for case in payload.cases:
+        _require_storage_namespace(contest_id, case.input_storage_key, case.output_storage_key)
     try:
         result = build_verified_testcase_set(
             contest_id,

@@ -146,7 +146,7 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
     )
     if payload.operator_email:
         try:
-            store.upsert_contest_operator(contest.contest_id, str(payload.operator_email), str(payload.operator_email))
+            store.upsert_contest_operator(contest.contest_id, str(payload.operator_email), str(payload.operator_email), protected_master=True)
         except ValueError as exc:
             message = str(exc)
             if message == SERVICE_MASTER_OPERATOR_ERROR:
@@ -200,7 +200,7 @@ async def create_contest_division(contest_id: str, payload: ContestDivisionCreat
 async def create_contest_operator(contest_id: str, payload: ContestOperatorCreateRequest, request: Request):
     require_service_master(request)
     try:
-        operator = store.upsert_contest_operator(contest_id, str(payload.email), payload.display_name or str(payload.email))
+        operator = store.upsert_contest_operator(contest_id, str(payload.email), payload.display_name or str(payload.email), protected_master=True)
     except ValueError as exc:
         message = str(exc)
         if message == SERVICE_MASTER_OPERATOR_ERROR:

@@ -75,6 +75,7 @@ from app.orm_models import (
     TestcaseRow,
     TestcaseSetRow,
 )
+from app.services.contest_roles import permissions_for_roles, roles_for_scopes
 from app.services.security import decode_session_token, hash_password, new_session_token, token_hash, verify_password
 from app.services.storage import object_storage
 from app.services.mail_templates import (
@@ -541,6 +542,11 @@ def _staff(row: StaffAccountRow) -> StaffAccount:
         is_service_master=row.is_service_master,
         permissions=[item for item in row.permissions.split(",") if item],
         contest_scopes=json.loads(row.contest_scopes or "{}"),
+        contest_roles={
+            contest_id: json.loads(row.contest_roles or "{}").get(contest_id, roles_for_scopes(scopes))
+            for contest_id, scopes in json.loads(row.contest_scopes or "{}").items()
+        },
+        protected_master_contests=json.loads(row.protected_master_contests or "[]"),
     )
 
 
@@ -1564,7 +1570,7 @@ class DbStore:
             if email not in normalized:
                 continue
             scopes = json.loads(row.contest_scopes or "{}")
-            if row.is_service_master or "contest.*" in scopes.get(contest_id, []):
+            if row.is_service_master or scopes.get(contest_id):
                 conflicts.append(email)
         return sorted(set(conflicts))
 
@@ -2278,10 +2284,18 @@ class DbStore:
             db.refresh(row)
             return _division(row)
 
-    def upsert_contest_operator(self, contest_id: str, email: str, display_name: str) -> StaffAccount:
+    def upsert_contest_operator(
+        self, contest_id: str, email: str, display_name: str,
+        roles: list[str] | None = None, *, protected_master: bool = False,
+    ) -> StaffAccount:
+        # Default is retained for internal/bootstrap callers; HTTP operator requests
+        # always require an explicit validated role selection.
+        roles = ["master"] if protected_master or roles is None else roles
+        permissions = permissions_for_roles(roles)
+        if not display_name.strip():
+            raise ValueError("display name is required")
         with self._session() as db:
-            contest = db.get(ContestRow, contest_id)
-            if not contest:
+            if not db.get(ContestRow, contest_id):
                 raise ValueError("contest not found")
             normalized_email = email.strip().lower()
             participant_conflicts = self._contest_participant_email_conflicts(db, contest_id, [normalized_email])
@@ -2291,36 +2305,30 @@ class DbStore:
             if account and account.is_service_master:
                 raise ValueError(SERVICE_MASTER_OPERATOR_ERROR)
             if not account:
-                account = StaffAccountRow(
-                    email=normalized_email,
-                    display_name=display_name,
-                    is_service_master=False,
-                    permissions="",
-                    contest_scopes=json.dumps({contest_id: ["contest.*"]}),
-                )
+                account = StaffAccountRow(email=normalized_email, display_name=display_name.strip(), is_service_master=False, permissions="", contest_scopes="{}", contest_roles="{}", protected_master_contests="[]")
                 db.add(account)
-            else:
-                scopes = json.loads(account.contest_scopes or "{}")
-                scopes[contest_id] = sorted(set(scopes.get(contest_id, []) + ["contest.*"]))
-                account.display_name = display_name or account.display_name
-                account.contest_scopes = json.dumps(scopes)
+            scopes = json.loads(account.contest_scopes or "{}")
+            selections = json.loads(account.contest_roles or "{}")
+            protected = json.loads(account.protected_master_contests or "[]")
+            if contest_id in protected and roles != ["master"]:
+                raise ValueError("assigned contest master is protected")
+            scopes[contest_id] = permissions
+            selections[contest_id] = roles
+            if protected_master and contest_id not in protected:
+                protected.append(contest_id)
+            account.display_name = display_name.strip()
+            account.contest_scopes = json.dumps(scopes)
+            account.contest_roles = json.dumps(selections)
+            account.protected_master_contests = json.dumps(protected)
             db.commit()
             db.refresh(account)
             return _staff(account)
 
-    def update_contest_operator(self, contest_id: str, email: str, display_name: str) -> StaffAccount | None:
-        with self._session() as db:
-            normalized_email = email.strip().lower()
-            account = db.scalar(select(StaffAccountRow).where(func.lower(StaffAccountRow.email) == normalized_email))
-            if not account or account.is_service_master:
-                return None
-            scopes = json.loads(account.contest_scopes or "{}")
-            if "contest.*" not in scopes.get(contest_id, []):
-                return None
-            account.display_name = display_name or account.display_name
-            db.commit()
-            db.refresh(account)
-            return _staff(account)
+    def update_contest_operator(self, contest_id: str, email: str, display_name: str, roles: list[str]) -> StaffAccount | None:
+        normalized_email = email.strip().lower()
+        if not any(str(account.email).lower() == normalized_email for account in self.contest_operator_accounts(contest_id)):
+            return None
+        return self.upsert_contest_operator(contest_id, email, display_name, roles)
 
     def remove_contest_operator(self, contest_id: str, email: str) -> StaffAccount | None:
         with self._session() as db:
@@ -2329,27 +2337,23 @@ class DbStore:
             if not account or account.is_service_master:
                 return None
             scopes = json.loads(account.contest_scopes or "{}")
-            if "contest.*" not in scopes.get(contest_id, []):
+            if not scopes.get(contest_id):
                 return None
+            if contest_id in json.loads(account.protected_master_contests or "[]"):
+                raise ValueError("assigned contest master is protected")
             scopes.pop(contest_id, None)
+            selections = json.loads(account.contest_roles or "{}")
+            selections.pop(contest_id, None)
             account.contest_scopes = json.dumps(scopes)
+            account.contest_roles = json.dumps(selections)
             db.commit()
             db.refresh(account)
             return _staff(account)
 
     def contest_operator_accounts(self, contest_id: str) -> list[StaffAccount]:
         with self._session() as db:
-            rows = db.scalars(
-                select(StaffAccountRow)
-                .where(StaffAccountRow.is_service_master.is_(False))
-                .order_by(StaffAccountRow.email)
-            ).all()
-            accounts = []
-            for row in rows:
-                scopes = json.loads(row.contest_scopes or "{}")
-                if "contest.*" in scopes.get(contest_id, []):
-                    accounts.append(_staff(row))
-            return accounts
+            rows = db.scalars(select(StaffAccountRow).where(StaffAccountRow.is_service_master.is_(False)).order_by(StaffAccountRow.email)).all()
+            return [_staff(row) for row in rows if json.loads(row.contest_scopes or "{}").get(contest_id)]
 
     def is_service_master_email(self, email: str) -> bool:
         normalized_email = email.strip().lower()
@@ -2362,7 +2366,7 @@ class DbStore:
     def accessible_contests_for_staff(self, account: StaffAccount) -> list[Contest]:
         if account.is_service_master:
             return sorted(self.contests.values(), key=lambda item: item.start_at)
-        contest_ids = set(account.contest_scopes.keys())
+        contest_ids = {contest_id for contest_id, scopes in account.contest_scopes.items() if scopes}
         contests = [contest for contest_id, contest in self.contests.items() if contest_id in contest_ids]
         return sorted(contests, key=lambda item: item.start_at)
 

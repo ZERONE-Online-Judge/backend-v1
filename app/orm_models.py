@@ -268,6 +268,8 @@ class StaffAccountRow(Base):
     is_service_master: Mapped[bool] = mapped_column(Boolean, default=False)
     permissions: Mapped[str] = mapped_column(Text, default="")
     contest_scopes: Mapped[str] = mapped_column(Text, default="{}")
+    contest_roles: Mapped[str] = mapped_column(Text, default="{}")
+    protected_master_contests: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class StaffSessionRow(Base):

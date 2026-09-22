@@ -30,12 +30,20 @@ def require_service_master(request: Request) -> StaffAccount:
     return account
 
 
-def require_contest_staff(request: Request, contest_id: str) -> StaffAccount:
-    account = require_staff(request)
-    if account.is_service_master:
-        return account
+def has_contest_permission(account: StaffAccount, contest_id: str, permission: str) -> bool:
     scopes = account.contest_scopes.get(contest_id, [])
-    if "contest.*" in scopes:
+    return account.is_service_master or "contest.*" in scopes or permission in scopes
+
+
+def is_contest_master(account: StaffAccount, contest_id: str) -> bool:
+    return account.is_service_master or "contest.*" in account.contest_scopes.get(contest_id, [])
+
+
+def require_contest_staff(request: Request, contest_id: str, *permissions: str) -> StaffAccount:
+    account = require_staff(request)
+    if is_contest_master(account, contest_id):
+        return account
+    if any(has_contest_permission(account, contest_id, permission) for permission in (permissions or ("contest.view",))):
         return account
     raise scope_denied()
 

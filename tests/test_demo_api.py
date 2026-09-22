@@ -664,7 +664,7 @@ def test_service_master_has_implicit_contest_access_and_is_not_contest_operator(
     admin_assign = client.post(
         f"/api/admin/contests/{contest_id}/operators",
         headers=auth_headers(master["access_token"]),
-        json={"email": master_email, "display_name": "Should Not Be Listed"},
+        json={"email": master_email, "display_name": "Should Not Be Listed", "roles": ["master"]},
     )
     assert admin_assign.status_code == 409
     assert admin_assign.json()["error"]["code"] == "service_master_operator_immutable"
@@ -672,7 +672,7 @@ def test_service_master_has_implicit_contest_access_and_is_not_contest_operator(
     operator_assign = client.post(
         f"/api/operator/contests/{contest_id}/operators",
         headers=auth_headers(operator["access_token"]),
-        json={"email": master_email, "display_name": "Should Not Be Listed"},
+        json={"email": master_email, "display_name": "Should Not Be Listed", "roles": ["master"]},
     )
     assert operator_assign.status_code == 409
     assert operator_assign.json()["error"]["code"] == "service_master_operator_immutable"
@@ -937,14 +937,14 @@ def test_operator_can_update_and_remove_contest_operator():
     created = client.post(
         f"/api/operator/contests/{contest_id}/operators",
         headers=auth_headers(operator["access_token"]),
-        json={"email": email, "display_name": "Temp Operator"},
+        json={"email": email, "display_name": "Temp Operator", "roles": ["settings_manager"]},
     )
     assert created.status_code == 200
 
     updated = client.patch(
         f"/api/operator/contests/{contest_id}/operators/{email}",
         headers=auth_headers(operator["access_token"]),
-        json={"display_name": "Edited Operator"},
+        json={"display_name": "Edited Operator", "roles": ["settings_manager"]},
     )
     assert updated.status_code == 200
     assert updated.json()["data"]["display_name"] == "Edited Operator"
@@ -1063,8 +1063,8 @@ def test_operator_problem_asset_and_testcase_metadata_flow():
         headers=auth_headers(operator["access_token"]),
         json={
             "display_order": 1,
-            "input_storage_key": "testcases/input/1.txt",
-            "output_storage_key": "testcases/output/1.txt",
+            "input_storage_key": f"contests/{contest_id}/testcases/input/1.txt",
+            "output_storage_key": f"contests/{contest_id}/testcases/output/1.txt",
             "input_sha256": "b" * 64,
             "output_sha256": "c" * 64,
         },
@@ -1147,24 +1147,25 @@ def test_operator_presign_upload_returns_storage_key_and_url():
     data = response.json()["data"]
     assert data["method"] == "PUT"
     assert data["storage_key"].endswith("/testcases/input/sample.txt")
-    assert data["upload_url"].startswith("file://")
+    assert data["upload_url"].startswith("/api/storage/objects/")
+    assert "signature=" in data["upload_url"]
 
 
 def test_minio_browser_urls_use_api_proxy():
     original_backend = object_storage.backend
     object_storage.backend = "minio"
     try:
-        assert object_storage.presigned_get_url("contests/demo/problem-assets/a.png") == "/api/storage/objects/contests/demo/problem-assets/a.png"
-        assert object_storage.presigned_put_url("contests/demo/testcases/input.txt") == "/api/storage/objects/contests/demo/testcases/input.txt"
+        assert object_storage.presigned_get_url("contests/demo/problem-assets/a.png").startswith("/api/storage/objects/contests/demo/problem-assets/a.png?expires=")
+        assert object_storage.presigned_put_url("contests/demo/testcases/input.txt").startswith("/api/storage/objects/contests/demo/testcases/input.txt?expires=")
     finally:
         object_storage.backend = original_backend
 
 
 def test_storage_proxy_put_and_get_local_object():
     key = f"tests/proxy/{uuid4().hex}.txt"
-    put = client.put(f"/api/storage/objects/{key}", content=b"hello", headers={"content-type": "text/plain"})
+    put = client.put(object_storage.presigned_put_url(key), content=b"hello", headers={"content-type": "text/plain"})
     assert put.status_code == 200
-    get = client.get(f"/api/storage/objects/{key}")
+    get = client.get(object_storage.presigned_get_url(key))
     assert get.status_code == 200
     assert get.text == "hello"
 
@@ -3663,8 +3664,8 @@ def test_judge_claim_includes_active_testcases():
         headers=auth_headers(operator["access_token"]),
         json={
             "display_order": 1,
-            "input_storage_key": "local/input.txt",
-            "output_storage_key": "local/output.txt",
+            "input_storage_key": f"contests/{contest_id}/local/input.txt",
+            "output_storage_key": f"contests/{contest_id}/local/output.txt",
             "input_sha256": "d" * 64,
             "output_sha256": "e" * 64,
         },
@@ -3690,7 +3691,7 @@ def test_judge_claim_includes_active_testcases():
     assert claim.status_code == 200
     job = next(item for item in claim.json()["data"]["jobs"] if item["submission"]["submission_id"] == submission_id)
     assert job["testcase_set"]["testcase_set_id"] == testcase_set["testcase_set_id"]
-    assert job["testcases"][0]["input_storage_key"] == "local/input.txt"
+    assert job["testcases"][0]["input_storage_key"] == f"contests/{contest_id}/local/input.txt"
     assert job["testcases"][0]["input_url"].startswith("file://")
     assert job["problem"]["problem_id"] == problem["problem_id"]
     assert job["problem"]["time_limit_ms"] == 1000
