@@ -6,8 +6,8 @@ ENV_DIR = BACKEND_ROOT / "deploy" / "env"
 
 FILES = {
     "backend.env.example": """APP_ENV=production
-PUBLIC_BASE_URL=https://judge.example.com
-CORS_ALLOW_ORIGINS=https://judge.example.com
+PUBLIC_BASE_URL=https://zoj.kr
+CORS_ALLOW_ORIGINS=https://zoj.kr,https://test.judge.zerone01.kr
 CORS_ALLOW_ORIGIN_REGEX=
 DATABASE_URL=postgresql+psycopg://zerone:password@postgres:5432/zerone
 REDIS_URL=redis://redis:6379/0

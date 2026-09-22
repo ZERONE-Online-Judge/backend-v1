@@ -38,7 +38,7 @@ Nginx is the only public entrypoint for the backend stack.
 
 Optional test frontend domain:
 
-- `judge.zerone01.kr` is served from `${FRONTEND_DIST_PATH:-../../demo_frontend/dist}`.
+- `zoj.kr` is served from `${FRONTEND_DIST_PATH:-../../demo_frontend/dist}`.
 - `test.judge.zerone01.kr` is served from `${TEST_FRONTEND_DIST_PATH:-../../demo_frontend/dist}`.
 - Both domains proxy `/api`, `/minio`, and `/minio-console` to the same backend stack.
 
@@ -54,7 +54,7 @@ If a host-level Nginx terminates TLS in front of this compose stack, proxy both 
 ```nginx
 server {
   listen 443 ssl http2;
-  server_name judge.zerone01.kr test.judge.zerone01.kr;
+  server_name zoj.kr www.zoj.kr judge.zerone01.kr test.judge.zerone01.kr;
 
   location / {
     proxy_pass http://127.0.0.1:6001;
@@ -170,3 +170,42 @@ FEATURE_SUBMISSION_RUNTIME_METRICS=true
 FEATURE_PUBLIC_SCOREBOARD_PENALTY=true
 FEATURE_EMERGENCY_NOTICE_AUTO=true
 ```
+
+## Canonical public domain
+
+The production site is `https://zoj.kr`. The compose Nginx redirects all
+`www.zoj.kr` and `judge.zerone01.kr` requests to this origin with HTTP 308,
+preserving the path, query string and HTTP method. This includes the API;
+there is no legacy judge API exception. All agents must use the new origin
+or a private API endpoint before deploying the redirect. Python urllib does
+not replay POST requests across 308 redirects.
+
+`test.judge.zerone01.kr` remains a separate test frontend. Localhost/IP requests
+remain available for deployment health checks. The outer TLS proxy must
+preserve `Host` and maintain DNS and valid certificates for all production
+hostnames, including the redirect aliases.
+
+Runtime settings in `deploy/env/backend.env`:
+
+```env
+PUBLIC_BASE_URL=https://zoj.kr
+CORS_ALLOW_ORIGINS=https://zoj.kr
+```
+
+Preserve additional test/local origins if the installation uses them. Recreate
+API and background workers through the blue-green deploy to apply env changes.
+The public URL controls email links and signed storage URLs. Relative frontend
+`/api` requests need no change. Canonical/Open Graph metadata, robots.txt,
+sitemap.xml and the development API proxy must also use zoj.kr.
+
+Each judge machine must have runtime `INTERNAL_API_BASE_URL=https://zoj.kr/api`
+(private API endpoints can remain). Recreate agents when they have no active
+jobs and verify their heartbeats before enabling the redirects. The judge-agent
+repository provides `deploy/update-api-domain.sh` for the existing node fleet.
+Changing installer defaults alone does not update existing agents.
+
+Validate HTTPS, signed downloads/uploads, CORS, judge heartbeats, and redirect
+paths/queries after deploying. Existing browser login state and local code
+drafts are origin-specific and do not automatically move to zoj.kr. Accounts
+and submissions on the server remain unchanged. Keep token signing keys and
+database/storage credentials unchanged during this migration.

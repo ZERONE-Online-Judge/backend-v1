@@ -13,7 +13,7 @@ Repository Settings → Secrets and variables → Actions에 아래 값을 등�
 | `BACKEND_DEPLOY_USER` | `ubuntu` | 서버 SSH 사용자 |
 | `BACKEND_DEPLOY_SSH_KEY` | `-----BEGIN OPENSSH PRIVATE KEY-----...` | 서버 접속용 private key |
 | `BACKEND_DEPLOY_DIR` | `/srv/zerone_online_judge/backend_v1/deploy` | 서버의 `deploy-main-bluegreen.sh`가 있는 디렉터리 |
-| `PUBLIC_HEALTH_URL` | `https://test.judge.zerone01.kr/api/health` | 배포 후 공개 헬스체크 URL |
+| `PUBLIC_HEALTH_URL` | `https://zoj.kr/api/health` | 배포 후 공개 헬스체크 URL |
 
 ## 서버 사전 준비
 
