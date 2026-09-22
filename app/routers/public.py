@@ -166,14 +166,12 @@ async def judge_status(request: Request):
     nodes = list(store.judge_nodes.values())
     active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
     active_nodes = [node for node in nodes if node.last_heartbeat_at >= active_since]
-    running_jobs = sum(node.running_job_count for node in active_nodes)
+    # Submission activity is private: even aggregate workload can reveal
+    # competitors' submissions during a contest.
     return ok(
         request,
         {
             "active_node_count": len(active_nodes),
-            "total_running_jobs": running_jobs,
-            "total_queue_depth": len([job for job in store.judge_jobs.values() if job.status == "pending"]),
-            "allocation_policy": "internal claim FIFO",
         },
     )
 
