@@ -193,6 +193,7 @@ class Submission(BaseModel):
     team_member_id: str | None = None
     submission_kind: str = "participant"
     submitted_by_name: str | None = None
+    submitted_by_title: str | None = None
     submitted_by_email: str | None = None
     language: str
     source_code: str
@@ -251,6 +252,7 @@ class ContestQuestionAnswer(BaseModel):
     visibility: str = "public"
     created_by_email: EmailStr | None = None
     created_by_name: str | None = None
+    created_by_title: str | None = None
     created_by_role: str | None = None
     created_by_team_name: str | None = None
     created_by_division_name: str | None = None

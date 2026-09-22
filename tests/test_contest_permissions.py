@@ -62,8 +62,10 @@ def test_read_permission_matrix(context, role):
     }
     for path, permission in routes.items():
         response = client.get(c["prefix"] + path, headers=c["tokens"][role])
-        allowed = role == "master" or permission is None or permission in permissions
+        allowed = role == "master" or (permission is None and role != "participant_preview") or permission in permissions
         assert response.status_code == (200 if allowed else 403), (role, path, response.text)
+    if role == "participant_preview":
+        return
     dashboard = client.get(c["prefix"] + "/dashboard", headers=c["tokens"][role]).json()["data"]
     if role not in {"master", "staff_manager"}:
         assert dashboard["operators"] == []
@@ -324,7 +326,7 @@ def test_notice_management_is_independent_from_board_management(context):
 
 def test_all_nonmaster_roles_can_be_selected_together(context):
     c = context
-    roles = [role for role in ROLE_PERMISSIONS if role != "master"]
+    roles = [role for role in ROLE_PERMISSIONS if role not in {"master", "participant_preview"}]
     assert len(roles) == 11
     email = f"all-roles-{uuid4().hex}@zoj.com"
     response = client.post(c["prefix"] + "/operators", headers=c["tokens"]["master"], json={"email": email, "display_name": "All selected", "roles": roles})

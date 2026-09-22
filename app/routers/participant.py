@@ -6,9 +6,13 @@ from pydantic import BaseModel, EmailStr, Field
 from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, now_utc
 from app.services.access_logging import write_access_log
 from app.services.authz import bearer_token, has_contest_permission, require_participant
-from app.services.errors import AppError, authentication_required, invalid_state, not_found
+from app.services.errors import AppError, authentication_required, invalid_state, not_found, permission_denied
 from app.services.mail_templates import absolute_url, render_branded_email
 from app.services.responses import ok, page
+from app.services.participant_preview import (
+    create_preview_answer, create_preview_question, create_preview_submission,
+    list_preview_submissions, owns_submission, preview_questions, preview_solve_statuses,
+)
 from app.services.store import OPERATOR_TEST_TEAM_PREFIX, SessionConflictError, store
 from app.services.storage import object_storage
 from app.settings import settings
@@ -36,6 +40,8 @@ def _sort_problems(items: list):
 def _problem_solve_statuses(contest_id: str, participant: dict | None) -> dict[str, str]:
     if not participant:
         return {}
+    if participant.get("is_preview"):
+        return preview_solve_statuses(participant)
     team_id = participant["team"].participant_team_id
     statuses: dict[str, str] = {}
     pending = {SubmissionStatus.WAITING, SubmissionStatus.PREPARING, SubmissionStatus.JUDGING}
@@ -132,6 +138,8 @@ def _allow_after_end_resource(contest, access: ContestResourceAccess, participan
 
 
 def _allow_editorial_view(contest, participant: dict | None) -> bool:
+    if participant and participant.get("is_preview"):
+        return False
     if not _is_ended(contest):
         return False
     if contest.problem_access_after_end == ContestResourceAccess.PRIVATE:
@@ -162,10 +170,14 @@ def _allow_visible_resource(access: ContestResourceAccess, participant: dict | N
 
 
 def _allow_problem_view(request: Request, contest_id: str, division_id: str | None = None) -> tuple[dict | None, object]:
-    contest = store.get_public_contest(contest_id)
+    participant = _optional_participant(request, contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
-    participant = _optional_participant(request, contest_id)
+    if participant and participant.get("is_preview"):
+        if division_id and participant["division"].division_id != division_id:
+            raise not_found("Division is not available for this participant.")
+        return participant, contest
     if _is_ended(contest):
         if _allow_after_end_resource(contest, contest.problem_access_after_end, participant):
             return participant, contest
@@ -178,10 +190,14 @@ def _allow_problem_view(request: Request, contest_id: str, division_id: str | No
 
 
 def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str | None = None) -> tuple[dict | None, object]:
-    contest = store.get_public_contest(contest_id)
+    participant = _optional_participant(request, contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
-    participant = _optional_participant(request, contest_id)
+    if participant and participant.get("is_preview"):
+        if division_id and participant["division"].division_id != division_id:
+            raise not_found("Division is not available for this participant.")
+        return participant, contest
     if _is_ended(contest):
         if _allow_after_end_resource(contest, contest.scoreboard_access_after_end, participant):
             return participant, contest
@@ -194,10 +210,12 @@ def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str |
 
 
 def _allow_submission_list_view(request: Request, contest_id: str) -> tuple[dict | None, object]:
-    contest = store.get_public_contest(contest_id)
+    participant = _optional_participant(request, contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
-    participant = _optional_participant(request, contest_id)
+    if participant and participant.get("is_preview"):
+        return participant, contest
     if _is_ended(contest):
         if _allow_after_end_resource(contest, contest.submission_access_after_end, participant):
             return participant, contest
@@ -380,6 +398,8 @@ async def participant_me(contest_id: str, request: Request):
     session = store.get_participant_by_access_token(contest_id, token) if token else None
     if not session:
         raise AppError(401, "authentication_required", "Participant access token is required.")
+    if session.get("is_preview"):
+        return ok(request, {"team": session["team"].model_dump(mode="json"), "member": session["member"].model_dump(mode="json"), "division": session["division"].model_dump(mode="json"), "is_preview": True})
     write_access_log(
         request,
         event_type="participant_session_check",
@@ -420,6 +440,7 @@ async def workspace(contest_id: str, request: Request, team_member_email: str | 
             "divisions": [item.model_dump(mode="json") for item in divisions],
             "problems": [_problem_payload(p, solve_statuses) for p in problems],
             "emergency_notice": contest.emergency_notice,
+            "is_preview": bool(participant and participant.get("is_preview")),
         },
     )
 
@@ -439,6 +460,7 @@ async def division_workspace(contest_id: str, division_id: str, request: Request
             "division": division.model_dump(mode="json"),
             "problems": [_problem_payload(p, solve_statuses) for p in problems],
             "emergency_notice": contest.emergency_notice,
+            "is_preview": bool(participant and participant.get("is_preview")),
         },
     )
 
@@ -495,6 +517,7 @@ async def problem_assets(contest_id: str, problem_id: str, request: Request):
             asset
             for asset in store.problem_assets_for_problem(contest_id, problem_id)
             if "/package-files/" not in asset.storage_key
+            and "/support/" not in asset.storage_key
             and (
                 include_editorial_assets
                 or "/editorial-assets/" not in asset.storage_key
@@ -514,12 +537,16 @@ async def create_submission(contest_id: str, problem_id: str, payload: Submissio
     contest = store.contests.get(contest_id)
     if not contest:
         raise not_found()
-    if contest.status != ContestStatus.RUNNING or now_utc() >= contest.end_at:
+    if not participant.get("is_preview") and (contest.status != ContestStatus.RUNNING or now_utc() >= contest.end_at):
         raise invalid_state("Contest is not accepting submissions.")
     if payload.language not in {"c99", "cpp17", "python313", "java8"}:
         raise AppError(422, "validation_error", "Unsupported language.", {"fields": [{"path": "body.language", "code": "invalid_enum"}]})
     try:
-        submission = store.create_submission(contest_id, problem_id, str(participant["member"].email), payload.language, payload.source_code)
+        submission = (
+            create_preview_submission(contest_id, problem_id, participant, payload.language, payload.source_code)
+            if participant.get("is_preview") else
+            store.create_submission(contest_id, problem_id, str(participant["member"].email), payload.language, payload.source_code)
+        )
     except ValueError as error:
         if "division mismatch" in str(error):
             raise not_found("Problem is not available for this participant division.")
@@ -533,6 +560,8 @@ async def create_mock_submission(contest_id: str, problem_id: str, payload: Subm
     if not problem or problem.contest_id != contest_id:
         raise not_found()
     participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
+    if participant and participant.get("is_preview"):
+        raise permission_denied("미리보기에서는 참가자 제출 기능을 사용해 주세요.")
     if not _is_ended(contest) or not contest.mock_judging_enabled:
         raise not_found()
     if contest.problem_access_after_end == ContestResourceAccess.PRIVATE:
@@ -566,6 +595,8 @@ async def wait_mock_submission_status(
     if not problem:
         raise not_found()
     participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
+    if participant and participant.get("is_preview"):
+        raise permission_denied("미리보기에서는 참가자 제출 기능을 사용해 주세요.")
     if not _is_ended(contest) or not contest.mock_judging_enabled:
         raise not_found()
     if contest.problem_access_after_end == ContestResourceAccess.PARTICIPANTS and not participant:
@@ -593,10 +624,10 @@ async def wait_mock_submission_status(
 
 @router.get("/contests/{contest_id}/notices")
 async def contest_notices(contest_id: str, request: Request):
-    contest = store.get_public_contest(contest_id)
+    participant = _optional_participant(request, contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
-    participant = _optional_participant(request, contest_id)
     ended = _is_ended(contest)
     if ended and not _allow_visible_resource(contest.notice_access_after_end, participant):
         raise not_found()
@@ -619,10 +650,12 @@ async def contest_notices(contest_id: str, request: Request):
 
 @router.get("/contests/{contest_id}/boards")
 async def contest_board(contest_id: str, request: Request):
-    contest = store.get_public_contest(contest_id)
+    participant = _optional_participant(request, contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
-    participant = _optional_participant(request, contest_id)
+    if participant and participant.get("is_preview"):
+        return page(request, [question.model_dump(mode="json") for question in preview_questions(participant)])
     if _is_ended(contest) and not _allow_visible_resource(contest.board_access_after_end, participant):
         raise not_found()
     return page(request, [question.model_dump(mode="json") for question in store.questions_for_view(contest_id, participant)])
@@ -631,6 +664,10 @@ async def contest_board(contest_id: str, request: Request):
 @router.post("/contests/{contest_id}/boards")
 async def create_question(contest_id: str, payload: QuestionCreateRequest, request: Request):
     participant = require_participant(request, contest_id)
+    if participant.get("is_preview"):
+        if payload.visibility not in {"public", "private"}:
+            raise AppError(422, "validation_error", "Unsupported question visibility.")
+        return ok(request, create_preview_question(participant, payload.title, payload.body, payload.visibility).model_dump(mode="json"))
     contest = store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
@@ -699,6 +736,13 @@ async def create_question_answer(
     request: Request,
 ):
     participant = require_participant(request, contest_id)
+    if participant.get("is_preview"):
+        if not payload.body.strip():
+            raise AppError(422, "validation_error", "Answer body is required.")
+        answer = create_preview_answer(participant, question_id, payload.body.strip())
+        if not answer:
+            raise not_found()
+        return ok(request, answer.model_dump(mode="json"))
     contest = store.get_public_contest(contest_id)
     if not contest:
         raise not_found()
@@ -740,6 +784,11 @@ async def submissions(
     participant, contest = _allow_submission_list_view(request, contest_id)
     queue_ranks = store.pending_queue_ranks(contest_id=contest_id)
     show_progress = _submission_progress_visible(contest)
+    if participant and participant.get("is_preview"):
+        if division_id and division_id != participant["division"].division_id:
+            raise not_found()
+        items, next_cursor, total_count = list_preview_submissions(participant, problem_id=problem_id, limit=limit, cursor=cursor)
+        return page(request, [_participant_submission_payload(item, include_source=include_source, show_progress=show_progress, team_name=participant["team"].team_name, member_name=participant["member"].name) for item in items], next_cursor=next_cursor, limit=max(1, min(limit, 300)), total_count=total_count, current_cursor=cursor)
     if not participant or _is_ended(contest):
         submissions, next_cursor, total_count = store.list_submissions(
             contest_id=contest_id,
@@ -799,7 +848,7 @@ async def submission_detail(contest_id: str, submission_id: str, request: Reques
     if not contest:
         raise not_found()
     submission = store.get_submission(submission_id)
-    if not submission or submission.contest_id != contest_id or submission.participant_team_id != participant["team"].participant_team_id:
+    if not submission or submission.contest_id != contest_id or not owns_submission(participant, submission):
         raise not_found()
     return ok(request, _participant_submission_payload(submission, include_source=True, show_progress=_submission_progress_visible(contest)))
 
@@ -817,7 +866,7 @@ async def wait_submission_status(
     if not contest:
         raise not_found()
     submission = store.get_submission(submission_id, include_source=False)
-    if not submission or submission.contest_id != contest_id or submission.participant_team_id != participant["team"].participant_team_id:
+    if not submission or submission.contest_id != contest_id or not owns_submission(participant, submission):
         raise not_found()
     wait_budget = max(0.0, min(wait_seconds, 10.0))
     poll = max(0.1, min(poll_interval_seconds, 1.0))

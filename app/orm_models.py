@@ -300,6 +300,26 @@ class GeneralSessionRow(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ParticipantPreviewSessionRow(Base):
+    __tablename__ = "participant_preview_sessions"
+
+    general_session_id: Mapped[str] = mapped_column(ForeignKey("general_sessions.general_session_id", ondelete="CASCADE"), primary_key=True)
+    contest_id: Mapped[str] = mapped_column(ForeignKey("contests.contest_id", ondelete="CASCADE"), primary_key=True)
+    staff_account_id: Mapped[str] = mapped_column(ForeignKey("staff_accounts.staff_account_id", ondelete="CASCADE"), index=True)
+    division_id: Mapped[str] = mapped_column(ForeignKey("contest_divisions.division_id", ondelete="CASCADE"))
+
+
+class ParticipantPreviewQuestionRow(Base):
+    __tablename__ = "participant_preview_questions"
+
+    staff_account_id: Mapped[str] = mapped_column(ForeignKey("staff_accounts.staff_account_id", ondelete="CASCADE"), primary_key=True)
+    division_id: Mapped[str] = mapped_column(ForeignKey("contest_divisions.division_id", ondelete="CASCADE"), primary_key=True)
+    question_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    contest_id: Mapped[str] = mapped_column(ForeignKey("contests.contest_id", ondelete="CASCADE"), index=True)
+    source_question_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    payload: Mapped[str] = mapped_column(Text)
+
+
 class MailQueueItemRow(Base):
     __tablename__ = "mail_queue"
 

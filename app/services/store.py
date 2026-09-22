@@ -63,6 +63,7 @@ from app.orm_models import (
     OtpCodeRow,
     OperationalAuditLogRow,
     ParticipantTeamRow,
+    ParticipantPreviewSessionRow,
     ProblemAssetRow,
     ProblemRow,
     ServiceNoticeRow,
@@ -75,7 +76,7 @@ from app.orm_models import (
     TestcaseRow,
     TestcaseSetRow,
 )
-from app.services.contest_roles import permissions_for_roles, roles_for_scopes
+from app.services.contest_roles import permissions_for_roles, roles_for_scopes, title_for_roles, title_for_scopes
 from app.services.security import decode_session_token, hash_password, new_session_token, token_hash, verify_password
 from app.services.storage import object_storage
 from app.services.mail_templates import (
@@ -270,7 +271,25 @@ def _testcase(
     )
 
 
-def _submission(row: SubmissionRow, include_source: bool = True) -> Submission:
+def _staff_title(row: StaffAccountRow, contest_id: str) -> str | None:
+    if row.is_service_master:
+        return "마스터"
+    roles = json.loads(row.contest_roles or "{}").get(contest_id, [])
+    if roles:
+        return title_for_roles(roles)
+    return title_for_scopes(json.loads(row.contest_scopes or "{}").get(contest_id, []))
+
+
+def _submission_staff_titles(rows, db: Session) -> dict[tuple[str, str], str | None]:
+    owners = {(row.contest_id, row.submitted_by_email.lower()) for row in rows if row.submission_kind == "operator_test" and row.submitted_by_email}
+    if not owners:
+        return {}
+    accounts = db.scalars(select(StaffAccountRow).where(func.lower(StaffAccountRow.email).in_({email for _, email in owners}))).all()
+    by_email = {str(account.email).lower(): account for account in accounts}
+    return {(contest_id, email): _staff_title(by_email[email], contest_id) for contest_id, email in owners if email in by_email}
+
+
+def _submission(row: SubmissionRow, include_source: bool = True, *, staff_titles: dict[tuple[str, str], str | None] | None = None) -> Submission:
     return Submission(
         submission_id=row.submission_id,
         contest_id=row.contest_id,
@@ -280,6 +299,7 @@ def _submission(row: SubmissionRow, include_source: bool = True) -> Submission:
         team_member_id=row.team_member_id,
         submission_kind=row.submission_kind or "participant",
         submitted_by_name=row.submitted_by_name,
+        submitted_by_title=(staff_titles or {}).get((row.contest_id, (row.submitted_by_email or "").lower())),
         submitted_by_email=row.submitted_by_email,
         language=row.language,
         source_code=row.source_code if include_source else "",
@@ -437,6 +457,7 @@ def _answer(
     created_by_role: str | None = None,
     created_by_team_name: str | None = None,
     created_by_division_name: str | None = None,
+    created_by_title: str | None = None,
 ) -> ContestQuestionAnswer:
     return ContestQuestionAnswer(
         contest_answer_id=row.contest_answer_id,
@@ -446,6 +467,7 @@ def _answer(
         visibility=row.visibility,
         created_by_email=row.created_by_email,
         created_by_name=created_by_name,
+        created_by_title=created_by_title,
         created_by_role=created_by_role,
         created_by_team_name=created_by_team_name,
         created_by_division_name=created_by_division_name,
@@ -478,7 +500,7 @@ def _answer_for_view(row: ContestQuestionAnswerRow, db) -> ContestQuestionAnswer
 
     staff = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
     if staff:
-        return _answer(row, staff.display_name, "operator")
+        return _answer(row, staff.display_name, "operator", created_by_title=_staff_title(staff, row.contest_id))
 
     return _answer(row)
 
@@ -635,7 +657,8 @@ class DbStore:
     def submissions(self) -> dict[str, Submission]:
         with self._session() as db:
             rows = db.scalars(select(SubmissionRow)).all()
-            return {row.submission_id: _submission(row) for row in rows}
+            titles = _submission_staff_titles(rows, db)
+            return {row.submission_id: _submission(row, staff_titles=titles) for row in rows}
 
     def get_submission(self, submission_id: str, *, include_source: bool = True) -> Submission | None:
         base = select(SubmissionRow).where(SubmissionRow.submission_id == submission_id)
@@ -666,7 +689,7 @@ class DbStore:
             )
         with self._session() as db:
             row = db.scalar(base)
-            return _submission(row, include_source=include_source) if row else None
+            return _submission(row, include_source=include_source, staff_titles=_submission_staff_titles([row], db)) if row else None
 
     def contests_by_ids(self, contest_ids: list[str]) -> dict[str, Contest]:
         ids = list(dict.fromkeys(contest_ids))
@@ -1030,7 +1053,7 @@ class DbStore:
             }
 
     def count_submissions(self, *, contest_id: str | None = None, division_id: str | None = None) -> int:
-        filters = []
+        filters = [SubmissionRow.submission_kind != "participant_preview"]
         if contest_id:
             filters.append(SubmissionRow.contest_id == contest_id)
         if division_id:
@@ -1070,7 +1093,7 @@ class DbStore:
             offset = max(0, int(cursor or "0"))
         except ValueError:
             offset = 0
-        filters = []
+        filters = [SubmissionRow.submission_kind != "participant_preview"]
         if contest_id:
             filters.append(SubmissionRow.contest_id == contest_id)
         if division_id:
@@ -1102,6 +1125,9 @@ class DbStore:
                     SubmissionRow.problem_id,
                     SubmissionRow.participant_team_id,
                     SubmissionRow.team_member_id,
+                    SubmissionRow.submission_kind,
+                    SubmissionRow.submitted_by_name,
+                    SubmissionRow.submitted_by_email,
                     SubmissionRow.language,
                     SubmissionRow.status,
                     SubmissionRow.submitted_at,
@@ -1124,7 +1150,8 @@ class DbStore:
             ).all()
             next_offset = offset + safe_limit
             next_cursor = str(next_offset) if next_offset < total_count else None
-            return [_submission(row, include_source=include_source) for row in rows], next_cursor, total_count
+            titles = _submission_staff_titles(rows, db)
+            return [_submission(row, include_source=include_source, staff_titles=titles) for row in rows], next_cursor, total_count
 
     def judge_jobs_by_submission_ids(self, submission_ids: list[str]) -> dict[str, JudgeJob]:
         if not submission_ids:
@@ -2086,7 +2113,8 @@ class DbStore:
 
     def get_participant_by_access_token(self, contest_id: str, access_token: str) -> dict | None:
         if not _valid_session_token(access_token, "participant_access"):
-            return None
+            from app.services.participant_preview import get_preview_participant
+            return get_preview_participant(contest_id, access_token)
         with self._session() as db:
             session = db.scalar(
                 select(TeamSessionRow).where(
@@ -2312,6 +2340,8 @@ class DbStore:
             protected = json.loads(account.protected_master_contests or "[]")
             if contest_id in protected and roles != ["master"]:
                 raise ValueError("assigned contest master is protected")
+            if selections.get(contest_id) == ["participant_preview"] and roles != ["participant_preview"]:
+                db.execute(delete(ParticipantPreviewSessionRow).where(ParticipantPreviewSessionRow.staff_account_id == account.staff_account_id, ParticipantPreviewSessionRow.contest_id == contest_id))
             scopes[contest_id] = permissions
             selections[contest_id] = roles
             if protected_master and contest_id not in protected:
@@ -2341,6 +2371,7 @@ class DbStore:
                 return None
             if contest_id in json.loads(account.protected_master_contests or "[]"):
                 raise ValueError("assigned contest master is protected")
+            db.execute(delete(ParticipantPreviewSessionRow).where(ParticipantPreviewSessionRow.staff_account_id == account.staff_account_id, ParticipantPreviewSessionRow.contest_id == contest_id))
             scopes.pop(contest_id, None)
             selections = json.loads(account.contest_roles or "{}")
             selections.pop(contest_id, None)
@@ -2366,7 +2397,7 @@ class DbStore:
     def accessible_contests_for_staff(self, account: StaffAccount) -> list[Contest]:
         if account.is_service_master:
             return sorted(self.contests.values(), key=lambda item: item.start_at)
-        contest_ids = {contest_id for contest_id, scopes in account.contest_scopes.items() if scopes}
+        contest_ids = {contest_id for contest_id, scopes in account.contest_scopes.items() if any(scope != "contest.participant.preview" for scope in scopes)}
         contests = [contest for contest_id, contest in self.contests.items() if contest_id in contest_ids]
         return sorted(contests, key=lambda item: item.start_at)
 
@@ -3708,7 +3739,7 @@ class DbStore:
             )
             db.commit()
             db.refresh(submission)
-            return _submission(submission)
+            return _submission(submission, staff_titles=_submission_staff_titles([submission], db))
 
     def create_mock_submission(self, contest_id: str, problem_id: str, language: str, source_code: str) -> Submission:
         source_code = _normalize_source_code(source_code)

@@ -293,3 +293,39 @@ async def general_participant_session(contest_id: str, request: Request):
             "division": division.model_dump(mode="json"),
         },
     )
+
+
+class ParticipantPreviewSessionRequest(BaseModel):
+    division_id: str
+
+
+@router.get("/auth/general/contests/{contest_id}/participant-preview")
+async def participant_preview_options(contest_id: str, request: Request):
+    from app.services.participant_preview import get_preview_participant, preview_account
+    require_staff(request)
+    token = bearer_token(request)
+    if not token or not preview_account(contest_id, token):
+        raise AppError(403, "scope_denied", "참가자 미리보기 권한이 필요합니다.")
+    contest = store.contests.get(contest_id)
+    if not contest:
+        raise AppError(404, "not_found", "Contest not found.")
+    participant = get_preview_participant(contest_id, token)
+    return ok(request, {"contest": contest.model_dump(mode="json"), "divisions": [division.model_dump(mode="json") for division in store.contest_divisions(contest_id)], "is_preview": True, "selected_division_id": participant["division"].division_id if participant else None})
+
+
+@router.post("/auth/general/contests/{contest_id}/participant-preview-session")
+async def participant_preview_session(contest_id: str, payload: ParticipantPreviewSessionRequest, request: Request):
+    from app.services.participant_preview import select_preview_division
+    require_staff(request)
+    token = bearer_token(request)
+    try:
+        participant = select_preview_division(contest_id, payload.division_id, token) if token else None
+    except ValueError:
+        raise AppError(404, "not_found", "Contest division not found.")
+    if not participant:
+        raise AppError(403, "scope_denied", "참가자 미리보기 권한이 필요합니다.")
+    return ok(request, {
+        "access_token": token, "team": participant["team"].model_dump(mode="json"),
+        "member": participant["member"].model_dump(mode="json"), "division": participant["division"].model_dump(mode="json"),
+        "is_preview": True, "workspace_path": f"/contests/{contest_id}/divisions/{payload.division_id}/workspace",
+    })
