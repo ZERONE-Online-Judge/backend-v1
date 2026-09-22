@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -417,6 +417,31 @@ class AccessLogRow(Base):
     request_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     details: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+
+
+class UsageEventRow(Base):
+    __tablename__ = "usage_events"
+    __table_args__ = (
+        Index("idx_usage_created", "created_at"),
+        Index("idx_usage_contest_created", "contest_id", "created_at"),
+        Index("idx_usage_visitor_created", "visitor_key", "created_at"),
+        Index("idx_usage_seen", "last_seen_at"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    visitor_key: Mapped[str] = mapped_column(String(64))
+    visit_key: Mapped[str] = mapped_column(String(64))
+    account_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    contest_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service: Mapped[str] = mapped_column(String(24))
+    page_key: Mapped[str] = mapped_column(String(64))
+    audience: Mapped[str] = mapped_column(String(24))
+    device: Mapped[str] = mapped_column(String(16))
+    browser: Mapped[str] = mapped_column(String(24))
+    referrer_host: Mapped[str] = mapped_column(String(253), default="direct")
+    active_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class OtpCodeRow(Base):

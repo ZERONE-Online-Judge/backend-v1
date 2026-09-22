@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     feature_submission_runtime_metrics: bool = True
     feature_public_scoreboard_penalty: bool = True
     feature_emergency_notice_auto: bool = True
+    feature_usage_analytics: bool = True
 
 
 settings = Settings()
