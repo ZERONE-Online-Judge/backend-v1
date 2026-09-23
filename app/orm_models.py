@@ -469,3 +469,23 @@ class TeamSessionRow(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PresentationAccountRow(Base):
+    """A revocable display credential, never a staff or participant identity."""
+    __tablename__ = "presentation_accounts"
+
+    contest_id: Mapped[str] = mapped_column(ForeignKey("contests.contest_id", ondelete="CASCADE"), primary_key=True)
+    credential_id: Mapped[str] = mapped_column(String(36), default=new_id)
+    email: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    session_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class PresentationLoginLimitRow(Base):
+    __tablename__ = "presentation_login_limits"
+
+    client_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    attempts: Mapped[int] = mapped_column(Integer)

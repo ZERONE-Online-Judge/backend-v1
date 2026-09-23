@@ -3,6 +3,7 @@ from pydantic import BaseModel, EmailStr
 
 from app.settings import settings
 from app.services.access_logging import general_role, write_access_log
+from app.services.presentation_access import is_presentation_email
 from app.services.errors import AppError
 from app.services.authz import bearer_token, require_staff
 from app.services.responses import ok
@@ -114,6 +115,8 @@ async def staff_refresh(payload: StaffRefreshRequest, request: Request):
 
 @router.post("/auth/general/otp/request")
 async def general_otp_request(payload: GeneralOtpRequest, request: Request):
+    if is_presentation_email(str(payload.email)):
+        raise AppError(401, "presentation_login_required", "프레젠테이션 전용 로그인으로 접속해 주세요.")
     retry_after = store.general_otp_retry_after_seconds(str(payload.email))
     if retry_after > 0:
         raise AppError(
@@ -133,6 +136,8 @@ async def general_otp_request(payload: GeneralOtpRequest, request: Request):
 
 @router.post("/auth/general/otp/verify")
 async def general_otp_verify(payload: GeneralOtpVerifyRequest, request: Request):
+    if is_presentation_email(str(payload.email)):
+        raise AppError(401, "presentation_login_required", "프레젠테이션 전용 로그인으로 접속해 주세요.")
     try:
         session = store.verify_general_otp(
             str(payload.email),

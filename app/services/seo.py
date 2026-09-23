@@ -228,6 +228,8 @@ def _not_found(path: str) -> dict:
 
 
 def _private_page_title(path: str) -> str | None:
+    if re.fullmatch(r"/presentation/contests/[^/]+", path):
+        return "대회 프레젠테이션"
     if path == "/login":
         return "로그인"
     if re.fullmatch(r"/admin(?:/(?:contests|judge|analytics|audit-logs|inquiries))?", path):

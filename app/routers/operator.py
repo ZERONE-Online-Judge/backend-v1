@@ -1319,38 +1319,8 @@ async def update_scoreboard_release(contest_id: str, division_id: str, payload: 
 @router.get("/operator/contests/{contest_id}/scoreboard/presentation")
 async def presentation_scoreboard(contest_id: str, request: Request):
     require_contest_staff(request, contest_id, "contest.scoreboard.view")
-    contest = store.contests.get(contest_id)
-    if not contest:
-        raise not_found()
-
-    sections = []
-    for division in store.contest_divisions(contest_id):
-        board = store.scoreboard_rows(contest_id, division.division_id, public_view=True)
-        if not board:
-            continue
-        problems = [
-            problem
-            for problem in store.problems.values()
-            if problem.contest_id == contest_id and problem.division_id == division.division_id
-        ]
-        problems.sort(key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
-        sections.append(
-            {
-                "division": division.model_dump(mode="json"),
-                "frozen": bool(board["frozen"]),
-                "problems": [{key: getattr(problem, key) for key in ("problem_id", "contest_id", "division_id", "problem_code", "title", "display_order")} for problem in problems],
-                "rows": board["rows"],
-                "release": board.get("release"),
-            }
-        )
-
-    return ok(
-        request,
-        {
-            "contest": contest.model_dump(mode="json"),
-            "sections": sections,
-        },
-    )
+    from app.services.presentation_board import presentation_board
+    return ok(request, presentation_board(contest_id))
 
 
 @router.get("/operator/contests/{contest_id}/problems")
