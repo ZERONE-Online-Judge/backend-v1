@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only, object_session, selectinload
 
 from app.database import SessionLocal, create_schema
+from app.services.contest_visibility import contest_is_public, contest_hidden_by_status, normalize_private_resources
 from app.services.errors import AppError, permission_denied
 from app.settings import settings
 from app.models import (
@@ -28,6 +29,7 @@ from app.models import (
     ScoreboardFreezeMode,
     ScoreboardReleaseMode,
     ContestStatus,
+    ContestVisibility,
     JudgeAgentLog,
     JudgeJob,
     JudgeJobStatus,
@@ -157,6 +159,8 @@ def _contest(row: ContestRow) -> Contest:
         organization_name=row.organization_name,
         overview=row.overview,
         status=ContestStatus(row.status),
+        visibility=ContestVisibility(row.visibility or "public"),
+        visibility_after_end=ContestVisibility(row.visibility_after_end or "public"),
         start_at=_aware(row.start_at),
         end_at=_aware(row.end_at),
         freeze_at=_aware(row.freeze_at),
@@ -1786,6 +1790,8 @@ class DbStore:
             if not member_model:
                 continue
             display_name = display_name or member_model.name
+            if contest_hidden_by_status(contest):
+                continue
             participant_contests.append(
                 {
                     "contest": _contest(contest).model_dump(mode="json"),
@@ -1820,7 +1826,7 @@ class DbStore:
                     "default_redirect": "/admin" if account.is_service_master else "/operator",
                 }
 
-        if not participant_contests and not operator_contests and not account:
+        if not members and not operator_contests and not account:
             return None
         return {
             "account": {"email": email, "display_name": display_name or email},
@@ -2221,7 +2227,7 @@ class DbStore:
             db.commit()
             return True
 
-    def visible_public_contests(self) -> list[Contest]:
+    def visible_public_contests(self, visible_private_ids: set[str] | None = None) -> list[Contest]:
         self.refresh_contest_statuses()
         with self._session() as db:
             rows = db.scalars(
@@ -2235,9 +2241,10 @@ class DbStore:
                     )
                 )
             ).all()
-            return [_contest(row) for row in rows]
+            contests = [_contest(row) for row in rows]
+            return [contest for contest in contests if contest_is_public(contest) or contest.contest_id in (visible_private_ids or set())]
 
-    def get_public_contest(self, contest_id: str) -> Contest | None:
+    def get_public_contest(self, contest_id: str, *, allow_private: bool = False) -> Contest | None:
         self.refresh_contest_statuses()
         with self._session() as db:
             row = db.get(ContestRow, contest_id)
@@ -2247,7 +2254,8 @@ class DbStore:
                 ContestStatus.SCHEDULED.value,
             }:
                 return None
-            return _contest(row)
+            contest = _contest(row)
+            return contest if allow_private or contest_is_public(contest) else None
 
     def contest_participation_counts(self, contest_id: str) -> dict[str, int]:
         """Return aggregate registration counts without loading participant data."""
@@ -2275,6 +2283,8 @@ class DbStore:
         end_at: datetime | None = None,
         freeze_at: datetime | None = None,
         status: ContestStatus = ContestStatus.DRAFT,
+        visibility: ContestVisibility = ContestVisibility.PUBLIC,
+        visibility_after_end: ContestVisibility = ContestVisibility.PUBLIC,
     ) -> Contest:
         default_start, default_end, default_freeze = demo_times()
         resolved_start = start_at or default_start
@@ -2286,6 +2296,9 @@ class DbStore:
                 organization_name=organization_name,
                 overview=overview or f"{organization_name}에서 주최하는 대회입니다.",
                 status=status.value,
+                visibility=visibility.value,
+                visibility_after_end=visibility_after_end.value,
+                notice_access_after_end="participants" if visibility_after_end == ContestVisibility.PRIVATE else "public",
                 start_at=resolved_start,
                 end_at=resolved_end,
                 freeze_at=resolved_freeze,
@@ -2982,6 +2995,8 @@ class DbStore:
             "organization_name",
             "overview",
             "status",
+            "visibility",
+            "visibility_after_end",
             "start_at",
             "end_at",
             "freeze_at",
@@ -3014,9 +3029,10 @@ class DbStore:
                 if key in allowed and (
                     value is not None or key == "emergency_notice"
                 ):
-                    if isinstance(value, (ContestStatus, ContestResourceAccess, ScoreboardFreezeMode, ScoreboardReleaseMode)):
+                    if isinstance(value, (ContestStatus, ContestVisibility, ContestResourceAccess, ScoreboardFreezeMode, ScoreboardReleaseMode)):
                         value = value.value
                     setattr(row, key, value)
+            normalize_private_resources(row)
             if row.problem_access_after_end == ContestResourceAccess.PRIVATE.value:
                 row.editorial_access_after_end = ContestResourceAccess.PRIVATE.value
                 row.mock_judging_enabled = False

@@ -6,7 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 from app.models import now_utc
 from app.settings import settings
 from app.services.authz import bearer_token
-from app.services.contest_visibility import contest_payload_for_view
+from app.services.contest_visibility import contest_payload_for_view, visible_private_contest_ids
 from app.services.errors import not_found
 from app.services.mail_templates import absolute_url, format_korean_datetime, render_branded_email
 from app.services.responses import ok, page
@@ -69,12 +69,14 @@ async def home(request: Request):
 async def contests(request: Request, response: Response):
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Vary"] = "Authorization"
-    return page(request, [_contest_payload(contest, request) for contest in store.visible_public_contests()])
+    allowed_ids = visible_private_contest_ids(bearer_token(request))
+    return page(request, [_contest_payload(contest, request) for contest in store.visible_public_contests(allowed_ids)])
 
 
 @router.get("/public/contests/{contest_id}")
 async def contest_detail(contest_id: str, request: Request, response: Response):
-    contest = store.get_public_contest(contest_id)
+    allowed_ids = visible_private_contest_ids(bearer_token(request))
+    contest = store.get_public_contest(contest_id, allow_private=contest_id in allowed_ids)
     if not contest:
         raise not_found()
     response.headers["Cache-Control"] = "private, no-store"

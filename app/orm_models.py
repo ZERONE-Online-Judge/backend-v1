@@ -16,6 +16,8 @@ class ContestRow(Base):
     organization_name: Mapped[str] = mapped_column(String(255))
     overview: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), index=True)
+    visibility: Mapped[str] = mapped_column(String(16), default="public", server_default="public")
+    visibility_after_end: Mapped[str] = mapped_column(String(16), default="public", server_default="public")
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     freeze_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

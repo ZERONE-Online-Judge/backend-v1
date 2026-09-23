@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models import ContestResourceAccess, ContestStatus, ProblemAsset, ScoreboardFreezeMode, ScoreboardReleaseMode, SubmissionStatus, TeamMemberRole, now_utc
+from app.models import ContestResourceAccess, ContestStatus, ContestVisibility, ProblemAsset, ScoreboardFreezeMode, ScoreboardReleaseMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import has_contest_permission, is_contest_master, require_contest_staff, require_staff
 from app.services.automatic_notices import time_update_notice_body
 from app.services.contest_roles import ContestOperatorCreateRequest, ContestOperatorUpdateRequest, title_for_roles
@@ -106,6 +106,8 @@ class ContestSettingsUpdateRequest(BaseModel):
     title: str | None = None
     organization_name: str | None = None
     overview: str | None = None
+    visibility: ContestVisibility | None = None
+    visibility_after_end: ContestVisibility | None = None
     status: ContestStatus | None = None
     start_at: datetime | None = None
     end_at: datetime | None = None

@@ -223,6 +223,9 @@ def create_schema() -> None:
         if "contests" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("contests")}
             with engine.begin() as connection:
+                for visibility_column in ("visibility", "visibility_after_end"):
+                    if visibility_column not in columns:
+                        connection.execute(text(f"ALTER TABLE contests ADD COLUMN {visibility_column} VARCHAR(16) DEFAULT 'public' NOT NULL"))
                 if "problem_access_after_end" not in columns:
                     connection.execute(text("ALTER TABLE contests ADD COLUMN problem_access_after_end VARCHAR(32) DEFAULT 'private' NOT NULL"))
                 if "scoreboard_access_after_end" not in columns:

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models import ContestStatus, JudgeNode, now_utc
+from app.models import ContestStatus, ContestVisibility, JudgeNode, now_utc
 from app.settings import settings
 from app.services.authz import require_service_master
 from app.services.contest_roles import title_for_roles
@@ -71,6 +71,8 @@ class ContestCreateRequest(BaseModel):
     title: str | None = None
     organization_name: str
     overview: str | None = None
+    visibility: ContestVisibility = ContestVisibility.PUBLIC
+    visibility_after_end: ContestVisibility = ContestVisibility.PUBLIC
     status: ContestStatus = ContestStatus.DRAFT
     start_at: datetime | None = None
     end_at: datetime | None = None
@@ -152,6 +154,8 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
         payload.end_at,
         payload.freeze_at,
         payload.status,
+        visibility=payload.visibility,
+        visibility_after_end=payload.visibility_after_end,
     )
     if payload.operator_email:
         try:

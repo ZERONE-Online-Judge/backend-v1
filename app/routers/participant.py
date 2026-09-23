@@ -170,7 +170,7 @@ def _allow_visible_resource(access: ContestResourceAccess, participant: dict | N
 
 def _allow_problem_view(request: Request, contest_id: str, division_id: str | None = None) -> tuple[dict | None, object]:
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if participant and participant.get("is_preview"):
@@ -190,7 +190,7 @@ def _allow_problem_view(request: Request, contest_id: str, division_id: str | No
 
 def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str | None = None) -> tuple[dict | None, object]:
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if participant and participant.get("is_preview"):
@@ -210,7 +210,7 @@ def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str |
 
 def _allow_submission_list_view(request: Request, contest_id: str) -> tuple[dict | None, object]:
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if participant and participant.get("is_preview"):
@@ -310,7 +310,7 @@ def _submission_progress_visible(contest) -> bool:
 
 @router.post("/contests/{contest_id}/participant-login/otp/request")
 async def request_otp(contest_id: str, payload: OtpRequest, request: Request):
-    contest = store.get_public_contest(contest_id)
+    contest = store.get_public_contest(contest_id, allow_private=True)
     if not contest:
         raise not_found()
     team = store.get_team_by_email(contest_id, str(payload.email))
@@ -626,7 +626,7 @@ async def wait_mock_submission_status(
 @router.get("/contests/{contest_id}/notices")
 async def contest_notices(contest_id: str, request: Request):
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     ended = _is_ended(contest)
@@ -652,7 +652,7 @@ async def contest_notices(contest_id: str, request: Request):
 @router.get("/contests/{contest_id}/boards")
 async def contest_board(contest_id: str, request: Request):
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id)
+    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if participant and participant.get("is_preview"):
@@ -669,7 +669,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
         if payload.visibility not in {"public", "private"}:
             raise AppError(422, "validation_error", "Unsupported question visibility.")
         return ok(request, create_preview_question(participant, payload.title, payload.body, payload.visibility).model_dump(mode="json"))
-    contest = store.get_public_contest(contest_id)
+    contest = store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if _is_ended(contest) and not _allow_board_write_after_end(contest, participant):
@@ -746,7 +746,7 @@ async def create_question_answer(
         if not answer:
             raise not_found()
         return ok(request, answer.model_dump(mode="json"))
-    contest = store.get_public_contest(contest_id)
+    contest = store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if _is_ended(contest) and not _allow_board_write_after_end(contest, participant):

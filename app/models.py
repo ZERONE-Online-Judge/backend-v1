@@ -25,6 +25,11 @@ class ContestStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class ContestVisibility(StrEnum):
+    PUBLIC = "public"
+    PRIVATE = "private"
+
+
 class ContestResourceAccess(StrEnum):
     PRIVATE = "private"
     PARTICIPANTS = "participants"
@@ -107,6 +112,8 @@ class Contest(BaseModel):
     organization_name: str
     overview: str
     status: ContestStatus
+    visibility: ContestVisibility = ContestVisibility.PUBLIC
+    visibility_after_end: ContestVisibility = ContestVisibility.PUBLIC
     start_at: datetime
     end_at: datetime
     freeze_at: datetime
