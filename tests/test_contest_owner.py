@@ -99,6 +99,42 @@ def test_owner_cannot_be_injected_demoted_or_removed_even_by_admin(context):
     assert_owner(cid, owner)
 
 
+@pytest.mark.parametrize("actor_kind", ["owner", "master", "service_master"])
+def test_owner_display_name_can_change_without_changing_ownership_or_session(context, actor_kind):
+    cid, owner, master, _, base = context
+    owner_auth = login(str(owner.email))
+    auth = owner_auth if actor_kind == "owner" else login(str(master.email) if actor_kind == "master" else "test3@zoj.com")
+    response = client.patch(base + "/operators/" + str(owner.email), headers=auth, json={
+        "email": str(owner.email), "display_name": "  새 총괄 이름  ", "roles": ["master"],
+    })
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["display_name"] == "새 총괄 이름"
+    assert data["email"] == str(owner.email)
+    assert data["contest_roles"][cid] == ["owner"]
+    assert data["contest_scopes"][cid] == ["contest.*", "contest.owner"]
+    assert_owner(cid, owner)
+    # Editing a display name must not revoke the owner's existing session.
+    listed = client.get(base + "/operators", headers=owner_auth)
+    assert listed.status_code == 200, listed.text
+    assert next(a for a in store.contest_operator_accounts(cid) if a.email == owner.email).display_name == "새 총괄 이름"
+
+
+def test_staff_manager_cannot_edit_owner_and_blank_name_is_rejected(context):
+    cid, owner, _, _, base = context
+    manager = store.upsert_contest_operator(cid, email(), "Staff manager", ["staff_manager"])
+    denied = client.patch(base + "/operators/" + str(owner.email), headers=login(str(manager.email)), json={
+        "display_name": "Not allowed", "roles": ["master"],
+    })
+    assert denied.status_code == 403, denied.text
+    blank = client.patch(base + "/operators/" + str(owner.email), headers=login(str(owner.email)), json={
+        "display_name": "   ", "roles": ["master"],
+    })
+    assert blank.status_code == 422, blank.text
+    assert next(a for a in store.contest_operator_accounts(cid) if a.email == owner.email).display_name == owner.display_name
+    assert_owner(cid, owner)
+
+
 def test_transfer_is_owner_only_and_updates_existing_sessions_and_titles(context):
     cid, owner, master, target, base = context
     owner_auth, master_auth, target_auth = [login(str(a.email)) for a in [owner, master, target]]
