@@ -4615,7 +4615,9 @@ class DbStore:
             (timedelta(minutes=5), timedelta(minutes=1), "5분"),
             (timedelta(minutes=1), timedelta(0), "1분"),
         ]
-        targets = [("freeze", "freeze_at"), ("end", "end_at")]
+        # A newly announced start takes banner priority over reminders for a
+        # short contest's later milestones. All events remain in notice history.
+        targets = [("freeze", "freeze_at"), ("end", "end_at"), ("start", "start_at")]
         event_window = timedelta(minutes=10)
         now = now_utc()
         due: list[tuple[str, str, str, str]] = []
@@ -4634,6 +4636,7 @@ class DbStore:
                 )
             ).all()
             for contest in contests:
+                start_at, end_at = _aware(contest.start_at), _aware(contest.end_at)
                 previous = db.scalars(select(ContestNoticeRow).where(
                     ContestNoticeRow.contest_id == contest.contest_id,
                     ContestNoticeRow.emergency.is_(True),
@@ -4644,6 +4647,14 @@ class DbStore:
                     if legacy and legacy[0] == notice.title:
                         seen.add(scheduled_notice_id(contest.contest_id, legacy[0], legacy[1]))
                 for target, field_name in targets:
+                    if target == "start":
+                        # Do not announce a past start after the contest ended,
+                        # including contests ended manually ahead of schedule.
+                        if contest.status == ContestStatus.ENDED.value or (end_at and now >= end_at):
+                            continue
+                    elif start_at and now < start_at:
+                        # Before opening, only announce the upcoming start.
+                        continue
                     if target == "freeze" and contest.scoreboard_freeze_mode == ScoreboardFreezeMode.LIVE.value:
                         continue
                     target_at = _aware(getattr(contest, field_name))

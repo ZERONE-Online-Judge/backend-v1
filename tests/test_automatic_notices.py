@@ -182,3 +182,96 @@ def test_existing_schedule_notice_displays_compact_copy_without_changing_storage
     assert notices(contest)[0].title == "대회 일정 변경"
     with store._session() as db:
         assert db.get(ContestNoticeRow, notice.contest_notice_id).body == LEGACY_TIME
+
+
+@pytest.mark.parametrize("minutes,title,body", [
+    (31, None, None),
+    (30, "대회 시작 30분 전", "대회 시작까지 30분 남았습니다."),
+    (10, "대회 시작 10분 전", "대회 시작까지 10분 남았습니다."),
+    (5, "대회 시작 5분 전", "대회 시작까지 5분 남았습니다."),
+    (1, "대회 시작 1분 전", "대회 시작까지 1분 남았습니다."),
+    (0, "대회 시작", "대회가 시작되었습니다."),
+    (-9, "대회 시작", "대회가 시작되었습니다."),
+    (-11, None, None),
+])
+def test_start_reminders_and_started_notice_are_published_once(contest, minutes, title, body):
+    contest, now = contest
+    store.update_contest_settings(contest.contest_id, status=ContestStatus.OPEN,
+        start_at=now + timedelta(minutes=minutes), freeze_at=now + timedelta(hours=2), end_at=now + timedelta(hours=3))
+    store.enqueue_due_contest_emergency_notices()
+    store.enqueue_due_contest_emergency_notices()
+    assert [(n.title, n.body) for n in notices(contest)] == ([(title, body)] if title else [])
+    if body:
+        assert store.contests[contest.contest_id].emergency_notice == body
+        notice, = notices(contest)
+        assert notice.emergency and notice.pinned
+        assert notice.visibility == "participants"
+
+
+@pytest.mark.parametrize("state", [ContestStatus.DRAFT, ContestStatus.SCHEDULE_TBD, ContestStatus.ENDED, ContestStatus.FINALIZED, ContestStatus.ARCHIVED])
+def test_inactive_contests_do_not_announce_a_start(contest, state):
+    contest, now = contest
+    store.update_contest_settings(contest.contest_id, status=state,
+        start_at=now - timedelta(seconds=1), freeze_at=now + timedelta(hours=2), end_at=now + timedelta(hours=3))
+    store.enqueue_due_contest_emergency_notices()
+    assert notices(contest) == []
+
+
+def test_short_contest_start_is_visible_and_ended_contest_never_announces_its_recent_start(contest):
+    contest, now = contest
+    store.update_contest_settings(contest.contest_id, status=ContestStatus.OPEN,
+        start_at=now + timedelta(minutes=9), freeze_at=now + timedelta(minutes=10), end_at=now + timedelta(minutes=11))
+    store.enqueue_due_contest_emergency_notices()
+    assert [n.title for n in notices(contest)] == ["대회 시작 10분 전"]
+    store.update_contest_settings(contest.contest_id, start_at=now, freeze_at=now + timedelta(minutes=1), end_at=now + timedelta(minutes=2))
+    store.enqueue_due_contest_emergency_notices()
+    assert store.contests[contest.contest_id].emergency_notice == "대회가 시작되었습니다."
+    store.update_contest_settings(contest.contest_id, start_at=now - timedelta(minutes=2), freeze_at=now - timedelta(minutes=1), end_at=now)
+    store.enqueue_due_contest_emergency_notices()
+    assert store.contests[contest.contest_id].emergency_notice == "대회가 종료되었습니다. 수고하셨습니다."
+    assert len([n for n in notices(contest) if n.title == "대회 시작"]) == 1
+
+
+def test_start_reminder_is_rescheduled_without_repeating_the_same_event(contest):
+    contest, now = contest
+    store.update_contest_settings(contest.contest_id, status=ContestStatus.OPEN, start_at=now + timedelta(minutes=9))
+    store.enqueue_due_contest_emergency_notices()
+    store.update_contest_settings(contest.contest_id, start_at=now + timedelta(minutes=8))
+    store.enqueue_due_contest_emergency_notices()
+    store.enqueue_due_contest_emergency_notices()
+    assert [n.title for n in notices(contest)] == ["대회 시작 10분 전", "대회 시작 10분 전"]
+
+
+def test_auto_notice_switch_disables_start_notices_too(contest, monkeypatch):
+    contest, now = contest
+    store.update_contest_settings(contest.contest_id, status=ContestStatus.OPEN, start_at=now + timedelta(minutes=9))
+    monkeypatch.setattr(settings, "feature_emergency_notice_auto", False)
+    assert store.enqueue_due_contest_emergency_notices() == 0
+    assert notices(contest) == []
+
+
+def test_participant_banner_api_receives_each_start_freeze_and_end_event(contest, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    contest, now = contest
+    start = now + timedelta(minutes=10)
+    freeze, end = start + timedelta(hours=1), start + timedelta(hours=2)
+    store.update_contest_settings(contest.contest_id, status=ContestStatus.OPEN,
+        start_at=start, freeze_at=freeze, end_at=end, notice_access_after_end="public")
+    client = TestClient(app)
+    expected_events = [
+        (now, "대회 시작까지 10분 남았습니다."),
+        (start, "대회가 시작되었습니다."),
+        (freeze - timedelta(minutes=10), "스코어보드 프리즈까지 10분 남았습니다."),
+        (freeze, "스코어보드가 프리즈되었습니다. 이후 제출 결과는 스코어보드에서 잠시 숨겨집니다."),
+        (end - timedelta(minutes=10), "대회 종료까지 10분 남았습니다."),
+        (end, "대회가 종료되었습니다. 수고하셨습니다."),
+    ]
+    for clock, expected in expected_events:
+        monkeypatch.setattr(import_module("app.services.store"), "now_utc", lambda: clock)
+        store.enqueue_due_contest_emergency_notices()
+        response = client.get(f"/api/public/contests/{contest.contest_id}")
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["contest"]["emergency_notice"] == expected
+    assert len(notices(contest)) == len(expected_events)

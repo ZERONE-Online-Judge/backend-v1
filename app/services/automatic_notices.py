@@ -29,9 +29,11 @@ def time_update_notice_body(contest_title: str, changed_fields: list[tuple[str, 
 
 
 def scheduled_notice_copy(target: str, remaining: str | None = None) -> tuple[str, str]:
-    label = "스코어보드 프리즈" if target == "freeze" else "대회 종료"
+    label = {"start": "대회 시작", "freeze": "스코어보드 프리즈", "end": "대회 종료"}[target]
     if remaining:
         return f"{label} {remaining} 전", f"{label}까지 {remaining} 남았습니다."
+    if target == "start":
+        return "대회 시작", "대회가 시작되었습니다."
     if target == "freeze":
         return "스코어보드 프리즈 시작", "스코어보드가 프리즈되었습니다. 이후 제출 결과는 스코어보드에서 잠시 숨겨집니다."
     return "대회 종료", "대회가 종료되었습니다. 수고하셨습니다."
