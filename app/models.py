@@ -131,6 +131,7 @@ class Contest(BaseModel):
     participant_progress_visible: bool = True
     mock_judging_progress_visible: bool = False
     emergency_notice: str | None = None
+    emergency_notice_template: str | None = None
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -251,6 +252,7 @@ class ContestNotice(BaseModel):
     contest_id: str
     title: str
     body: str
+    body_template: str | None = None
     pinned: bool = False
     emergency: bool = False
     visibility: str = "public"

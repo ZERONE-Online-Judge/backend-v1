@@ -66,4 +66,5 @@ def contest_payload_for_view(contest, participant: dict | None = None) -> dict:
         and not participant
     ):
         payload["emergency_notice"] = None
+        payload["emergency_notice_template"] = None
     return payload

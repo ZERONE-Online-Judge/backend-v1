@@ -140,6 +140,9 @@ def test_each_public_resource_is_accessible_independently(contest_context, publi
 @pytest.mark.parametrize("access", [ContestResourceAccess.PARTICIPANTS, ContestResourceAccess.PRIVATE])
 def test_restricted_emergency_notice_stays_private_in_overview_and_public_workspace(contest_context, access):
     c = contest_context
+    template = "Participant-only emergency notice {{countdown:end}}"
+    store.update_contest_settings(c["cid"], emergency_notice=template)
+    expected = "Participant-only emergency notice 대회가 종료되었습니다. 수고하셨습니다."
     store.update_contest_settings(c["cid"], problem_access_after_end=ContestResourceAccess.PUBLIC, notice_access_after_end=access)
     outsider_account = store.upsert_contest_operator(c["cid"], f"outsider-{uuid4().hex}@zoj.com", "Reviewer", ["problem_reviewer"])
     outsider = general_headers(str(outsider_account.email))
@@ -147,20 +150,24 @@ def test_restricted_emergency_notice_stays_private_in_overview_and_public_worksp
         detail = client.get(c["detail"], headers=headers)
         listing = client.get("/api/public/contests", headers=headers)
         assert detail.json()["data"]["contest"]["emergency_notice"] is None
+        assert detail.json()["data"]["contest"]["emergency_notice_template"] is None
         assert next(item for item in listing.json()["data"] if item["contest_id"] == c["cid"])["emergency_notice"] is None
+        assert next(item for item in listing.json()["data"] if item["contest_id"] == c["cid"])["emergency_notice_template"] is None
         for path in ["/workspace", f"/divisions/{c['divisions'][0].division_id}/workspace"]:
             workspace = client.get(c["base"] + path, headers=headers).json()["data"]
             assert workspace["emergency_notice"] is None
             assert workspace["contest"]["emergency_notice"] is None
+            assert workspace["contest"]["emergency_notice_template"] is None
 
     # Both supported participant token types retain their existing emergency banner.
     for session_kind in ["participant", "general"]:
         headers = participant_headers(c) if session_kind == "participant" else general_headers(c["email"])
         detail = client.get(c["detail"], headers=headers)
-        assert detail.json()["data"]["contest"]["emergency_notice"] == "Participant-only emergency notice"
+        assert detail.json()["data"]["contest"]["emergency_notice"] == expected
+        assert detail.json()["data"]["contest"]["emergency_notice_template"] == template
         assert detail.headers["cache-control"] == "private, no-store"
         workspace = client.get(c["base"] + "/workspace", headers=headers).json()["data"]
-        assert workspace["emergency_notice"] == "Participant-only emergency notice"
+        assert workspace["emergency_notice"] == expected
 
 
 def test_public_notice_keeps_emergency_message_visible(contest_context):

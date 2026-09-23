@@ -18,6 +18,7 @@ from app.services.automatic_notices import (
     scheduled_notice_copy,
     time_update_notice_body,
 )
+from app.services.notice_countdown import countdown_template
 from app.services.store import store
 from app.settings import settings
 
@@ -124,13 +125,14 @@ def test_worker_deduplicates_short_copy_but_allows_rescheduled_reminders(contest
     store.enqueue_due_contest_emergency_notices()
     original = notices(contest)
     assert len(original) == 1
-    assert original[0].body == "스코어보드 프리즈까지 10분 남았습니다."
+    assert original[0].body == "스코어보드 프리즈까지 9분 남았습니다."
+    assert original[0].body_template == countdown_template("freeze", contest.freeze_at)
     store.enqueue_due_contest_emergency_notices()
     assert len(notices(contest)) == 1
     store.update_contest_settings(contest.contest_id, freeze_at=now + timedelta(minutes=8))
     store.enqueue_due_contest_emergency_notices()
     assert len(notices(contest)) == 2
-    assert notices(contest)[0].body == notices(contest)[1].body
+    assert {n.body for n in notices(contest)} == {"스코어보드 프리즈까지 9분 남았습니다.", "스코어보드 프리즈까지 8분 남았습니다."}
 
 
 def test_legacy_reminder_is_not_reposted_after_deployment(contest):
@@ -139,9 +141,13 @@ def test_legacy_reminder_is_not_reposted_after_deployment(contest):
     notice = store.create_contest_notice(contest.contest_id, "스코어보드 프리즈 10분 전", body, emergency=True)
     store.enqueue_due_contest_emergency_notices()
     assert len(notices(contest)) == 1
-    assert store.contests[contest.contest_id].emergency_notice == "스코어보드 프리즈까지 10분 남았습니다."
+    assert store.contests[contest.contest_id].emergency_notice == "스코어보드 프리즈까지 9분 남았습니다."
     with store._session() as db:
-        assert db.get(ContestNoticeRow, notice.contest_notice_id).body == body
+        assert db.get(ContestNoticeRow, notice.contest_notice_id).body == countdown_template("freeze", contest.freeze_at)
+    assert notices(contest)[0].contest_notice_id == notice.contest_notice_id
+    assert notices(contest)[0].published_at == notice.published_at
+    store.enqueue_due_contest_emergency_notices()
+    assert len(notices(contest)) == 1
 
 
 def test_edited_automatic_notice_is_not_reposted(contest):
@@ -170,7 +176,7 @@ def test_end_notice_is_short_and_does_not_promise_unreleased_rankings(contest, r
     store.update_contest_settings(contest.contest_id, freeze_at=now - timedelta(hours=1), end_at=now - timedelta(minutes=1), scoreboard_access_after_end="public", scoreboard_release_mode=release_mode)
     store.enqueue_due_contest_emergency_notices()
     store.enqueue_due_contest_emergency_notices()
-    assert [(notice.title, notice.body) for notice in notices(contest)] == [("대회 종료", "대회가 종료되었습니다. 수고하셨습니다.")]
+    assert [(notice.title, notice.body) for notice in notices(contest)] == [("대회 종료 안내", "대회가 종료되었습니다. 수고하셨습니다.")]
     assert store.contests[contest.contest_id].emergency_notice == "대회가 종료되었습니다. 수고하셨습니다."
 
 
@@ -186,12 +192,12 @@ def test_existing_schedule_notice_displays_compact_copy_without_changing_storage
 
 @pytest.mark.parametrize("minutes,title,body", [
     (31, None, None),
-    (30, "대회 시작 30분 전", "대회 시작까지 30분 남았습니다."),
-    (10, "대회 시작 10분 전", "대회 시작까지 10분 남았습니다."),
-    (5, "대회 시작 5분 전", "대회 시작까지 5분 남았습니다."),
-    (1, "대회 시작 1분 전", "대회 시작까지 1분 남았습니다."),
-    (0, "대회 시작", "대회가 시작되었습니다."),
-    (-9, "대회 시작", "대회가 시작되었습니다."),
+    (30, "대회 시작 안내", "대회 시작까지 30분 남았습니다."),
+    (10, "대회 시작 안내", "대회 시작까지 10분 남았습니다."),
+    (5, "대회 시작 안내", "대회 시작까지 5분 남았습니다."),
+    (1, "대회 시작 안내", "대회 시작까지 1분 남았습니다."),
+    (0, "대회 시작 안내", "대회가 시작되었습니다."),
+    (-9, "대회 시작 안내", "대회가 시작되었습니다."),
     (-11, None, None),
 ])
 def test_start_reminders_and_started_notice_are_published_once(contest, minutes, title, body):
@@ -222,14 +228,14 @@ def test_short_contest_start_is_visible_and_ended_contest_never_announces_its_re
     store.update_contest_settings(contest.contest_id, status=ContestStatus.OPEN,
         start_at=now + timedelta(minutes=9), freeze_at=now + timedelta(minutes=10), end_at=now + timedelta(minutes=11))
     store.enqueue_due_contest_emergency_notices()
-    assert [n.title for n in notices(contest)] == ["대회 시작 10분 전"]
+    assert [n.title for n in notices(contest)] == ["대회 시작 안내"]
     store.update_contest_settings(contest.contest_id, start_at=now, freeze_at=now + timedelta(minutes=1), end_at=now + timedelta(minutes=2))
     store.enqueue_due_contest_emergency_notices()
     assert store.contests[contest.contest_id].emergency_notice == "대회가 시작되었습니다."
     store.update_contest_settings(contest.contest_id, start_at=now - timedelta(minutes=2), freeze_at=now - timedelta(minutes=1), end_at=now)
     store.enqueue_due_contest_emergency_notices()
     assert store.contests[contest.contest_id].emergency_notice == "대회가 종료되었습니다. 수고하셨습니다."
-    assert len([n for n in notices(contest) if n.title == "대회 시작"]) == 1
+    assert len([n for n in notices(contest) if n.title == "대회 시작 안내"]) == 2
 
 
 def test_start_reminder_is_rescheduled_without_repeating_the_same_event(contest):
@@ -239,7 +245,7 @@ def test_start_reminder_is_rescheduled_without_repeating_the_same_event(contest)
     store.update_contest_settings(contest.contest_id, start_at=now + timedelta(minutes=8))
     store.enqueue_due_contest_emergency_notices()
     store.enqueue_due_contest_emergency_notices()
-    assert [n.title for n in notices(contest)] == ["대회 시작 10분 전", "대회 시작 10분 전"]
+    assert [n.title for n in notices(contest)] == ["대회 시작 안내", "대회 시작 안내"]
 
 
 def test_auto_notice_switch_disables_start_notices_too(contest, monkeypatch):
@@ -268,10 +274,47 @@ def test_participant_banner_api_receives_each_start_freeze_and_end_event(contest
         (end - timedelta(minutes=10), "대회 종료까지 10분 남았습니다."),
         (end, "대회가 종료되었습니다. 수고하셨습니다."),
     ]
+    event_ids = []
     for clock, expected in expected_events:
         monkeypatch.setattr(import_module("app.services.store"), "now_utc", lambda: clock)
         store.enqueue_due_contest_emergency_notices()
         response = client.get(f"/api/public/contests/{contest.contest_id}")
         assert response.status_code == 200, response.text
         assert response.json()["data"]["contest"]["emergency_notice"] == expected
-    assert len(notices(contest)) == len(expected_events)
+        event_ids.append({n.contest_notice_id for n in notices(contest)})
+    assert len(notices(contest)) == 3
+    assert all(event_ids[i] == event_ids[i + 1] for i in [0, 2, 4])
+
+
+def test_countdown_keeps_one_notice_across_all_old_thresholds(contest, monkeypatch):
+    contest, now = contest
+    deadline = now + timedelta(minutes=30)
+    store.update_contest_settings(contest.contest_id, freeze_at=deadline, end_at=now + timedelta(hours=2))
+    first_id = None
+    for elapsed in [0, 1, 60, 1200, 1500, 1740, 1800, 1801, 2400]:
+        clock = now + timedelta(seconds=elapsed)
+        monkeypatch.setattr(import_module("app.services.store"), "now_utc", lambda: clock)
+        store.enqueue_due_contest_emergency_notices()
+        current, = notices(contest)
+        if first_id is None:
+            first_id = current.contest_notice_id
+        assert current.contest_notice_id == first_id
+        assert current.body_template == countdown_template("freeze", deadline)
+        if elapsed == 1:
+            assert "29분 59초" in current.body
+        if elapsed >= 1800:
+            assert "프리즈되었습니다" in current.body
+
+
+def test_migrating_old_notice_preserves_newer_manual_banner(contest):
+    contest, _ = contest
+    from app.services.automatic_notices import scheduled_notice_id
+    title, body = scheduled_notice_copy("freeze", "10분")
+    original = store.create_contest_notice(contest.contest_id, title, body, emergency=True,
+        notice_id=scheduled_notice_id(contest.contest_id, title, contest.freeze_at))
+    store.update_contest_settings(contest.contest_id, emergency_notice="운영진의 중요 안내")
+    store.enqueue_due_contest_emergency_notices()
+    current, = notices(contest)
+    assert current.contest_notice_id == original.contest_notice_id
+    assert current.body_template is not None
+    assert store.contests[contest.contest_id].emergency_notice == "운영진의 중요 안내"

@@ -2558,7 +2558,7 @@ def test_due_contest_reminders_enqueue_html_mail_once():
     assert "body_html" in reminder and "대회 페이지 열기" in reminder["body_html"]
 
 
-def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
+def test_due_contest_emergency_notices_for_freeze_and_end_are_once(monkeypatch):
     contest_id = first_contest_id()
     operator = staff_tokens("test4@zoj.com")
     headers = auth_headers(operator["access_token"])
@@ -2567,11 +2567,13 @@ def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
         for target in ("스코어보드 프리즈", "대회 종료")
         for label in ("30분", "10분", "5분", "1분")
     }
-    scheduled_titles.update({"스코어보드 프리즈 시작", "대회 종료", "스코어보드 공개됨"})
+    scheduled_titles.update({"스코어보드 프리즈 시작", "대회 종료", "스코어보드 공개됨", "스코어보드 프리즈 안내", "대회 종료 안내"})
     for notice in store.contest_notices_for_view(contest_id, operator=True):
         if notice.title in scheduled_titles:
             store.delete_contest_notice(contest_id, notice.contest_notice_id)
     now = datetime.now(timezone.utc)
+    from importlib import import_module
+    monkeypatch.setattr(import_module("app.services.store"), "now_utc", lambda: now)
 
     store.update_contest_settings(
         contest_id,
@@ -2593,13 +2595,13 @@ def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
     assert freeze_notice.status_code == 200
     freeze_notices = freeze_notice.json()["data"]
     assert any(
-        item["title"] == "스코어보드 프리즈 10분 전"
+        item["title"] == "스코어보드 프리즈 안내"
         and item["emergency"]
         and item["pinned"]
-        and "스코어보드 프리즈까지 10분 남았습니다" in item["body"]
+        and "스코어보드 프리즈까지 9분 남았습니다" in item["body"]
         for item in freeze_notices
     )
-    assert "스코어보드 프리즈까지 10분 남았습니다" in store.contests[contest_id].emergency_notice
+    assert "스코어보드 프리즈까지 9분 남았습니다" in store.contests[contest_id].emergency_notice
 
     store.update_contest_settings(
         contest_id,
@@ -2621,13 +2623,13 @@ def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
     assert end_notice.status_code == 200
     end_notices = end_notice.json()["data"]
     assert any(
-        item["title"] == "대회 종료 5분 전"
+        item["title"] == "대회 종료 안내"
         and item["emergency"]
         and item["pinned"]
-        and "대회 종료까지 5분 남았습니다" in item["body"]
+        and "대회 종료까지 4분 남았습니다" in item["body"]
         for item in end_notices
     )
-    assert "대회 종료까지 5분 남았습니다" in store.contests[contest_id].emergency_notice
+    assert "대회 종료까지 4분 남았습니다" in store.contests[contest_id].emergency_notice
 
     store.update_contest_settings(
         contest_id,
@@ -2650,7 +2652,7 @@ def test_due_contest_emergency_notices_for_freeze_and_end_are_once():
     assert ended_notice.status_code == 200
     ended_notices = ended_notice.json()["data"]
     assert any(
-        item["title"] == "대회 종료"
+        item["title"] == "대회 종료 안내"
         and item["emergency"]
         and item["pinned"]
         and "대회가 종료되었습니다" in item["body"]

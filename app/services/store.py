@@ -83,6 +83,7 @@ from app.orm_models import (
 )
 from app.services.contest_roles import permissions_for_roles, roles_for_scopes, title_for_roles, title_for_scopes
 from app.services.automatic_notices import compact_automatic_notice, legacy_scheduled_notice, scheduled_notice_copy, scheduled_notice_id
+from app.services.notice_countdown import LABELS as COUNTDOWN_LABELS, countdown_template, notice_template, render_notice
 from app.services.security import decode_session_token, hash_password, new_session_token, token_hash, verify_password
 from app.services.storage import object_storage
 from app.services.mail_templates import (
@@ -177,7 +178,8 @@ def _contest(row: ContestRow) -> Contest:
         mock_judging_enabled=bool(row.mock_judging_enabled),
         participant_progress_visible=bool(row.participant_progress_visible),
         mock_judging_progress_visible=bool(row.mock_judging_progress_visible),
-        emergency_notice=compact_automatic_notice(row.emergency_notice),
+        emergency_notice=render_notice(compact_automatic_notice(row.emergency_notice), row, now_utc()),
+        emergency_notice_template=notice_template(row.emergency_notice),
         created_at=_aware(row.created_at),
     )
 
@@ -453,6 +455,10 @@ def _notice(row: ServiceNoticeRow) -> ServiceNotice:
 
 def _contest_notice(row: ContestNoticeRow) -> ContestNotice:
     body = compact_automatic_notice(row.body) if row.emergency else row.body
+    template = notice_template(row.body)
+    if template:
+        db = object_session(row)
+        body = render_notice(body, db.get(ContestRow, row.contest_id) if db else None, now_utc())
     title = row.title
     if body != row.body:
         if title == "대회 운영 시간이 변경되었습니다":
@@ -464,6 +470,7 @@ def _contest_notice(row: ContestNoticeRow) -> ContestNotice:
         contest_id=row.contest_id,
         title=title,
         body=body,
+        body_template=template,
         pinned=row.pinned,
         emergency=row.emergency,
         visibility=row.visibility,
@@ -4609,12 +4616,6 @@ class DbStore:
         if not settings.feature_emergency_notice_auto:
             return 0
 
-        windows = [
-            (timedelta(minutes=30), timedelta(minutes=10), "30분"),
-            (timedelta(minutes=10), timedelta(minutes=5), "10분"),
-            (timedelta(minutes=5), timedelta(minutes=1), "5분"),
-            (timedelta(minutes=1), timedelta(0), "1분"),
-        ]
         # A newly announced start takes banner priority over reminders for a
         # short contest's later milestones. All events remain in notice history.
         targets = [("freeze", "freeze_at"), ("end", "end_at"), ("start", "start_at")]
@@ -4641,11 +4642,6 @@ class DbStore:
                     ContestNoticeRow.contest_id == contest.contest_id,
                     ContestNoticeRow.emergency.is_(True),
                 )).all()
-                seen = {notice.contest_notice_id for notice in previous}
-                for notice in previous:
-                    legacy = legacy_scheduled_notice(notice.body)
-                    if legacy and legacy[0] == notice.title:
-                        seen.add(scheduled_notice_id(contest.contest_id, legacy[0], legacy[1]))
                 for target, field_name in targets:
                     if target == "start":
                         # Do not announce a past start after the contest ended,
@@ -4661,20 +4657,39 @@ class DbStore:
                     if not target_at:
                         continue
                     remaining = target_at - now
-                    candidate = None
-                    if timedelta(0) < remaining and contest.status != ContestStatus.ENDED.value:
-                        for upper_bound, lower_bound, label in windows:
-                            if lower_bound < remaining <= upper_bound:
-                                candidate = scheduled_notice_copy(target, label)
-                                break
-                    elif timedelta(0) <= now - target_at <= event_window:
-                        candidate = scheduled_notice_copy(target)
-                    if candidate is None:
+                    if not (-event_window <= remaining <= timedelta(minutes=30)):
                         continue
-                    title, body = candidate
-                    notice_id = scheduled_notice_id(contest.contest_id, title, target_at)
-                    if notice_id not in seen:
-                        due.append((contest.contest_id, title, body, notice_id))
+                    if remaining > timedelta(0) and contest.status == ContestStatus.ENDED.value:
+                        continue
+                    title = f"{COUNTDOWN_LABELS[target]} 안내"
+                    body = countdown_template(target, target_at)
+                    notice_id = scheduled_notice_id(contest.contest_id, f"countdown:{target}", target_at)
+                    old_copies = [scheduled_notice_copy(target, label) for label in ["30분", "10분", "5분", "1분", None]]
+                    known_ids = {notice_id} | {scheduled_notice_id(contest.contest_id, old_title, target_at) for old_title, _ in old_copies}
+                    matching = []
+                    for notice in previous:
+                        legacy = legacy_scheduled_notice(notice.body)
+                        same_legacy_event = legacy and legacy[0] == notice.title and scheduled_notice_id(contest.contest_id, legacy[0], legacy[1]) in known_ids
+                        if notice.contest_notice_id in known_ids or notice.body == body or same_legacy_event:
+                            matching.append(notice)
+                    if matching:
+                        # Upgrade an already-issued automatic reminder in place.
+                        # Keep its ID, publication time, manual edits and any newer banner.
+                        notice = max(matching, key=lambda item: _aware(item.published_at))
+                        previous_body = notice.body
+                        standard = previous_body in {copy for _, copy in old_copies} or legacy_scheduled_notice(previous_body)
+                        if standard:
+                            db.execute(update(ContestNoticeRow).where(
+                                ContestNoticeRow.contest_notice_id == notice.contest_notice_id,
+                                ContestNoticeRow.body == previous_body,
+                            ).values(title=title, body=body))
+                            db.execute(update(ContestRow).where(
+                                ContestRow.contest_id == contest.contest_id,
+                                ContestRow.emergency_notice == previous_body,
+                            ).values(emergency_notice=body))
+                        continue
+                    due.append((contest.contest_id, title, body, notice_id))
+            db.commit()
 
         queued_count = 0
         for contest_id, title, body, notice_id in due:
