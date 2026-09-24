@@ -164,7 +164,7 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
 
 
 @router.get("/public/judge-status")
-async def judge_status(request: Request):
+def judge_status(request: Request):
     nodes = list(store.judge_nodes.values())
     active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
     active_nodes = [node for node in nodes if node.last_heartbeat_at >= active_since]

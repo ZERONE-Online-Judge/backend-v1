@@ -892,7 +892,7 @@ async def wait_submission_status(
 
 
 @router.get("/contests/{contest_id}/scoreboard")
-async def scoreboard(contest_id: str, request: Request):
+def scoreboard(contest_id: str, request: Request):
     participant, _ = _allow_scoreboard_view(request, contest_id)
     divisions = store.contest_divisions(contest_id)
     division = participant["division"] if participant else (divisions[0] if divisions else None)
@@ -907,11 +907,11 @@ async def scoreboard(contest_id: str, request: Request):
 @router.get("/contests/{contest_id}/scoreboard:wait")
 async def wait_scoreboard(contest_id: str, request: Request, wait_seconds: float = 2.0):
     await asyncio.sleep(max(0, min(wait_seconds, 10.0)))
-    return await scoreboard(contest_id, request)
+    return await asyncio.to_thread(scoreboard, contest_id, request)
 
 
 @router.get("/contests/{contest_id}/divisions/{division_id}/scoreboard")
-async def division_scoreboard(contest_id: str, division_id: str, request: Request):
+def division_scoreboard(contest_id: str, division_id: str, request: Request):
     _allow_scoreboard_view(request, contest_id, division_id)
     division = store.get_division(contest_id, division_id)
     if not division:
@@ -925,4 +925,4 @@ async def division_scoreboard(contest_id: str, division_id: str, request: Reques
 @router.get("/contests/{contest_id}/divisions/{division_id}/scoreboard:wait")
 async def wait_division_scoreboard(contest_id: str, division_id: str, request: Request, wait_seconds: int = 5):
     await asyncio.sleep(max(0, min(wait_seconds, 10)))
-    return await division_scoreboard(contest_id, division_id, request)
+    return await asyncio.to_thread(division_scoreboard, contest_id, division_id, request)

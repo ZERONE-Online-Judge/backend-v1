@@ -86,7 +86,9 @@ from app.orm_models import (
 from app.services.contest_roles import permissions_for_roles, roles_for_scopes, title_for_roles, title_for_scopes
 from app.services.automatic_notices import compact_automatic_notice, legacy_scheduled_notice, scheduled_notice_copy, scheduled_notice_id
 from app.services.notice_countdown import LABELS as COUNTDOWN_LABELS, countdown_template, notice_template, render_notice
-from app.services.security import decode_session_token, hash_password, new_session_token, token_hash, verify_password
+from app.services.security import decode_session_token, hash_password, new_session_token, token_hash
+from app.services.node_credentials import valid_node_credential
+from app.services.result_cache import cached_result
 from app.services.storage import object_storage
 from app.services.mail_templates import (
     absolute_url,
@@ -1022,42 +1024,28 @@ class DbStore:
             return [_access_log(row) for row in rows], next_cursor, total_count
 
     def access_log_stats(self, *, contest_id: str | None = None) -> dict:
+        return cached_result("access-stats", contest_id, settings.access_stats_cache_ttl_seconds,
+                             lambda: self._access_log_stats_uncached(contest_id=contest_id))
+
+    def _access_log_stats_uncached(self, *, contest_id: str | None = None) -> dict:
         since = now_utc() - timedelta(hours=24)
         filters = [AccessLogRow.created_at >= since]
         if contest_id:
             filters.append(AccessLogRow.contest_id == contest_id)
 
         with self._session() as db:
-            total_count = int(db.scalar(select(func.count()).select_from(AccessLogRow).where(*filters)) or 0)
-            success_count = int(
-                db.scalar(
-                    select(func.count()).select_from(AccessLogRow).where(
-                        *filters,
-                        AccessLogRow.event_type.in_(
-                            [
-                                "general_login",
-                                "participant_login",
-                                "participant_session_issued",
-                                "general_refresh",
-                                "participant_session_check",
-                            ]
-                        ),
-                    )
-                )
-                or 0
-            )
-            failed_count = int(
-                db.scalar(select(func.count()).select_from(AccessLogRow).where(*filters, AccessLogRow.event_type == "login_failed"))
-                or 0
-            )
-            conflict_count = int(
-                db.scalar(select(func.count()).select_from(AccessLogRow).where(*filters, AccessLogRow.event_type == "session_conflict"))
-                or 0
-            )
-            unique_account_count = int(
-                db.scalar(select(func.count(func.distinct(AccessLogRow.email))).where(*filters, AccessLogRow.email.is_not(None)))
-                or 0
-            )
+            total_count, success_count, failed_count, conflict_count, unique_account_count = db.execute(
+                select(
+                    func.count(),
+                    func.count().filter(AccessLogRow.event_type.in_([
+                        "general_login", "participant_login", "participant_session_issued",
+                        "general_refresh", "participant_session_check",
+                    ])),
+                    func.count().filter(AccessLogRow.event_type == "login_failed"),
+                    func.count().filter(AccessLogRow.event_type == "session_conflict"),
+                    func.count(func.distinct(AccessLogRow.email)),
+                ).select_from(AccessLogRow).where(*filters)
+            ).one()
             active_filters = [
                 TeamSessionRow.revoked_at.is_(None),
                 TeamSessionRow.expires_at > now_utc(),
@@ -4360,6 +4348,28 @@ class DbStore:
         return {"frozen": release.mode != "all", "rows": rows, "release": self._release_summary(release)}
 
     def scoreboard_rows(self, contest_id: str, division_id: str | None = None, public_view: bool = False, *, _cutoff_at: datetime | None = None) -> dict | None:
+        compute = lambda: self._scoreboard_rows_uncached(contest_id, division_id, public_view, _cutoff_at=_cutoff_at)
+        if not settings.redis_url or _cutoff_at is not None:
+            return compute()
+        # Read the current visibility/freeze policy before every cache lookup.
+        # A time boundary or settings change must never reuse a live public board.
+        with self._session() as db:
+            contest = db.get(ContestRow, contest_id)
+            if not contest:
+                return None
+            ended = self._scoreboard_ended(contest)
+            release = db.get(ScoreboardReleaseRow, division_id) if public_view and division_id and ended else None
+            strategy = contest.scoreboard_release_mode or "manual"
+            immediate_hold = bool(ended and strategy == "immediate" and release and release.mode == "partial")
+            cutoff = None
+            if public_view and (immediate_hold or not (ended and strategy == "immediate")):
+                cutoff = self._scoreboard_cutoff(contest, now_utc(), resolver=immediate_hold or (ended and strategy == "resolver"))
+            identity = [contest_id, division_id, public_view, ended, cutoff,
+                        _contest(contest).model_dump(mode="json"),
+                        [release.mode, release.strategy, release.revision] if release else None]
+        return cached_result("scoreboard", identity, settings.scoreboard_cache_ttl_seconds, compute)
+
+    def _scoreboard_rows_uncached(self, contest_id: str, division_id: str | None = None, public_view: bool = False, *, _cutoff_at: datetime | None = None) -> dict | None:
         with self._session() as db:
             contest = db.get(ContestRow, contest_id)
             if not contest:
@@ -4395,15 +4405,18 @@ class DbStore:
                 submission_filters.append(SubmissionRow.submitted_at <= cutoff_at)
 
             teams = db.scalars(select(ParticipantTeamRow).where(*team_filters).order_by(ParticipantTeamRow.team_name)).all()
-            teams = [team for team in teams if not team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX)]
-            excluded_team_ids = {team.participant_team_id for team in db.scalars(select(ParticipantTeamRow).where(*team_filters)).all() if team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX)}
+            excluded_team_ids = {team.participant_team_id for team in teams if team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX)}
+            teams = [team for team in teams if team.participant_team_id not in excluded_team_ids]
             problems = db.scalars(select(ProblemRow).where(*problem_filters).order_by(ProblemRow.display_order)).all()
             divisions = {
                 row.division_id: _division(row)
                 for row in db.scalars(select(ContestDivisionRow).where(ContestDivisionRow.contest_id == contest_id)).all()
             }
             problem_by_id = {problem.problem_id: problem for problem in problems}
-            submissions = db.scalars(select(SubmissionRow).where(*submission_filters).order_by(SubmissionRow.submitted_at, SubmissionRow.submission_id)).all()
+            submissions = db.scalars(select(SubmissionRow).options(load_only(
+                SubmissionRow.submission_id, SubmissionRow.participant_team_id,
+                SubmissionRow.problem_id, SubmissionRow.status, SubmissionRow.submitted_at,
+            )).where(*submission_filters).order_by(SubmissionRow.submitted_at, SubmissionRow.submission_id)).all()
             if excluded_team_ids:
                 submissions = [submission for submission in submissions if submission.participant_team_id not in excluded_team_ids]
 
@@ -4946,7 +4959,7 @@ class DbStore:
 
     @staticmethod
     def _check_node_secret(node: JudgeNodeRow | None, node_secret: str) -> None:
-        if not node or not node.schedulable or not verify_password(node_secret, node.node_secret_hash):
+        if not valid_node_credential(node, node_secret):
             raise ValueError("node secret mismatch")
 
     def register_node(self, node_name: str, node_secret: str, total_slots: int, agent_version: str = "unknown") -> JudgeNode:
@@ -4966,7 +4979,7 @@ class DbStore:
             row = db.get(JudgeNodeRow, node_id)
             if not row:
                 return None
-            return row.schedulable and verify_password(node_secret, row.node_secret_hash)
+            return valid_node_credential(row, node_secret)
 
     def append_judge_agent_logs(
         self,

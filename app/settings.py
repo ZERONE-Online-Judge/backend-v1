@@ -14,6 +14,16 @@ class Settings(BaseSettings):
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     cors_allow_origin_regex: str | None = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     database_url: str = "sqlite:////private/tmp/zerone_online_judge_demo_v5.db"
+    database_pool_size: int = 5
+    database_max_overflow: int = 5
+    database_pool_timeout_seconds: float = 5.0
+    redis_url: str | None = None
+    scoreboard_cache_ttl_seconds: int = 2
+    access_stats_cache_ttl_seconds: int = 5
+    access_log_retention_days: int = 365
+    audit_log_retention_days: int = 365
+    judge_log_retention_days: int = 90
+    log_cleanup_batch_size: int = 1000
     enable_demo_seed: bool = False
     allow_empty_otp: bool = False
     bootstrap_service_master_email: str | None = None

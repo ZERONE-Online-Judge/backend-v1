@@ -481,7 +481,7 @@ async def operator_dashboard(contest_id: str, request: Request):
 
 
 @router.get("/operator/contests/{contest_id}/audit-logs")
-async def operator_audit_logs(
+def operator_audit_logs(
     contest_id: str,
     request: Request,
     actor_email: str | None = None,
@@ -508,7 +508,7 @@ async def operator_audit_logs(
 
 
 @router.get("/operator/contests/{contest_id}/access-logs")
-async def operator_access_logs(
+def operator_access_logs(
     contest_id: str,
     request: Request,
     email: str | None = None,
@@ -535,7 +535,7 @@ async def operator_access_logs(
 
 
 @router.get("/operator/contests/{contest_id}/access-log-stats")
-async def operator_access_log_stats(contest_id: str, request: Request):
+def operator_access_log_stats(contest_id: str, request: Request):
     require_contest_staff(request, contest_id, "contest.access_log.view")
     if contest_id not in store.contests:
         raise not_found()
@@ -1271,7 +1271,7 @@ async def judge_history(contest_id: str, request: Request, limit: int = 100, cur
 
 
 @router.get("/operator/contests/{contest_id}/scoreboard/internal")
-async def internal_scoreboard(contest_id: str, request: Request):
+def internal_scoreboard(contest_id: str, request: Request):
     require_contest_staff(request, contest_id, "contest.scoreboard.view")
     board = store.scoreboard_rows(contest_id, public_view=False)
     public_board = store.scoreboard_rows(contest_id, public_view=True)
@@ -1290,7 +1290,7 @@ async def internal_scoreboard(contest_id: str, request: Request):
 
 
 @router.get("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/internal")
-async def division_internal_scoreboard(contest_id: str, division_id: str, request: Request):
+def division_internal_scoreboard(contest_id: str, division_id: str, request: Request):
     require_contest_staff(request, contest_id, "contest.scoreboard.view")
     division = store.get_division(contest_id, division_id)
     if not division:
@@ -1341,7 +1341,7 @@ async def update_scoreboard_release(contest_id: str, division_id: str, payload: 
 
 
 @router.get("/operator/contests/{contest_id}/scoreboard/presentation")
-async def presentation_scoreboard(contest_id: str, request: Request):
+def presentation_scoreboard(contest_id: str, request: Request):
     require_contest_staff(request, contest_id, "contest.scoreboard.view")
     from app.services.presentation_board import presentation_board
     return ok(request, presentation_board(contest_id))

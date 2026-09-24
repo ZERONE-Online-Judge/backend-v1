@@ -1,8 +1,16 @@
+x-app-logging: &app-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-api-service: &api-service
   build:
     context: ..
   env_file:
     - ./env/backend.env
+  command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "${API_WORKERS:-2}"]
+  logging: *app-logging
   volumes:
     - ${FRONTEND_DIST_PATH:-../../frontend/dist}:/frontend:ro
   depends_on:
@@ -10,6 +18,8 @@ x-api-service: &api-service
       condition: service_completed_successfully
     minio-init:
       condition: service_completed_successfully
+    redis:
+      condition: service_healthy
   expose:
     - "8000"
   healthcheck:
@@ -78,7 +88,13 @@ services:
 
   redis:
     image: redis:7
-    command: ["redis-server", "--appendonly", "yes"]
+    logging: *app-logging
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -113,6 +129,7 @@ services:
     restart: "no"
 
   mail-worker:
+    logging: *app-logging
     build:
       context: ..
     command: ["python", "-m", "app.workers.mail_worker"]
@@ -126,6 +143,7 @@ services:
     restart: unless-stopped
 
   notice-worker:
+    logging: *app-logging
     build:
       context: ..
     command: ["python", "-m", "app.workers.notice_worker"]
@@ -139,6 +157,7 @@ services:
     restart: unless-stopped
 
   bundle-worker:
+    logging: *app-logging
     build:
       context: ..
     command: ["python", "-m", "app.workers.bundle_worker"]

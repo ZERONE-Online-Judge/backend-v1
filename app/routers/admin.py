@@ -292,7 +292,7 @@ async def admin_contact_inquiries(request: Request):
 
 
 @router.get("/admin/audit-logs")
-async def admin_audit_logs(
+def admin_audit_logs(
     request: Request,
     scope: str | None = None,
     contest_id: str | None = None,
@@ -320,7 +320,7 @@ async def admin_audit_logs(
 
 
 @router.get("/admin/access-logs")
-async def admin_access_logs(
+def admin_access_logs(
     request: Request,
     account_scope: str | None = None,
     contest_id: str | None = None,
@@ -348,7 +348,7 @@ async def admin_access_logs(
 
 
 @router.get("/admin/access-log-stats")
-async def admin_access_log_stats(request: Request, contest_id: str | None = None):
+def admin_access_log_stats(request: Request, contest_id: str | None = None):
     require_service_master(request)
     return ok(request, store.access_log_stats(contest_id=contest_id or None))
 

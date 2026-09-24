@@ -375,6 +375,7 @@ class JudgeNodeRow(Base):
 
 class JudgeAgentLogRow(Base):
     __tablename__ = "judge_agent_logs"
+    __table_args__ = (Index("idx_judge_logs_created_id", "created_at", "judge_agent_log_id"),)
 
     judge_agent_log_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     judge_node_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -386,6 +387,7 @@ class JudgeAgentLogRow(Base):
 
 class OperationalAuditLogRow(Base):
     __tablename__ = "operational_audit_logs"
+    __table_args__ = (Index("idx_audit_logs_created_id", "created_at", "operational_audit_log_id"),)
 
     operational_audit_log_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     scope: Mapped[str] = mapped_column(String(32), index=True)
@@ -406,6 +408,7 @@ class OperationalAuditLogRow(Base):
 
 class AccessLogRow(Base):
     __tablename__ = "access_logs"
+    __table_args__ = (Index("idx_access_logs_created_id", "created_at", "access_log_id"),)
 
     access_log_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     event_type: Mapped[str] = mapped_column(String(64), index=True)
