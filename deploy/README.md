@@ -276,9 +276,10 @@ serialized in PostgreSQL. Approved workers remain trusted to execute the judge
 correctly: a stolen worker secret or compromised approved VM still requires
 revocation and investigation; this protocol does not attest computation.
 
-The main and test Nginx virtual hosts restrict `/api/internal/judge/` to TCP peers
-`10.10.10.111` through `10.10.10.117`. Supplied forwarding headers do not grant
-access. Keep backend container port 8000 unexposed, and do not enable broad
+The main and test Nginx virtual hosts deny `/api/internal/judge/` entirely.
+The private TLS gateway accepts only TCP peers `10.10.10.111` through
+`10.10.10.117`. Supplied forwarding headers do not grant access.
+Keep backend container port 8000 unexposed, and do not enable broad
 `set_real_ip_from` rules on these proxies.
 
 The `judge-gateway` service serves `https://10.10.10.110:6443/api` and signed
@@ -290,10 +291,12 @@ agent containers over a trusted channel; use the agent repository's
 both the server certificate and IP address, then preserves normal Python TLS
 verification. Do not use insecure TLS options.
 
-HTTP port 6001 retains the same peer restriction during migration so active
-agents continue working. After every active agent uses 6443, retire their HTTP
-judge access in the main proxy. The deployment reloads both proxies before the
-old API is stopped.
+HTTP port 6001 no longer accepts judge credentials, including from agent IPs.
+All active nodes must use 6443 before installing this configuration. Returning
+offline nodes must also install trusted TLS before reconnecting. Historical
+agent rollback scripts that restore HTTP settings require an updated TLS
+configuration; HTTP credential transport must not be re-enabled as a fallback.
+The deployment reloads both proxies before the old API is stopped.
 
 Certificates expire after one year. Monitor with
 `openssl x509 -checkend 2592000 -noout -in deploy/env/judge-tls/server.crt`.

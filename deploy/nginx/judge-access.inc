@@ -1,5 +1,5 @@
 # Use the TCP peer, never a client-supplied X-Forwarded-For header.
-# Restrict the privileged judge API on both public and test virtual hosts.
+# Restrict the privileged judge API on the private TLS gateway.
 location ^~ /api/internal/judge/ {
     allow 10.10.10.111;
     allow 10.10.10.112;
