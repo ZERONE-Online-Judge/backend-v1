@@ -263,6 +263,10 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE scoreboard_releases ADD COLUMN strategy VARCHAR(32) DEFAULT 'manual' NOT NULL"))
                 if "resolver_state" not in columns:
                     connection.execute(text("ALTER TABLE scoreboard_releases ADD COLUMN resolver_state JSON"))
+                if "undo_history" not in columns:
+                    connection.execute(text("ALTER TABLE scoreboard_releases ADD COLUMN undo_history JSON"))
+                if "revision" not in columns:
+                    connection.execute(text("ALTER TABLE scoreboard_releases ADD COLUMN revision INTEGER DEFAULT 0 NOT NULL"))
         if "mail_queue" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("mail_queue")}
             if "body_html" not in columns:

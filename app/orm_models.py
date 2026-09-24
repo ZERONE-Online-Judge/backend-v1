@@ -65,6 +65,8 @@ class ScoreboardReleaseRow(Base):
     resolver_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     snapshot_rows: Mapped[list] = mapped_column(JSON, default=list)
     revealed_ranks: Mapped[list] = mapped_column(JSON, default=list)
+    undo_history: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 

@@ -153,6 +153,7 @@ def _contest(row: ContestRow) -> Contest:
     db = object_session(row)
     release_locked = bool(db and db.scalar(select(ScoreboardReleaseRow.division_id).where(
         ScoreboardReleaseRow.contest_id == row.contest_id,
+        ScoreboardReleaseRow.mode != "not_started",
     ).limit(1)))
     return Contest(
         contest_id=row.contest_id,
@@ -3027,7 +3028,7 @@ class DbStore:
                 return None
             next_release_mode = values.get("scoreboard_release_mode")
             if next_release_mode is not None and next_release_mode != (row.scoreboard_release_mode or "manual"):
-                if db.scalar(select(ScoreboardReleaseRow.division_id).where(ScoreboardReleaseRow.contest_id == contest_id).limit(1)):
+                if db.scalar(select(ScoreboardReleaseRow.division_id).where(ScoreboardReleaseRow.contest_id == contest_id, ScoreboardReleaseRow.mode != "not_started").limit(1)):
                     raise ValueError("순위 공개를 시작한 후에는 공개 방식을 변경할 수 없습니다.")
             next_freeze_mode = values.get("scoreboard_freeze_mode")
             if next_freeze_mode is not None and next_freeze_mode != row.scoreboard_freeze_mode:
@@ -4001,24 +4002,38 @@ class DbStore:
                 return None
             release = db.get(ScoreboardReleaseRow, division_id)
             strategy = contest.scoreboard_release_mode or "manual"
-            if release:
-                return self._release_summary(release)
             if strategy == "immediate" and self._scoreboard_ended(contest):
-                board = self.scoreboard_rows(contest_id, division_id, public_view=False)
-                return self._immediate_release_summary(board["rows"])
-            return self._release_summary(None, strategy)
+                team_count = db.scalar(select(func.count()).select_from(ParticipantTeamRow).where(
+                    ParticipantTeamRow.contest_id == contest_id,
+                    ParticipantTeamRow.division_id == division_id,
+                    ~ParticipantTeamRow.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX),
+                )) or 0
+                result = (self._release_summary(release, include_undo=True)
+                          if release and release.mode != "not_started"
+                          else self._immediate_release_summary([], include_undo=True))
+                result.update(total_count=team_count, revealed_count=team_count if result["mode"] == "all" else 0,
+                              revision=(release.revision or 0) if release else 0)
+                return result
+            if release:
+                return self._release_summary(release, strategy, include_undo=True)
+            return self._release_summary(None, strategy, include_undo=True)
 
     @staticmethod
-    def _immediate_release_summary(rows: list[dict]) -> dict:
-        return {"mode": "all", "strategy": "immediate", "ranks": [],
-                "revealed_count": len(rows), "total_count": len(rows)}
+    def _immediate_release_summary(rows: list[dict], *, include_undo: bool = False) -> dict:
+        result = {"mode": "all", "strategy": "immediate", "ranks": [],
+                  "revealed_count": len(rows), "total_count": len(rows)}
+        if include_undo:
+            result.update(revision=0, undo={"action": "automatic"})
+        return result
 
     @staticmethod
-    def _release_summary(release: ScoreboardReleaseRow | None, strategy: str = "manual") -> dict:
-        if release is None:
+    def _release_summary(release: ScoreboardReleaseRow | None, strategy: str = "manual", *, include_undo: bool = False) -> dict:
+        if release is None or release.mode == "not_started":
             result = {"mode": "not_started", "strategy": strategy, "ranks": [], "revealed_count": 0, "total_count": 0}
             if strategy == "resolver":
                 result["resolver"] = {"step": 0, "total_steps": 0, "pending_count": 0, "last_event": None}
+            if include_undo:
+                result.update(revision=(release.revision or 0) if release else 0, undo=None)
             return result
         strategy = release.strategy or "manual"
         ranks = sorted({row["rank"] for row in release.snapshot_rows})
@@ -4030,6 +4045,16 @@ class DbStore:
             "revealed_count": sum(row["rank"] in revealed for row in release.snapshot_rows),
             "total_count": len(release.snapshot_rows),
         }
+        if include_undo:
+            undo = None
+            if release.undo_history:
+                entry = release.undo_history[-1]
+                undo = {"action": entry["action"]}
+                if entry.get("rank") is not None:
+                    undo["rank"] = entry["rank"]
+            elif release.undo_history is None:
+                undo = {"action": "legacy"}
+            result.update(revision=release.revision or 0, undo=undo)
         if strategy == "resolver":
             state = release.resolver_state or {}
             pending = state.get("pending", [])
@@ -4089,7 +4114,7 @@ class DbStore:
                 previous_key = key
             row["rank"] = rank
 
-    def _advance_resolver(self, release: ScoreboardReleaseRow) -> None:
+    def _advance_resolver(self, release: ScoreboardReleaseRow) -> dict | None:
         state = deepcopy(release.resolver_state)
         pending = state["pending"]
         if not pending:
@@ -4098,6 +4123,8 @@ class DbStore:
         row = next(row for row in reversed(state["rows"]) if row["team_id"] in pending_teams)
         event_index = next(index for index, event in enumerate(pending) if event["team_id"] == row["team_id"])
         event = pending.pop(event_index)
+        inverse = {"row": deepcopy(row), "event": event, "event_index": event_index,
+                   "step": state["step"], "last_event": state.get("last_event")}
         old_rank = row["rank"]
         score = next(score for score in row["problem_scores"] if score["problem_id"] == event["problem_id"])
         if not score["solved"] and event["status"] == "accepted":
@@ -4120,23 +4147,98 @@ class DbStore:
             "from_rank": old_rank, "to_rank": row["rank"],
         }
         release.resolver_state = state
+        return inverse
 
-    def update_scoreboard_release(self, contest_id: str, division_id: str, action: str, rank: int | None = None, expected_step: int | None = None) -> dict:
+    @staticmethod
+    def _reset_scoreboard_release(release: ScoreboardReleaseRow) -> None:
+        release.mode = "not_started"
+        release.snapshot_rows = []
+        release.revealed_ranks = []
+        release.resolver_state = None
+        release.undo_history = []
+
+    def _undo_scoreboard_release(self, release: ScoreboardReleaseRow) -> None:
+        if release.undo_history is None and release.mode != "not_started":
+            # Earlier releases have no chronological action log. Do not invent
+            # one from rank order or current (possibly rejudged) submissions.
+            self._reset_scoreboard_release(release)
+            return
+        history = list(release.undo_history or [])
+        if not history:
+            raise ValueError("되돌릴 순위 공개 기록이 없습니다.")
+        entry = history.pop()
+        if entry["mode"] == "not_started":
+            self._reset_scoreboard_release(release)
+        else:
+            release.mode = entry["mode"]
+            release.revealed_ranks = entry["revealed_ranks"]
+            if "resolver_state" in entry:
+                release.resolver_state = entry["resolver_state"]
+            elif "resolver_delta" in entry:
+                inverse = entry["resolver_delta"]
+                state = deepcopy(release.resolver_state)
+                state["pending"].insert(inverse["event_index"], inverse["event"])
+                state["rows"] = [inverse["row"] if row["team_id"] == inverse["row"]["team_id"] else row for row in state["rows"]]
+                state.update(step=inverse["step"], last_event=inverse["last_event"])
+                self._rank_resolver_rows(state["rows"])
+                release.resolver_state = state
+            release.undo_history = None if entry.get("legacy_base") and not history else history
+
+    def update_scoreboard_release(self, contest_id: str, division_id: str, action: str, rank: int | None = None, expected_step: int | None = None, expected_revision: int | None = None) -> dict:
         with self._session() as db:
-            # Serialize mode changes and reveal steps, including first creation.
+            # The contest lock serializes creation, undo, and forward actions.
             contest = db.scalar(select(ContestRow).where(ContestRow.contest_id == contest_id).with_for_update())
             division = db.get(ContestDivisionRow, division_id)
             if not contest or not division or division.contest_id != contest_id:
                 raise ValueError("division not found")
             if not self._scoreboard_ended(contest):
-                raise ValueError("대회 종료 후에 순위를 공개할 수 있습니다.")
+                raise ValueError("대회 종료 후에 순위를 공개하거나 되돌릴 수 있습니다.")
             strategy = contest.scoreboard_release_mode or "manual"
-            if strategy == "immediate":
-                raise ValueError("종료 즉시 공개 방식에서는 종료 후 결과가 자동으로 반영됩니다.")
-            if action not in ({"start", "next", "all"} if strategy == "resolver" else {"start", "rank", "all"}):
+            allowed = {"all", "undo"} if strategy == "immediate" else ({"start", "next", "all", "undo"} if strategy == "resolver" else {"start", "rank", "all", "undo"})
+            if action not in allowed:
                 raise ValueError("선택한 공개 방식에서 지원하지 않는 동작입니다.")
             release = db.get(ScoreboardReleaseRow, division_id)
-            if release is None:
+            revision = (release.revision or 0) if release else 0
+            if action == "undo" and expected_revision is None:
+                raise ValueError("최신 공개 상태를 확인한 뒤 다시 되돌려 주세요.")
+            if expected_revision is not None and expected_revision != revision:
+                raise ValueError("다른 화면에서 공개 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 시도하세요.")
+
+            if strategy == "immediate":
+                # A hold overrides automatic release for this division only;
+                # resuming uses live scores, never a final-score snapshot.
+                if release is None or release.mode == "not_started":
+                    if action != "undo":
+                        raise ValueError("이미 모든 성적이 자동 공개되고 있습니다.")
+                    if release is None:
+                        release = ScoreboardReleaseRow(contest_id=contest_id, division_id=division_id)
+                        db.add(release)
+                    self._reset_scoreboard_release(release)
+                    release.mode = "partial"
+                    release.strategy = "immediate"
+                    release.revision = revision + 1
+                elif action == "undo":
+                    self._undo_scoreboard_release(release)
+                    release.revision = revision + 1
+                elif release.mode != "all":
+                    release.undo_history = [*(release.undo_history or []), {
+                        "action": "all", "mode": release.mode, "revealed_ranks": [],
+                    }]
+                    release.mode = "all"
+                    release.revision = revision + 1
+                db.commit()
+                return self.scoreboard_release(contest_id, division_id)
+
+            if action == "undo":
+                if release is None:
+                    raise ValueError("되돌릴 순위 공개 기록이 없습니다.")
+                self._undo_scoreboard_release(release)
+                release.revision = revision + 1
+                db.commit()
+                return self._release_summary(release, strategy, include_undo=True)
+
+            starting = release is None or release.mode == "not_started"
+            if starting:
                 if action in {"rank", "next"}:
                     raise ValueError("순위 공개를 먼저 시작하세요.")
                 pending = db.scalar(select(SubmissionRow.submission_id).join(
@@ -4151,19 +4253,34 @@ class DbStore:
                 if pending:
                     raise ValueError("이 유형의 채점이 끝난 뒤 순위 공개를 시작하세요.")
                 board = self.scoreboard_rows(contest_id, division_id, public_view=False)
-                release = ScoreboardReleaseRow(
-                    contest_id=contest_id, division_id=division_id, mode="partial", strategy=strategy,
-                    snapshot_rows=jsonable_encoder(board["rows"]), revealed_ranks=[],
-                    resolver_state=self._new_resolver_state(db, contest, division_id) if strategy == "resolver" else None,
-                )
-                db.add(release)
+                if release is None:
+                    release = ScoreboardReleaseRow(contest_id=contest_id, division_id=division_id, revision=0)
+                    db.add(release)
+                release.mode = "partial"
+                release.strategy = strategy
+                release.snapshot_rows = jsonable_encoder(board["rows"])
+                release.revealed_ranks = []
+                release.resolver_state = self._new_resolver_state(db, contest, division_id) if strategy == "resolver" else None
+                release.undo_history = []
+                entry = {"action": action, "mode": "not_started"}
+            else:
+                if action == "start":
+                    return self._release_summary(release, include_undo=True)
+                if action == "next" and expected_step is not None and expected_step != release.resolver_state["step"]:
+                    raise ValueError("다른 화면에서 공개가 진행되었습니다. 새로고침 후 다시 시도하세요.")
+                if (action == "all" and release.mode == "all") or (action == "rank" and rank in release.revealed_ranks) or (action == "next" and not release.resolver_state["pending"]):
+                    return self._release_summary(release, include_undo=True)
+                entry = {"action": action, "mode": release.mode, "revealed_ranks": list(release.revealed_ranks),
+                         "legacy_base": release.undo_history is None}
+                if action == "rank":
+                    entry["rank"] = rank
+                if strategy == "resolver" and action == "all":
+                    entry["resolver_state"] = deepcopy(release.resolver_state)
+
             ranks = {row["rank"] for row in release.snapshot_rows}
             if strategy == "resolver":
-                state = release.resolver_state
                 if action == "next":
-                    if expected_step is not None and expected_step != state["step"]:
-                        raise ValueError("다른 화면에서 공개가 진행되었습니다. 새로고침 후 다시 시도하세요.")
-                    self._advance_resolver(release)
+                    entry["resolver_delta"] = self._advance_resolver(release)
                 if action == "all":
                     state = deepcopy(release.resolver_state)
                     state.update(pending=[], step=state["total_steps"], last_event=None)
@@ -4183,8 +4300,10 @@ class DbStore:
                     revealed = ranks
                 release.revealed_ranks = sorted(revealed)
                 release.mode = "all" if ranks <= revealed else "partial"
+            release.undo_history = [*(release.undo_history or []), entry]
+            release.revision = revision + 1
             db.commit()
-            return self._release_summary(release)
+            return self._release_summary(release, include_undo=True)
 
     @staticmethod
     def _public_scoreboard_row(original: dict) -> dict:
@@ -4237,16 +4356,18 @@ class DbStore:
 
             ended = self._scoreboard_ended(contest)
             strategy = contest.scoreboard_release_mode or "manual"
+            release = None
             if public_view and division_id:
                 release = db.get(ScoreboardReleaseRow, division_id) if ended else None
-                if release:
+                if release and release.mode != "not_started" and strategy != "immediate":
                     return self._released_scoreboard(release)
 
             cutoff_at = _cutoff_at
             frozen = False
             now = now_utc()
-            if public_view and not (ended and strategy == "immediate"):
-                cutoff_at = self._scoreboard_cutoff(contest, now, resolver=ended and strategy == "resolver")
+            immediate_hold = bool(ended and strategy == "immediate" and release and release.mode == "partial")
+            if public_view and (immediate_hold or not (ended and strategy == "immediate")):
+                cutoff_at = self._scoreboard_cutoff(contest, now, resolver=immediate_hold or (ended and strategy == "resolver"))
                 frozen = cutoff_at is not None
 
             team_filters = [ParticipantTeamRow.contest_id == contest_id]
@@ -4482,7 +4603,10 @@ class DbStore:
             if not public_view:
                 result["problem_stats"] = problem_stats
             else:
-                result["release"] = self._immediate_release_summary(rows) if ended and strategy == "immediate" else self._release_summary(None, strategy)
+                result["release"] = (self._immediate_release_summary(rows) if ended and strategy == "immediate" and not immediate_hold else
+                    self._release_summary(release, strategy))
+                if strategy == "immediate" and release:
+                    result["release"].update(total_count=len(rows), revealed_count=0 if immediate_hold else len(rows))
             return result
 
     def _mail_exists(self, db: Session, mail_type: str, recipient_email: str, subject: str) -> bool:

@@ -1292,9 +1292,10 @@ async def division_internal_scoreboard(contest_id: str, division_id: str, reques
 
 
 class ScoreboardReleaseRequest(BaseModel):
-    action: Literal["start", "rank", "next", "all"]
+    action: Literal["start", "rank", "next", "all", "undo"]
     rank: int | None = Field(default=None, ge=1)
     expected_step: int | None = Field(default=None, ge=0)
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 @router.get("/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/release")
@@ -1310,7 +1311,7 @@ async def scoreboard_release(contest_id: str, division_id: str, request: Request
 async def update_scoreboard_release(contest_id: str, division_id: str, payload: ScoreboardReleaseRequest, request: Request):
     require_contest_staff(request, contest_id, "contest.scoreboard.manage")
     try:
-        result = store.update_scoreboard_release(contest_id, division_id, payload.action, payload.rank, payload.expected_step)
+        result = store.update_scoreboard_release(contest_id, division_id, payload.action, payload.rank, payload.expected_step, payload.expected_revision)
     except ValueError as error:
         if str(error) == "division not found":
             raise not_found()
