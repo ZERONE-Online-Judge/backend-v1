@@ -141,7 +141,7 @@ def test_preview_submission_runs_real_judge_without_official_submission_or_score
     saved = store.get_submission(sid)
     assert saved.submission_kind == "participant_preview"
     assert saved.participant_team_id is None and saved.team_member_id is None
-    node = store.register_node(f"preview-test-{uuid4().hex}", "demo", 100, "test")
+    node = store.provision_node(f"preview-test-{uuid4().hex}", "demo", 100, "test")
     jobs = store.claim_jobs(node.judge_node_id, "demo", 100)
     job = next(job for job in jobs if job["submission_id"] == sid)
     result = client.post(f"/api/internal/judge/jobs/{job['judge_job_id']}/result", json={"node_secret": "demo", "lease_token": job["lease_token"], "final_status": "accepted", "judge_message": "SECRET JUDGE DATA"})

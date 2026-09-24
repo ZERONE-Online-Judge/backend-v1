@@ -1,9 +1,9 @@
 import asyncio
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
-from app.models import SubmissionStatus
+from app.models import JUDGE_FINAL_STATUSES, JUDGE_PROGRESS_STATUSES, SubmissionStatus
 from app.settings import settings
 from app.services.errors import AppError, not_found
 from app.services.responses import ok
@@ -12,30 +12,30 @@ from app.services.store import store
 router = APIRouter(tags=["internal-judge"])
 
 
-class RegisterNodeRequest(BaseModel):
-    node_name: str
-    node_secret: str
-    total_slots: int = 10
-    agent_version: str = "0.1.0"
+class NodeCredentialRequest(BaseModel):
+    node_secret: str = Field(min_length=1, max_length=1024)
 
 
-class HeartbeatRequest(BaseModel):
-    node_secret: str
-    total_slots: int
-    free_slots: int
-    running_job_count: int
-    agent_version: str | None = None
+class RegisterNodeRequest(NodeCredentialRequest):
+    node_name: str = Field(min_length=1, max_length=120)
+    total_slots: int = Field(default=10, ge=1, le=1024)
+    agent_version: str = Field(default="0.1.0", max_length=64)
 
 
-class ClaimRequest(BaseModel):
-    node_secret: str
-    max_count: int = 1
-    wait_seconds: float = 0.0
+class HeartbeatRequest(NodeCredentialRequest):
+    total_slots: int = Field(ge=1, le=1024)
+    free_slots: int = Field(ge=0, le=1024)
+    running_job_count: int = Field(ge=0, le=1024)
+    agent_version: str | None = Field(default=None, max_length=64)
 
 
-class ResultRequest(BaseModel):
-    node_secret: str
-    lease_token: str
+class ClaimRequest(NodeCredentialRequest):
+    max_count: int = Field(default=1, ge=1, le=100)
+    wait_seconds: float = Field(default=0.0, ge=0, le=60)
+
+
+class ResultRequest(NodeCredentialRequest):
+    lease_token: str = Field(min_length=1, max_length=128)
     final_status: SubmissionStatus
     compile_message: str | None = None
     judge_message: str | None = None
@@ -43,28 +43,39 @@ class ResultRequest(BaseModel):
     runtime_ms: int | None = None
     memory_kb: int | None = None
 
+    @field_validator("final_status")
+    @classmethod
+    def terminal_status_only(cls, value):
+        if value not in JUDGE_FINAL_STATUSES:
+            raise ValueError("Result must be a terminal judge status")
+        return value
 
-class ProgressRequest(BaseModel):
-    node_secret: str
-    lease_token: str
+
+class ProgressRequest(NodeCredentialRequest):
+    lease_token: str = Field(min_length=1, max_length=128)
     status: SubmissionStatus
     progress_current: int | None = None
     progress_total: int | None = None
 
+    @field_validator("status")
+    @classmethod
+    def progress_status_only(cls, value):
+        if value not in JUDGE_PROGRESS_STATUSES:
+            raise ValueError("Progress must be preparing or judging")
+        return value
 
-class LeaseRenewRequest(BaseModel):
-    node_secret: str
-    lease_token: str
+
+class LeaseRenewRequest(NodeCredentialRequest):
+    lease_token: str = Field(min_length=1, max_length=128)
 
 
 class AgentLogItem(BaseModel):
-    level: str = "info"
-    message: str
+    level: str = Field(default="info", max_length=16)
+    message: str = Field(max_length=8000)
 
 
-class AgentLogsRequest(BaseModel):
-    node_secret: str
-    logs: list[AgentLogItem]
+class AgentLogsRequest(NodeCredentialRequest):
+    logs: list[AgentLogItem] = Field(max_length=300)
 
 
 @router.post("/internal/judge/nodes/register")

@@ -10,4 +10,5 @@ venv/
 htmlcov/
 .DS_Store
 deploy/nginx/api-upstream.conf
-
+deploy/env/*.env
+deploy/env/judge-tls/

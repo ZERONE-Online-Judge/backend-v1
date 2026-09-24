@@ -22,6 +22,13 @@ from app.services.storage import object_storage
 client = TestClient(app)
 
 
+def register_judge_node(*, json):
+    # Provision through the administrator path before testing agent reconnect.
+    if not any(n.node_name == json["node_name"] for n in store.judge_nodes.values()):
+        store.provision_node(json["node_name"], json["node_secret"], json.get("total_slots", 10))
+    return client.post("/api/internal/judge/nodes/register", json=json)
+
+
 def first_contest_id() -> str:
     public_ids = [contest["contest_id"] for contest in client.get("/api/public/contests").json()["data"]]
     return next(
@@ -2834,8 +2841,7 @@ def test_judge_claim_uses_database_queue():
     assert submission.status_code == 200
     submission_id = submission.json()["data"]["submission_id"]
 
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": "pytest-node", "node_secret": "demo", "total_slots": 10},
     )
     assert node.status_code == 200
@@ -2858,8 +2864,7 @@ def test_judge_node_secret_is_required_for_claim_and_result():
         json={"language": "python313", "source_code": "print(42)"},
     )
 
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"secret-node-{uuid4().hex[:6]}", "node_secret": "correct", "total_slots": 1},
     )
     node_id = node.json()["data"]["judge_node_id"]
@@ -2893,8 +2898,7 @@ def test_judge_node_secret_is_required_for_claim_and_result():
 def test_service_master_can_view_judge_agent_logs():
     master = staff_tokens("test3@zoj.com")
     node_secret = f"log-secret-{uuid4().hex[:6]}"
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"log-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 1},
     )
     assert node.status_code == 200
@@ -2946,8 +2950,7 @@ def test_submission_progress_is_updated_during_judging():
     submission_id = submission.json()["data"]["submission_id"]
 
     node_secret = "progress-secret"
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"progress-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 1},
     )
     node_id = node.json()["data"]["judge_node_id"]
@@ -3035,8 +3038,7 @@ def test_participant_progress_can_be_hidden_by_contest_setting():
     submission_id = submission.json()["data"]["submission_id"]
 
     node_secret = "hidden-progress-secret"
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"hidden-progress-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 1},
     )
     node_id = node.json()["data"]["judge_node_id"]
@@ -3163,8 +3165,7 @@ def test_operator_and_admin_submission_detail_include_source_without_list_payloa
     assert admin_wait.json()["data"]["source_code"] is None
 
     node_secret = f"detail-secret-{uuid4().hex[:6]}"
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"detail-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
     )
     node_id = node.json()["data"]["judge_node_id"]
@@ -3320,8 +3321,7 @@ def test_problem_solve_status_uses_live_participant_results_during_scoreboard_fr
     wrong_submission_data = wrong_submission.json()["data"]
 
     node_secret = f"freeze-status-{uuid4().hex[:6]}"
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"freeze-status-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
     )
     assert node.status_code == 200
@@ -3437,8 +3437,7 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
         submissions.append(response.json()["data"])
 
     node_secret = "score-secret"
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"score-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
     )
     node_id = node.json()["data"]["judge_node_id"]
@@ -3527,8 +3526,7 @@ def test_scoreboard_ties_zero_solve_and_orders_wrong_only_below_no_submit():
     submission_id = wrong_submission.json()["data"]["submission_id"]
 
     node_secret = f"rank-secret-{uuid4().hex[:6]}"
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"rank-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
     )
     assert node.status_code == 200
@@ -3588,8 +3586,7 @@ def test_manual_rejudge_api_is_not_available_to_service_master_or_operator():
     ).json()["data"]
 
     node_secret = "rejudge-secret"
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"rejudge-node-{uuid4().hex[:6]}", "node_secret": node_secret, "total_slots": 10},
     )
     node_id = node.json()["data"]["judge_node_id"]
@@ -3686,8 +3683,7 @@ def test_judge_claim_includes_active_testcases():
     assert submission.status_code == 200
     submission_id = submission.json()["data"]["submission_id"]
 
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"pytest-node-{uuid4().hex[:6]}", "node_secret": "demo", "total_slots": 1},
     )
     node_id = node.json()["data"]["judge_node_id"]
@@ -3765,8 +3761,7 @@ def test_judge_claim_uses_compact_payload_when_bundle_exists():
     )
     assert submission.status_code == 200
 
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"pytest-node-{uuid4().hex[:6]}", "node_secret": "demo", "total_slots": 1},
     )
     claim = client.post(
@@ -3796,8 +3791,7 @@ def test_judge_dispatcher_recovers_expired_leases():
         headers=auth_headers(login["access_token"]),
         json={"language": "python313", "source_code": "print(42)"},
     ).json()["data"]
-    node = client.post(
-        "/api/internal/judge/nodes/register",
+    node = register_judge_node(
         json={"node_name": f"expired-node-{uuid4().hex[:6]}", "node_secret": "demo", "total_slots": 1},
     )
     node_id = node.json()["data"]["judge_node_id"]

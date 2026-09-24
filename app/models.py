@@ -70,6 +70,15 @@ class JudgeJobStatus(StrEnum):
     FAILED = "failed"
 
 
+JUDGE_PROGRESS_STATUSES = frozenset({SubmissionStatus.PREPARING, SubmissionStatus.JUDGING})
+JUDGE_FINAL_STATUSES = frozenset({
+    SubmissionStatus.ACCEPTED, SubmissionStatus.WRONG_ANSWER, SubmissionStatus.COMPILE_ERROR,
+    SubmissionStatus.RUNTIME_ERROR, SubmissionStatus.TIME_LIMIT_EXCEEDED,
+    SubmissionStatus.MEMORY_LIMIT_EXCEEDED, SubmissionStatus.OUTPUT_LIMIT_EXCEEDED,
+    SubmissionStatus.SYSTEM_ERROR,
+})
+
+
 class TeamMemberRole(StrEnum):
     LEADER = "leader"
     MEMBER = "member"

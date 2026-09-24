@@ -20,6 +20,16 @@ x-api-service: &api-service
   restart: unless-stopped
 
 services:
+  judge-gateway:
+    image: nginx:stable
+    ports:
+      - "10.10.10.110:6443:443"
+    volumes:
+      - ./judge-tls:/etc/nginx/conf.d:ro
+      - ./nginx:/etc/nginx/shared:ro
+      - ./env/judge-tls:/etc/nginx/judge-tls:ro
+    restart: unless-stopped
+
   nginx:
     image: nginx:stable
     ports:

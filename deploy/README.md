@@ -71,6 +71,7 @@ Also point DNS for `test.judge.zerone01.kr` to the same server and issue a certi
 ## 3. Start Backend Stack
 
 ```bash
+sh backend_v1/deploy/init-judge-tls.sh
 docker compose -f backend_v1/deploy/compose.backend.yaml up -d --build
 ```
 
@@ -241,3 +242,73 @@ Nginx 컨테이너가 한 번 재생성됩니다.
 
 SEO 엔드포인트가 없는 이전 API로 롤백할 때에는 Nginx의 HTML 전달 설정도
 함께 이전 버전으로 복구한 뒤 문법 검사와 리로드를 진행해야 합니다.
+
+## Judge credentials and private API
+
+Judge nodes must be provisioned by an administrator before their first connection.
+`POST /api/internal/judge/nodes/register` only authenticates an existing, enabled
+node; it cannot create credentials. Existing enrolled nodes retain their IDs and
+secrets on upgrade. Offline nodes are retained instead of losing their identity.
+Review the existing registry before rollout and revoke any unrecognized entry.
+
+Run these commands on the backend host, substituting the active API color:
+
+```bash
+cd /home/zoj/zerone-online-judge/backend-v1
+color=$(sh deploy/bluegreen.sh active)
+docker compose -f deploy/compose.backend.yaml exec "api-$color" python -m app.tools.judge_nodes list
+docker compose -f deploy/compose.backend.yaml exec "api-$color" python -m app.tools.judge_nodes provision zoj-judge-agent-06 --slots 10
+```
+
+Provisioning and `rotate NAME` prompt for a secret without echoing it. Use a unique,
+random secret of at least 32 characters per node and configure the same value as
+`JUDGE_NODE_SECRET` on that node. Do not pass secrets in shell arguments or tickets.
+An already provisioned name is never overwritten. `revoke NAME` immediately denies
+new operations and requeues outstanding work; `rotate NAME` also invalidates
+outstanding leases. `enable NAME` re-enables the current credential. The CLI has no
+public HTTP equivalent. Nodes removed by older versions must be provisioned once
+again; this includes powered-off nodes 6 and 7 if absent from `list`.
+
+All judge operations require an enabled node secret. Only the assigned node can
+update a running job with its current, unexpired lease. Final results invalidate
+the lease, and progress requests cannot set final verdicts. Concurrent writes are
+serialized in PostgreSQL. Approved workers remain trusted to execute the judge
+correctly: a stolen worker secret or compromised approved VM still requires
+revocation and investigation; this protocol does not attest computation.
+
+The main and test Nginx virtual hosts restrict `/api/internal/judge/` to TCP peers
+`10.10.10.111` through `10.10.10.117`. Supplied forwarding headers do not grant
+access. Keep backend container port 8000 unexposed, and do not enable broad
+`set_real_ip_from` rules on these proxies.
+
+The `judge-gateway` service serves `https://10.10.10.110:6443/api` and signed
+`/minio/` downloads with TLS 1.2/1.3, bound only to the LAN address. Its server key
+is generated once by `deploy/init-judge-tls.sh` in ignored `deploy/env/judge-tls/`.
+Never distribute `server.key`. Install the public `server.crt` into authorized
+agent containers over a trusted channel; use the agent repository's
+`deploy/use-internal-tls.sh` for the current installation. The rollout verifies
+both the server certificate and IP address, then preserves normal Python TLS
+verification. Do not use insecure TLS options.
+
+HTTP port 6001 retains the same peer restriction during migration so active
+agents continue working. After every active agent uses 6443, retire their HTTP
+judge access in the main proxy. The deployment reloads both proxies before the
+old API is stopped.
+
+Certificates expire after one year. Monitor with
+`openssl x509 -checkend 2592000 -noout -in deploy/env/judge-tls/server.crt`.
+Before renewal, distribute trust for the replacement certificate to all active
+and returning nodes, then replace the server key/certificate and reload the
+judge gateway. Existing keys are never silently regenerated. The pinned agent
+wrapper must be updated for a new server certificate.
+
+Validation:
+
+```bash
+DATABASE_URL=sqlite:////tmp/judge-tests.db ENABLE_DEMO_SEED=true ALLOW_EMPTY_OTP=true python -m pytest tests
+# Use only a disposable PostgreSQL; concurrency tests create/drop private schemas.
+ZOJ_TEST_POSTGRES_URL=postgresql+psycopg://postgres@localhost/judge_test python -m pytest tests/test_judge_concurrency.py
+```
+
+Reference behavior: [Nginx address-based access control](https://nginx.org/en/docs/http/ngx_http_access_module.html)
+and [Python certificate verification](https://docs.python.org/3/library/ssl.html).

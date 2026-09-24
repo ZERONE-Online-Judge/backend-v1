@@ -34,6 +34,8 @@ from app.models import (
     JudgeJob,
     JudgeJobStatus,
     JudgeNode,
+    JUDGE_FINAL_STATUSES,
+    JUDGE_PROGRESS_STATUSES,
     MailQueueItem,
     OperationalAuditLog,
     ParticipantTeam,
@@ -1251,7 +1253,6 @@ class DbStore:
     @property
     def judge_nodes(self) -> dict[str, JudgeNode]:
         with self._session() as db:
-            self._prune_stale_judge_nodes(db)
             rows = db.scalars(select(JudgeNodeRow)).all()
             return {row.judge_node_id: _node(row) for row in rows}
 
@@ -4907,37 +4908,47 @@ class DbStore:
             return 0
         return max(1, math.ceil(remaining))
 
+    def provision_node(self, node_name: str, node_secret: str, total_slots: int = 10, agent_version: str = "unknown") -> JudgeNode:
+        """Create a credential through the trusted administrator CLI, never HTTP."""
+        if not node_name or len(node_name) > 120 or not node_secret or not 1 <= total_slots <= 1024:
+            raise ValueError("invalid node configuration")
+        with self._session() as db:
+            if db.scalar(select(JudgeNodeRow).where(JudgeNodeRow.node_name == node_name)):
+                raise ValueError("node already provisioned")
+            row = JudgeNodeRow(
+                node_name=node_name, node_secret_hash=hash_password(node_secret),
+                total_slots=total_slots, free_slots=total_slots, agent_version=agent_version,
+                # Provisioning is not a heartbeat.
+                last_heartbeat_at=datetime(1970, 1, 1, tzinfo=timezone.utc),
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return _node(row)
+
+    @staticmethod
+    def _check_node_secret(node: JudgeNodeRow | None, node_secret: str) -> None:
+        if not node or not node.schedulable or not verify_password(node_secret, node.node_secret_hash):
+            raise ValueError("node secret mismatch")
+
     def register_node(self, node_name: str, node_secret: str, total_slots: int, agent_version: str = "unknown") -> JudgeNode:
         with self._session() as db:
-            self._prune_stale_judge_nodes(db)
             row = db.scalar(select(JudgeNodeRow).where(JudgeNodeRow.node_name == node_name))
-            if row:
-                if not verify_password(node_secret, row.node_secret_hash):
-                    raise ValueError("node secret mismatch")
-                row.total_slots = total_slots
-                row.free_slots = total_slots
-                row.agent_version = agent_version or "unknown"
-                row.last_heartbeat_at = now_utc()
-            else:
-                row = JudgeNodeRow(
-                    node_name=node_name,
-                    node_secret_hash=hash_password(node_secret),
-                    total_slots=total_slots,
-                    free_slots=total_slots,
-                    agent_version=agent_version or "unknown",
-                )
-                db.add(row)
+            self._check_node_secret(row, node_secret)
+            row.total_slots = total_slots
+            row.free_slots = total_slots
+            row.agent_version = agent_version or "unknown"
+            row.last_heartbeat_at = now_utc()
             db.commit()
             db.refresh(row)
             return _node(row)
 
     def verify_node_secret(self, node_id: str, node_secret: str) -> bool | None:
         with self._session() as db:
-            self._prune_stale_judge_nodes(db)
             row = db.get(JudgeNodeRow, node_id)
             if not row:
                 return None
-            return verify_password(node_secret, row.node_secret_hash)
+            return row.schedulable and verify_password(node_secret, row.node_secret_hash)
 
     def append_judge_agent_logs(
         self,
@@ -4947,14 +4958,11 @@ class DbStore:
         *,
         keep_per_node: int = 5000,
     ) -> int | None:
-        if not logs:
-            return 0
         with self._session() as db:
             node = db.get(JudgeNodeRow, node_id)
             if not node:
                 return None
-            if not verify_password(node_secret, node.node_secret_hash):
-                raise ValueError("node secret mismatch")
+            self._check_node_secret(node, node_secret)
             accepted = 0
             for item in logs[-300:]:
                 message = str(item.get("message") or "").strip("\r\n")
@@ -4996,12 +5004,10 @@ class DbStore:
         agent_version: str | None = None,
     ) -> JudgeNode | None:
         with self._session() as db:
-            self._prune_stale_judge_nodes(db)
             row = db.get(JudgeNodeRow, node_id)
             if not row:
                 return None
-            if not verify_password(node_secret, row.node_secret_hash):
-                raise ValueError("node secret mismatch")
+            self._check_node_secret(row, node_secret)
             self._recover_expired_judge_leases(db)
             row.total_slots = total_slots
             row.free_slots = free_slots
@@ -5015,12 +5021,10 @@ class DbStore:
 
     def claim_jobs(self, node_id: str, node_secret: str, max_count: int) -> list[dict] | None:
         with self._session() as db:
-            self._prune_stale_judge_nodes(db)
-            node = db.get(JudgeNodeRow, node_id)
+            node = db.scalar(select(JudgeNodeRow).where(JudgeNodeRow.judge_node_id == node_id).with_for_update())
             if not node:
                 return None
-            if not verify_password(node_secret, node.node_secret_hash):
-                raise ValueError("node secret mismatch")
+            self._check_node_secret(node, node_secret)
             self._recover_expired_judge_leases(db)
             db.flush()
             jobs = []
@@ -5373,8 +5377,9 @@ class DbStore:
         rows = db.scalars(
             select(JudgeJobRow).where(
                 JudgeJobRow.status == JudgeJobStatus.RUNNING.value,
-                JudgeJobRow.leased_at.is_not(None),
+                JudgeJobRow.leased_at < expired_before,
             )
+            .with_for_update(skip_locked=True)
         ).all()
         for row in rows:
             if not row.leased_at or _aware(row.leased_at) >= expired_before:
@@ -5393,42 +5398,23 @@ class DbStore:
                 submission.progress_current = None
                 submission.progress_total = None
 
-    def _prune_stale_judge_nodes(self, db: Session) -> int:
-        cutoff = now_utc() - timedelta(hours=max(1, settings.judge_node_prune_after_hours))
-        rows = db.scalars(select(JudgeNodeRow)).all()
-        stale_rows = [
-            row
-            for row in rows
-            if _aware(row.last_heartbeat_at) < cutoff
-        ]
-        if not stale_rows:
-            return 0
-
-        now = now_utc()
-        removed = 0
-        for node in stale_rows:
-            assigned_jobs = db.scalars(
-                select(JudgeJobRow).where(JudgeJobRow.assigned_node_id == node.judge_node_id)
-            ).all()
-            for job in assigned_jobs:
-                if job.status in {JudgeJobStatus.RUNNING.value, JudgeJobStatus.ASSIGNED.value}:
-                    job.status = JudgeJobStatus.PENDING.value
-                    submission = db.get(SubmissionRow, job.submission_id)
-                    if submission and submission.status in {SubmissionStatus.PREPARING.value, SubmissionStatus.JUDGING.value}:
-                        submission.status = SubmissionStatus.WAITING.value
-                        submission.status_updated_at = now
-                        submission.compile_message = None
-                        submission.judge_message = None
-                        submission.failed_testcase_order = None
-                        submission.progress_current = None
-                        submission.progress_total = None
-                job.assigned_node_id = None
-                job.lease_token = None
-                job.leased_at = None
-            db.delete(node)
-            removed += 1
-        db.commit()
-        return removed
+    def _owned_running_job(self, db: Session, job_id: str, node_secret: str, lease_token: str) -> JudgeJobRow | None:
+        # Serialize progress, renewal and finalization against other job writers.
+        job = db.scalar(select(JudgeJobRow).where(JudgeJobRow.judge_job_id == job_id).with_for_update())
+        if not job:
+            return None
+        node = db.get(JudgeNodeRow, job.assigned_node_id) if job.assigned_node_id else None
+        self._check_node_secret(node, node_secret)
+        cutoff = now_utc() - timedelta(seconds=settings.judge_lease_timeout_seconds)
+        if (
+            job.status != JudgeJobStatus.RUNNING.value
+            or not job.lease_token
+            or not secrets.compare_digest(job.lease_token.encode("utf-8"), lease_token.encode("utf-8"))
+            or not job.leased_at
+            or _aware(job.leased_at) <= cutoff
+        ):
+            raise ValueError("lease mismatch")
+        return job
 
     def update_judge_progress(
         self,
@@ -5439,17 +5425,12 @@ class DbStore:
         progress_current: int | None,
         progress_total: int | None,
     ) -> tuple[Submission, JudgeJob] | None:
+        if status not in JUDGE_PROGRESS_STATUSES:
+            raise ValueError("invalid judge progress status")
         with self._session() as db:
-            job = db.get(JudgeJobRow, job_id)
+            job = self._owned_running_job(db, job_id, node_secret, lease_token)
             if not job:
                 return None
-            if not job.assigned_node_id:
-                raise ValueError("node secret mismatch")
-            node = db.get(JudgeNodeRow, job.assigned_node_id)
-            if not node or not verify_password(node_secret, node.node_secret_hash):
-                raise ValueError("node secret mismatch")
-            if job.lease_token != lease_token:
-                raise ValueError("lease mismatch")
             submission = db.get(SubmissionRow, job.submission_id)
             if not submission:
                 return None
@@ -5475,18 +5456,9 @@ class DbStore:
         lease_token: str,
     ) -> JudgeJob | None:
         with self._session() as db:
-            job = db.get(JudgeJobRow, job_id)
+            job = self._owned_running_job(db, job_id, node_secret, lease_token)
             if not job:
                 return None
-            if not job.assigned_node_id:
-                raise ValueError("node secret mismatch")
-            node = db.get(JudgeNodeRow, job.assigned_node_id)
-            if not node or not verify_password(node_secret, node.node_secret_hash):
-                raise ValueError("node secret mismatch")
-            if job.lease_token != lease_token:
-                raise ValueError("lease mismatch")
-            if job.status != JudgeJobStatus.RUNNING.value:
-                return _job(job)
             job.leased_at = now_utc()
             db.commit()
             db.refresh(job)
@@ -5504,17 +5476,12 @@ class DbStore:
         runtime_ms: int | None = None,
         memory_kb: int | None = None,
     ) -> tuple[Submission, JudgeJob] | None:
+        if final_status not in JUDGE_FINAL_STATUSES:
+            raise ValueError("invalid judge final status")
         with self._session() as db:
-            job = db.get(JudgeJobRow, job_id)
+            job = self._owned_running_job(db, job_id, node_secret, lease_token)
             if not job:
                 return None
-            if not job.assigned_node_id:
-                raise ValueError("node secret mismatch")
-            node = db.get(JudgeNodeRow, job.assigned_node_id)
-            if not node or not verify_password(node_secret, node.node_secret_hash):
-                raise ValueError("node secret mismatch")
-            if job.lease_token != lease_token:
-                raise ValueError("lease mismatch")
             submission = db.get(SubmissionRow, job.submission_id)
             if not submission:
                 return None
@@ -5529,6 +5496,7 @@ class DbStore:
                 submission.progress_current = submission.progress_total
             submission.status_updated_at = now_utc()
             job.status = JudgeJobStatus.SUCCEEDED.value
+            job.lease_token = None
             db.commit()
             db.refresh(submission)
             db.refresh(job)

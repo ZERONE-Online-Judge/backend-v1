@@ -71,9 +71,11 @@ healthcheck() {
 
 apply_nginx() {
   expected_color=$(normalize_color "${1:-}")
+  sh "$DEPLOY_DIR/init-judge-tls.sh"
   # Validate the current files and synchronize mounts before switching. A Git
   # checkout can replace a file inode; binding the directory keeps reloads fresh.
   compose run --rm --no-deps nginx nginx -t
+  compose run --rm --no-deps judge-gateway nginx -t
   compose up -d --no-deps nginx
   if ! compose exec -T nginx sh -c "grep -q 'server api-$expected_color:8000;' /etc/nginx/conf.d/api-upstream.conf"; then
     echo "nginx container does not see api-$expected_color upstream config" >&2
@@ -81,6 +83,9 @@ apply_nginx() {
   fi
   compose exec -T nginx nginx -t
   compose exec -T nginx nginx -s reload
+  compose up -d --no-deps judge-gateway
+  compose exec -T judge-gateway nginx -t
+  compose exec -T judge-gateway nginx -s reload
 }
 
 cmd="${1:-}"
