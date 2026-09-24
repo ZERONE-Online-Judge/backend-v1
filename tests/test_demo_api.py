@@ -1666,7 +1666,7 @@ def test_operator_revoke_blocks_existing_general_participant_reissue():
         f"/api/auth/general/contests/{contest_id}/participant-session",
         headers=auth_headers(general_token),
     )
-    assert reissue.status_code == 403
+    assert reissue.status_code == 401
 
 
 def test_contest_resources_hidden_without_participant_during_contest():

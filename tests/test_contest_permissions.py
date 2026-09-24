@@ -81,7 +81,7 @@ def test_denied_mutations_are_checked_server_side(context, role):
         ("patch", "/settings", {"title": "Unauthorized"}, "contest.settings.manage"),
         ("patch", "/settings", {"scoreboard_freeze_mode": "live"}, "contest.scoreboard.manage"),
         ("patch", "/settings", {"emergency_notice": "Unauthorized"}, "contest.notice.manage"),
-        ("post", "/divisions", {"name": "Unauthorized"}, "contest.settings.manage"),
+        ("post", "/divisions", {"name": "Unauthorized"}, "contest.participant.manage"),
         ("post", "/operators", {"email": "forbidden@zoj.com", "display_name": "No", "roles": ["problem_reviewer"]}, "contest.staff.manage"),
         ("delete", "/operators/nobody@zoj.com", None, "contest.staff.manage"),
         ("post", "/notices", {"title": "No", "body": "No"}, "contest.notice.manage"),
@@ -101,6 +101,26 @@ def test_denied_mutations_are_checked_server_side(context, role):
             continue
         response = client.request(method, c["prefix"] + path, headers=c["tokens"][role], json=body)
         assert response.status_code == 403, (role, method, path, response.text)
+
+
+def test_division_management_belongs_to_participant_managers(context):
+    from sqlalchemy import delete
+    from app.orm_models import ContestDivisionRow
+    c = context
+    path = c["prefix"] + "/divisions"
+    settings = c["tokens"]["settings_manager"]
+    participants = c["tokens"]["participants_manager"]
+    assert client.post(path, headers=settings, json={"name": "Forbidden"}).status_code == 403
+    created = client.post(path, headers=participants, json={"name": f"Division {uuid4().hex}"})
+    assert created.status_code == 200
+    division_id = created.json()["data"]["division_id"]
+    try:
+        assert client.patch(path + "/" + division_id, headers=settings, json={"name": "Forbidden"}).status_code == 403
+        assert client.patch(path + "/" + division_id, headers=participants, json={"name": "Managed by participants"}).status_code == 200
+    finally:
+        with store._session() as db:
+            db.execute(delete(ContestDivisionRow).where(ContestDivisionRow.division_id == division_id))
+            db.commit()
 
 
 def test_role_selection_validation_multiselect_and_protected_master(context):

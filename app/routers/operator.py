@@ -14,6 +14,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import ContestResourceAccess, ContestStatus, ContestVisibility, ProblemAsset, ScoreboardFreezeMode, ScoreboardReleaseMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import has_contest_permission, is_contest_master, require_contest_staff, require_staff
+from app.services.access_logging import write_access_log
 from app.services.automatic_notices import time_update_notice_body
 from app.services.contest_roles import ContestOperatorCreateRequest, ContestOperatorUpdateRequest, title_for_roles
 from app.services.errors import AppError, not_found, permission_denied
@@ -551,7 +552,7 @@ async def divisions(contest_id: str, request: Request):
 
 @router.post("/operator/contests/{contest_id}/divisions")
 async def create_division(contest_id: str, payload: DivisionCreateRequest, request: Request):
-    require_contest_staff(request, contest_id, "contest.settings.manage")
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     _require_contest_mutation_open(contest_id)
     try:
         division = store.create_contest_division(
@@ -571,7 +572,7 @@ async def create_division(contest_id: str, payload: DivisionCreateRequest, reque
 
 @router.patch("/operator/contests/{contest_id}/divisions/{division_id}")
 async def update_division(contest_id: str, division_id: str, payload: DivisionUpdateRequest, request: Request):
-    require_contest_staff(request, contest_id, "contest.settings.manage")
+    require_contest_staff(request, contest_id, "contest.participant.manage")
     _require_contest_mutation_open(contest_id)
     try:
         division = store.update_contest_division(contest_id, division_id, **payload.model_dump(exclude_unset=True))
@@ -1069,10 +1070,18 @@ async def update_participant_member(contest_id: str, participant_team_id: str, t
 
 @router.post("/operator/contests/{contest_id}/participants/{participant_team_id}/members/{team_member_id}/sessions:revoke")
 async def revoke_participant_member_sessions(contest_id: str, participant_team_id: str, team_member_id: str, request: Request):
-    require_contest_staff(request, contest_id, "contest.participant.manage")
+    operator = require_contest_staff(request, contest_id, "contest.participant.manage")
     member = store.revoke_team_member_sessions(contest_id, participant_team_id, team_member_id)
     if not member:
         raise not_found()
+    team = store.teams.get(participant_team_id)
+    write_access_log(
+        request, event_type="account_revoked", account_scope="participant",
+        email=str(member.email), display_name=member.name, contest_id=contest_id,
+        participant_team_id=participant_team_id, team_name=team.team_name if team else None,
+        team_member_id=team_member_id, member_name=member.name, actor_role="participant",
+        details={"revoked_by": str(operator.email), "scope": "account"},
+    )
     return ok(request, member.model_dump(mode="json"))
 
 

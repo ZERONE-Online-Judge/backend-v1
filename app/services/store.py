@@ -1914,13 +1914,26 @@ class DbStore:
 
     def _revoke_active_login_sessions_for_email(self, db: Session, email: str) -> None:
         revoked_at = now_utc()
-        for session in self._active_general_session_rows(db, email):
+        sessions = db.scalars(
+            select(GeneralSessionRow)
+            .where(func.lower(GeneralSessionRow.email) == email.lower(), GeneralSessionRow.revoked_at.is_(None))
+            .order_by(GeneralSessionRow.general_session_id)
+            .with_for_update()
+        ).all()
+        for session in sessions:
             session.revoked_at = revoked_at
         for session in self._active_team_session_rows_for_email(db, email):
             session.revoked_at = revoked_at
+        account_ids = select(StaffAccountRow.staff_account_id).where(func.lower(StaffAccountRow.email) == email.lower())
+        db.execute(
+            update(StaffSessionRow)
+            .where(StaffSessionRow.staff_account_id.in_(account_ids), StaffSessionRow.revoked_at.is_(None))
+            .values(revoked_at=revoked_at)
+        )
         members = db.scalars(select(TeamMemberRow).where(func.lower(TeamMemberRow.email) == email.lower())).all()
         for member in members:
             member.active_sessions = 0
+            member.session_revoked_at = revoked_at
 
     def _revoke_active_team_sessions_for_member(
         self,
@@ -2099,7 +2112,10 @@ class DbStore:
                         GeneralSessionRow.access_token_hash == token_hash(parent_access_token),
                         GeneralSessionRow.revoked_at.is_(None),
                     )
+                    .with_for_update()
                 )
+                if not parent_session:
+                    return None
             if (
                 parent_session
                 and member.session_revoked_at
@@ -3347,19 +3363,9 @@ class DbStore:
             )
             if not member:
                 return None
-            revoked_at = now_utc()
-            sessions = db.scalars(
-                select(TeamSessionRow).where(
-                    TeamSessionRow.contest_id == contest_id,
-                    TeamSessionRow.participant_team_id == participant_team_id,
-                    TeamSessionRow.team_member_id == team_member_id,
-                    TeamSessionRow.revoked_at.is_(None),
-                )
-            ).all()
-            for session in sessions:
-                session.revoked_at = revoked_at
-            member.session_revoked_at = revoked_at
-            member.active_sessions = 0
+            # A forced logout invalidates the account's login, refresh tokens,
+            # and participant sessions across contests and devices together.
+            self._revoke_active_login_sessions_for_email(db, member.email)
             db.commit()
             db.refresh(member)
             return TeamMember(

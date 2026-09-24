@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
+from starlette.concurrency import run_in_threadpool
 
 from app.settings import settings
 from app.services.access_logging import general_role, write_access_log
@@ -10,6 +12,20 @@ from app.services.responses import ok
 from app.services.store import SessionConflictError, store
 
 router = APIRouter(tags=["auth"])
+
+
+@router.get("/auth/session-events")
+async def watch_session(request: Request):
+    from app.services.session_events import resolve_session_watch, session_events
+
+    watch = await run_in_threadpool(resolve_session_watch, bearer_token(request))
+    if not watch:
+        raise AppError(401, "authentication_required", "An active session is required.")
+    return StreamingResponse(
+        session_events(request, watch),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 class StaffLoginRequest(BaseModel):
