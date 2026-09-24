@@ -607,6 +607,9 @@ def _staff(row: StaffAccountRow) -> StaffAccount:
 def _mail(row: MailQueueItemRow) -> MailQueueItem:
     return MailQueueItem(
         mail_queue_id=row.mail_queue_id,
+        contest_id=row.contest_id,
+        sent_at=_aware(row.sent_at),
+        last_attempt_at=_aware(row.last_attempt_at),
         mail_type=row.mail_type,
         recipient_email=row.recipient_email,
         subject=row.subject,
@@ -2600,7 +2603,7 @@ class DbStore:
         for account in self.contest_operator_accounts(contest_id):
             if account.email in excluded:
                 continue
-            queued.append(self.enqueue_mail(mail_type, str(account.email), subject, body_text))
+            queued.append(self.enqueue_mail(mail_type, str(account.email), subject, body_text, contest_id=contest_id))
         return queued
 
     def _contest_accepts_participant_invites(self, status: str) -> bool:
@@ -2667,11 +2670,12 @@ class DbStore:
         for member in team.members:
             if is_internal_mail_recipient(member.email):
                 continue
-            if self._mail_exists(db, "participant_invited", member.email, content.subject):
+            if self._mail_exists(db, "participant_invited", member.email, content.subject, contest.contest_id):
                 continue
             db.add(
                 MailQueueItemRow(
                     mail_type="participant_invited",
+                    contest_id=contest.contest_id,
                     recipient_email=member.email,
                     subject=content.subject,
                     body_text=content.body_text,
@@ -4610,7 +4614,8 @@ class DbStore:
                     result["release"].update(total_count=len(rows), revealed_count=0 if immediate_hold else len(rows))
             return result
 
-    def _mail_exists(self, db: Session, mail_type: str, recipient_email: str, subject: str) -> bool:
+    def _mail_exists(self, db: Session, mail_type: str, recipient_email: str, subject: str, contest_id: str | None = None) -> bool:
+        # Unknown legacy scope must not cause old invites/reminders to resend.
         return (
             db.scalar(
                 select(MailQueueItemRow.mail_queue_id)
@@ -4618,6 +4623,7 @@ class DbStore:
                     MailQueueItemRow.mail_type == mail_type,
                     MailQueueItemRow.recipient_email == recipient_email,
                     MailQueueItemRow.subject == subject,
+                    or_(MailQueueItemRow.contest_id == contest_id, MailQueueItemRow.contest_id.is_(None)),
                     MailQueueItemRow.status.in_(["pending", "sending", "sent"]),
                 )
                 .limit(1)
@@ -4633,16 +4639,19 @@ class DbStore:
         body_text: str,
         body_html: str | None = None,
         dedupe: bool = False,
+        *,
+        contest_id: str | None = None,
     ) -> MailQueueItem:
         with self._session() as db:
             internal_recipient = is_internal_mail_recipient(recipient_email)
-            if dedupe and self._mail_exists(db, mail_type, recipient_email, subject):
+            if dedupe and self._mail_exists(db, mail_type, recipient_email, subject, contest_id):
                 existing = db.scalar(
                     select(MailQueueItemRow)
                     .where(
                         MailQueueItemRow.mail_type == mail_type,
                         MailQueueItemRow.recipient_email == recipient_email,
                         MailQueueItemRow.subject == subject,
+                        or_(MailQueueItemRow.contest_id == contest_id, MailQueueItemRow.contest_id.is_(None)),
                         MailQueueItemRow.status.in_(["pending", "sending", "sent"]),
                     )
                     .order_by(MailQueueItemRow.created_at.desc())
@@ -4650,6 +4659,7 @@ class DbStore:
                 )
                 return _mail(existing)
             row = MailQueueItemRow(
+                contest_id=contest_id,
                 mail_type=mail_type,
                 recipient_email=recipient_email,
                 subject=subject,
@@ -4722,11 +4732,12 @@ class DbStore:
                         for member in team.members:
                             if is_internal_mail_recipient(member.email):
                                 continue
-                            if self._mail_exists(db, mail_type, member.email, content.subject):
+                            if self._mail_exists(db, mail_type, member.email, content.subject, contest.contest_id):
                                 continue
                             db.add(
                                 MailQueueItemRow(
                                     mail_type=mail_type,
+                                    contest_id=contest.contest_id,
                                     recipient_email=member.email,
                                     subject=content.subject,
                                     body_text=content.body_text,
@@ -4882,6 +4893,7 @@ class DbStore:
             db.add(
                 MailQueueItemRow(
                     mail_type="participant_otp",
+                    contest_id=contest_id,
                     recipient_email=email,
                     subject=content.subject,
                     body_text=content.body_text,
@@ -5520,6 +5532,10 @@ class DbStore:
             row = db.get(MailQueueItemRow, mail_queue_id)
             if not row:
                 return None
+            if status == "sending" and row.status != "sending":
+                row.last_attempt_at = now_utc()
+            if status == "sent" and row.status != "sent":
+                row.sent_at = now_utc()
             row.status = status
             db.commit()
             db.refresh(row)

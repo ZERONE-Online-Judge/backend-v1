@@ -9,7 +9,7 @@ from uuid import uuid4
 from urllib.parse import urlencode
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import ContestResourceAccess, ContestStatus, ContestVisibility, ProblemAsset, ScoreboardFreezeMode, ScoreboardReleaseMode, SubmissionStatus, TeamMemberRole, now_utc
@@ -20,12 +20,22 @@ from app.services.errors import AppError, not_found, permission_denied
 from app.services.mail_templates import absolute_url, operator_assignment_mail, render_branded_email
 from app.services.package_builder import PackageBuildError, package_role
 from app.services.responses import ok, page
+from app.services.mail_logs import list_mail_logs, mail_log_filters
 from app.settings import settings
 from app.services.store import SERVICE_MASTER_OPERATOR_ERROR, store
 from app.services.storage import object_storage
 from app.services.testcase_verifier import UploadedTestcase, build_verified_testcase_set, verify_active_testcases_with_candidate_asset
 
 router = APIRouter(tags=["operator"])
+
+
+@router.get("/operator/contests/{contest_id}/mail-logs")
+async def operator_mail_logs(contest_id: str, request: Request, filters: dict = Depends(mail_log_filters)):
+    require_contest_staff(request, contest_id, "contest.audit.view")
+    if contest_id not in store.contests:
+        raise not_found()
+    logs, next_cursor, total = list_mail_logs(contest_id=contest_id, **filters)
+    return page(request, logs, next_cursor=next_cursor, limit=filters["limit"], total_count=total, current_cursor=filters["cursor"])
 
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
 SUPPORTED_JUDGE_LANGUAGES = {"c99", "cpp17", "python313", "java8"}
@@ -743,6 +753,7 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
             content.subject,
             content.body_text,
             content.body_html,
+            contest_id=contest_id,
         )
     return ok(request, _contest_staff_payload(operator, contest_id))
 
@@ -899,6 +910,7 @@ async def create_answer(contest_id: str, question_id: str, payload: ContestAnswe
                     button_label="답변 확인하기",
                     button_url=question_url,
                 ),
+                contest_id=contest_id,
             )
     return ok(request, answer.model_dump(mode="json"))
 

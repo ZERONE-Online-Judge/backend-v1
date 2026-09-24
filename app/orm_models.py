@@ -333,12 +333,15 @@ class MailQueueItemRow(Base):
     __tablename__ = "mail_queue"
 
     mail_queue_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    contest_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     mail_type: Mapped[str] = mapped_column(String(64))
     recipient_email: Mapped[str] = mapped_column(String(255), index=True)
     subject: Mapped[str] = mapped_column(String(255))
     body_text: Mapped[str] = mapped_column(Text)
     body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 

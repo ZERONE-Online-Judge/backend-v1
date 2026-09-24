@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models import ContestStatus, ContestVisibility, JudgeNode, now_utc
@@ -10,6 +10,7 @@ from app.services.authz import require_service_master
 from app.services.contest_roles import title_for_roles
 from app.services.errors import AppError, not_found
 from app.services.mail_templates import absolute_url, format_korean_datetime, operator_assignment_mail, render_branded_email
+from app.services.mail_logs import list_mail_logs, mail_log_filters
 from app.services.responses import ok, page
 from app.services.store import SERVICE_MASTER_OPERATOR_ERROR, store
 
@@ -181,6 +182,7 @@ async def create_contest(payload: ContestCreateRequest, request: Request):
             content.subject,
             content.body_text,
             content.body_html,
+            contest_id=contest.contest_id,
         )
     return ok(request, contest.model_dump(mode="json"))
 
@@ -237,6 +239,7 @@ async def create_contest_operator(contest_id: str, payload: ContestOperatorCreat
             content.subject,
             content.body_text,
             content.body_html,
+            contest_id=contest_id,
         )
     return ok(request, operator.model_dump(mode="json"))
 
@@ -632,3 +635,10 @@ async def judge_submission_status_wait(
 async def mail_queue(request: Request):
     require_service_master(request)
     return page(request, [mail.model_dump(mode="json") for mail in store.mail_queue.values()])
+
+
+@router.get("/admin/mail-logs")
+async def admin_mail_logs(request: Request, filters: dict = Depends(mail_log_filters), contest_id: str | None = None):
+    require_service_master(request)
+    logs, next_cursor, total = list_mail_logs(contest_id=contest_id or None, **filters)
+    return page(request, logs, next_cursor=next_cursor, limit=filters["limit"], total_count=total, current_cursor=filters["cursor"])

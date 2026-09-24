@@ -319,12 +319,15 @@ class ContactInquiry(BaseModel):
 
 class MailQueueItem(BaseModel):
     mail_queue_id: str = Field(default_factory=new_id)
+    contest_id: str | None = None
     mail_type: str
     recipient_email: EmailStr
     subject: str
     body_text: str
     body_html: str | None = None
     status: str = "pending"
+    last_attempt_at: datetime | None = None
+    sent_at: datetime | None = None
     created_at: datetime = Field(default_factory=now_utc)
 
 

@@ -53,7 +53,7 @@ def test_read_permission_matrix(context, role):
         "/submissions": "contest.submission.view", "/submission-filters": "contest.submission.view",
         "/judge-history": "contest.submission.view", "/scoreboard/internal": "contest.scoreboard.view",
         "/scoreboard/presentation": "contest.scoreboard.view", "/problems": "contest.problem.review",
-        "/audit-logs": "contest.audit.view", "/access-logs": "contest.access_log.view",
+        "/mail-logs": "contest.audit.view", "/audit-logs": "contest.audit.view", "/access-logs": "contest.access_log.view",
         "/access-log-stats": "contest.access_log.view",
         f"/problems/{c['problem'].problem_id}/testcase-sets": "contest.problem.manage",
         f"/problems/{c['problem'].problem_id}/package-status": "contest.problem.manage",

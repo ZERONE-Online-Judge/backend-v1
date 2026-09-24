@@ -272,6 +272,15 @@ def create_schema() -> None:
             if "body_html" not in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE mail_queue ADD COLUMN body_html TEXT"))
+            with engine.begin() as connection:
+                for name, kind in (("contest_id", "VARCHAR(36)"), ("last_attempt_at", "DATETIME"), ("sent_at", "DATETIME")):
+                    if name not in columns:
+                        connection.execute(text(f"ALTER TABLE mail_queue ADD COLUMN {name} {kind}"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS idx_mail_queue_created ON mail_queue (created_at, mail_queue_id)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS idx_mail_queue_contest_created ON mail_queue (contest_id, created_at, mail_queue_id)"))
+                if "contest_id" not in columns:
+                    from app.services.mail_log_backfill import backfill_mail_contests
+                    backfill_mail_contests(connection)
         if "team_members" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("team_members")}
             if "session_revoked_at" not in columns:

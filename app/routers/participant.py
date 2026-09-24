@@ -727,6 +727,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
                     button_label="질문 확인하기",
                     button_url=question_url,
                 ),
+                contest_id=contest_id,
             )
     return ok(request, question.model_dump(mode="json"))
 
