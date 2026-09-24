@@ -1039,7 +1039,7 @@ class DbStore:
                     func.count(),
                     func.count().filter(AccessLogRow.event_type.in_([
                         "general_login", "participant_login", "participant_session_issued",
-                        "general_refresh", "participant_session_check",
+                        "general_refresh", "participant_session_check", "operator_access",
                     ])),
                     func.count().filter(AccessLogRow.event_type == "login_failed"),
                     func.count().filter(AccessLogRow.event_type == "session_conflict"),
@@ -2389,6 +2389,32 @@ class DbStore:
             db.commit()
             db.refresh(row)
             return _division(row)
+
+    def delete_contest_division(self, contest_id: str, division_id: str) -> bool:
+        with self._session() as db:
+            row = db.scalar(select(ContestDivisionRow).where(
+                ContestDivisionRow.division_id == division_id,
+                ContestDivisionRow.contest_id == contest_id,
+            ).with_for_update())
+            if not row:
+                return False
+            dependencies = {}
+            for model, label in ((ParticipantTeamRow, "참가팀"), (ProblemRow, "문제"),
+                                 (SubmissionRow, "제출"), (JudgeJobRow, "채점 작업"),
+                                 (TeamSessionRow, "참가자 세션"), (ScoreboardReleaseRow, "순위 발표 기록")):
+                count = int(db.scalar(select(func.count()).select_from(model).where(model.division_id == division_id)) or 0)
+                if count:
+                    dependencies[label] = count
+            if dependencies:
+                summary = ", ".join(f"{label} {count}개" for label, count in dependencies.items())
+                raise AppError(409, "division_in_use", f"연결된 {summary}가 있어 참가 유형을 삭제할 수 없습니다. 참가팀과 문제를 먼저 정리해 주세요.", dependencies)
+            db.delete(row)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                raise AppError(409, "division_in_use", "연결된 기록이 있어 참가 유형을 삭제할 수 없습니다. 목록을 새로고침해 주세요.") from None
+            return True
 
     def upsert_contest_operator(
         self, contest_id: str, email: str, display_name: str,

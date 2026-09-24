@@ -1,4 +1,4 @@
-"""Read-only delivery metadata; message bodies and credentials stay private."""
+"""Scoped delivery logs and plain-text previews, excluding authentication mail."""
 import base64
 import binascii
 import json
@@ -6,11 +6,35 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import Query
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 
 from app.database import SessionLocal
 from app.orm_models import ContestRow, MailQueueItemRow
 from app.services.errors import AppError
+
+PREVIEW_MAIL_TYPES = frozenset({
+    "participant_invited", "contest_operator_assigned", "contest_question_created",
+    "contest_question_answered", "contest_reminder_24h", "contest_reminder_1h",
+    "contest_reminder_10m", "contact_inquiry_created", "contact_inquiry_answered",
+    "contest_settings_updated", "contest_notice_created",
+})
+
+
+def mail_log_preview(mail_id: str, *, contest_id: str | None = None) -> dict:
+    mail = MailQueueItemRow
+    filters = [mail.mail_queue_id == mail_id]
+    if contest_id is not None:
+        filters.append(mail.contest_id == contest_id)
+    with SessionLocal() as db:
+        row = db.execute(select(mail.mail_type,
+            case((mail.mail_type.in_(PREVIEW_MAIL_TYPES), func.substr(mail.body_text, 1, 40001)), else_=None).label("body")
+        ).where(*filters)).mappings().first()
+    if not row:
+        raise AppError(404, "not_found", "이메일 발송 기록을 찾을 수 없습니다.")
+    allowed = row["mail_type"] in PREVIEW_MAIL_TYPES
+    body = row["body"] or ""
+    return {"body_text": body[:40000] if allowed else None,
+            "restricted": not allowed, "truncated": len(body) > 40000}
 
 
 def mail_log_filters(
@@ -48,10 +72,12 @@ def list_mail_logs(*, contest_id: str | None = None, q: str = "", status: str | 
         filters.append(mail.created_at >= since)
     if until:
         filters.append(mail.created_at < until)
-    # Select only log metadata, never load OTPs, private answers, or HTML.
+    # Authentication bodies never leave the database, including in list previews.
     statement = select(mail.mail_queue_id, mail.contest_id, ContestRow.title.label("contest_title"),
                        mail.mail_type, mail.recipient_email, mail.subject, mail.status,
-                       mail.created_at, mail.last_attempt_at, mail.sent_at).outerjoin(
+                       mail.created_at, mail.last_attempt_at, mail.sent_at,
+                       case((mail.mail_type.in_(PREVIEW_MAIL_TYPES), func.substr(mail.body_text, 1, 180)), else_=None).label("body_preview"),
+                       (~mail.mail_type.in_(PREVIEW_MAIL_TYPES)).label("preview_restricted")).outerjoin(
                            ContestRow, mail.contest_id == ContestRow.contest_id).where(*filters)
     count = select(func.count()).select_from(mail).outerjoin(
         ContestRow, mail.contest_id == ContestRow.contest_id).where(*filters)

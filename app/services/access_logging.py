@@ -1,8 +1,43 @@
 from typing import Any
+from collections import OrderedDict
+from hashlib import sha256
+from threading import Lock
+from time import monotonic
 
 from fastapi import Request
 
 from app.services.store import store
+from app.settings import settings
+
+_operator_visits: OrderedDict[str, float] = OrderedDict()
+_operator_visit_lock = Lock()
+OPERATOR_ACCESS_WINDOW_SECONDS = 30 * 60
+
+
+def record_operator_access(request: Request, contest_id: str, account, token: str) -> None:
+    """One successful contest access per session/IP every 30 minutes, not per poll."""
+    digest = sha256(f"{contest_id}:{token}:{client_ip(request)}".encode()).hexdigest()
+    now = monotonic()
+    with _operator_visit_lock:
+        if _operator_visits.get(digest, 0) > now:
+            return
+        _operator_visits[digest] = now + OPERATOR_ACCESS_WINDOW_SECONDS
+        _operator_visits.move_to_end(digest)
+        while len(_operator_visits) > 4096:
+            _operator_visits.popitem(last=False)
+    if settings.redis_url:
+        try:
+            from app.services.result_cache import _client
+            if not _client(settings.redis_url).set(f"zoj:operator-access:v1:{digest}", "1", nx=True, ex=OPERATOR_ACCESS_WINDOW_SECONDS):
+                return
+        except Exception:
+            # Bounded local deduplication remains available when Redis is down.
+            pass
+    write_access_log(request, event_type="operator_access", account_scope="staff",
+                     email=str(account.email), display_name=account.display_name,
+                     contest_id=contest_id,
+                     actor_role="service_master" if account.is_service_master else "operator",
+                     details={"path": request.url.path, "deduplication_minutes": 30})
 
 
 def client_ip(request: Request) -> str | None:

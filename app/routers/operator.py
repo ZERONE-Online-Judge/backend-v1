@@ -21,13 +21,19 @@ from app.services.errors import AppError, not_found, permission_denied
 from app.services.mail_templates import absolute_url, operator_assignment_mail, render_branded_email
 from app.services.package_builder import PackageBuildError, package_role
 from app.services.responses import ok, page
-from app.services.mail_logs import list_mail_logs, mail_log_filters
+from app.services.mail_logs import list_mail_logs, mail_log_filters, mail_log_preview
 from app.settings import settings
 from app.services.store import SERVICE_MASTER_OPERATOR_ERROR, store
 from app.services.storage import object_storage
 from app.services.testcase_verifier import UploadedTestcase, build_verified_testcase_set, verify_active_testcases_with_candidate_asset
 
 router = APIRouter(tags=["operator"])
+
+
+@router.get("/operator/contests/{contest_id}/mail-logs/{mail_id}/preview")
+def operator_mail_preview(contest_id: str, mail_id: str, request: Request):
+    require_contest_staff(request, contest_id, "contest.audit.view")
+    return ok(request, mail_log_preview(mail_id, contest_id=contest_id))
 
 
 @router.get("/operator/contests/{contest_id}/mail-logs")
@@ -581,6 +587,15 @@ async def update_division(contest_id: str, division_id: str, payload: DivisionUp
     if not division:
         raise not_found()
     return ok(request, division.model_dump(mode="json"))
+
+
+@router.delete("/operator/contests/{contest_id}/divisions/{division_id}")
+async def delete_division(contest_id: str, division_id: str, request: Request):
+    require_contest_staff(request, contest_id, "contest.participant.manage")
+    _require_contest_mutation_open(contest_id)
+    if not store.delete_contest_division(contest_id, division_id):
+        raise not_found()
+    return ok(request, {"deleted": True})
 
 
 @router.patch("/operator/contests/{contest_id}/settings")

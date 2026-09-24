@@ -10,7 +10,7 @@ from app.services.authz import require_service_master
 from app.services.contest_roles import title_for_roles
 from app.services.errors import AppError, not_found
 from app.services.mail_templates import absolute_url, format_korean_datetime, operator_assignment_mail, render_branded_email
-from app.services.mail_logs import list_mail_logs, mail_log_filters
+from app.services.mail_logs import list_mail_logs, mail_log_filters, mail_log_preview
 from app.services.responses import ok, page
 from app.services.store import SERVICE_MASTER_OPERATOR_ERROR, store
 
@@ -635,6 +635,12 @@ async def judge_submission_status_wait(
 async def mail_queue(request: Request):
     require_service_master(request)
     return page(request, [mail.model_dump(mode="json") for mail in store.mail_queue.values()])
+
+
+@router.get("/admin/mail-logs/{mail_id}/preview")
+def admin_mail_preview(mail_id: str, request: Request):
+    require_service_master(request)
+    return ok(request, mail_log_preview(mail_id))
 
 
 @router.get("/admin/mail-logs")

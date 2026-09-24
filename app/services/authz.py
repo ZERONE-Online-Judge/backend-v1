@@ -42,8 +42,10 @@ def is_contest_master(account: StaffAccount, contest_id: str) -> bool:
 def require_contest_staff(request: Request, contest_id: str, *permissions: str) -> StaffAccount:
     account = require_staff(request)
     if is_contest_master(account, contest_id):
+        request.state.operator_access = (contest_id, account)
         return account
     if any(has_contest_permission(account, contest_id, permission) for permission in (permissions or ("contest.view",))):
+        request.state.operator_access = (contest_id, account)
         return account
     raise scope_denied()
 

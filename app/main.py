@@ -3,6 +3,10 @@ import re
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
+from datetime import datetime, timezone
+from fastapi.encoders import jsonable_encoder
+from app.database import SessionLocal
+from app import orm_models
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +27,8 @@ AUDIT_REDACTED_KEYS = {
     "access_token",
     "node_secret",
     "password",
+    "otp_code",
+    "secret",
     "refresh_token",
     "source_code",
     "token",
@@ -121,16 +127,29 @@ def _audit_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
     return sanitized
 
 
+def _audit_equal(left: Any, right: Any, field: str) -> bool:
+    if field.endswith("_at") and isinstance(left, str) and isinstance(right, str):
+        try:
+            return datetime.fromisoformat(left.replace("Z", "+00:00")) == datetime.fromisoformat(right.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return left == right
+
+
 def _audit_changes(data: Any, before: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     if not isinstance(data, Mapping):
         return []
-    mapped = _audit_mapping(data)
-    before_mapped = _audit_mapping(before) if before else {}
-    changes: list[dict[str, Any]] = []
-    for key, value in mapped.items():
-        item = {"field": str(key), "new": value}
-        if key in before_mapped:
-            item["old"] = before_mapped[key]
+    changes = []
+    for key, value in data.items():
+        if key in {"created_at", "updated_at", "published_at"} or key.lower() in AUDIT_REDACTED_KEYS:
+            continue
+        if before is not None and key in before and _audit_equal(before[key], value, key):
+            continue
+        item = {"field": key, "new": _audit_value(value)}
+        if before is not None and key in before:
+            item["old"] = _audit_value(before[key])
+        if item["new"] != value or (before is not None and key in before and item.get("old") != before[key]):
+            item["truncated"] = True
         changes.append(item)
     return changes
 
@@ -145,30 +164,54 @@ def _audit_model_dump(value: Any) -> dict[str, Any] | None:
 
 
 def _audit_existing_values(path: str) -> dict[str, Any] | None:
-    contest_match = re.match(r"^/api/operator/contests/([^/]+)/settings$", path)
-    if contest_match:
-        return _audit_model_dump(store.contests.get(contest_match.group(1)))
-
-    division_match = re.match(r"^/api/operator/contests/[^/]+/divisions/([^/]+)$", path)
-    if division_match:
-        return _audit_model_dump(store.divisions.get(division_match.group(1)))
-
-    notice_match = re.match(r"^/api/operator/contests/[^/]+/notices/([^/]+)$", path)
-    if notice_match:
-        return _audit_model_dump(store.contest_notices.get(notice_match.group(1)))
-
-    team_match = re.match(r"^/api/operator/contests/[^/]+/participants/([^/]+)$", path)
-    if team_match:
-        return _audit_model_dump(store.teams.get(team_match.group(1)))
-
-    problem_match = re.match(r"^/api/operator/contests/[^/]+/problems/([^/]+)$", path)
-    if problem_match:
-        return _audit_model_dump(store.problems.get(problem_match.group(1)))
-
-    service_notice_match = re.match(r"^/api/admin/service-notices/([^/]+)$", path)
-    if service_notice_match:
-        return _audit_model_dump(store.service_notices.get(service_notice_match.group(1)))
-
+    # Read persisted columns, not rendered notices, defaults, or request values.
+    patterns = [
+        (r"/operator/contests/([^/]+)/settings", orm_models.ContestRow),
+        (r"/operator/contests/[^/]+/divisions/([^/]+)", orm_models.ContestDivisionRow),
+        (r"/operator/contests/[^/]+/notices/([^/]+)", orm_models.ContestNoticeRow),
+        (r"/operator/contests/[^/]+/participants/([^/]+)", orm_models.ParticipantTeamRow),
+        (r"/operator/contests/[^/]+/participants/[^/]+/members/([^/]+)", orm_models.TeamMemberRow),
+        (r"/operator/contests/[^/]+/problems/([^/]+)", orm_models.ProblemRow),
+        (r"/operator/contests/[^/]+/problems/[^/]+/assets/([^/]+)", orm_models.ProblemAssetRow),
+        (r"/operator/contests/[^/]+/problems/[^/]+/testcase-sets/([^/]+)", orm_models.TestcaseSetRow),
+        (r"/operator/contests/[^/]+/problems/[^/]+/testcase-sets/[^/]+/testcases/([^/]+)", orm_models.TestcaseRow),
+        (r"/operator/contests/[^/]+/boards/([^/]+)", orm_models.ContestQuestionRow),
+        (r"/operator/contests/[^/]+/boards/[^/]+/answers/([^/]+)", orm_models.ContestQuestionAnswerRow),
+        (r"/admin/service-notices/([^/]+)", orm_models.ServiceNoticeRow),
+    ]
+    for pattern, model in patterns:
+        match = re.fullmatch("/api" + pattern, path)
+        if match:
+            with SessionLocal() as db:
+                row = db.get(model, match.group(1))
+                if row is None:
+                    return None
+                contest_id = _audit_contest_id(path)
+                if hasattr(row, "contest_id") and row.contest_id != contest_id:
+                    return None
+                problem_match = re.search(r"/problems/([^/]+)", path)
+                if problem_match:
+                    problem = db.get(orm_models.ProblemRow, problem_match.group(1))
+                    if not problem or problem.contest_id != contest_id:
+                        return None
+                    if hasattr(row, "problem_id") and row.problem_id != problem.problem_id:
+                        return None
+                    if model is orm_models.TestcaseRow:
+                        case_set = db.get(orm_models.TestcaseSetRow, row.testcase_set_id)
+                        set_match = re.search(r"/testcase-sets/([^/]+)", path)
+                        if not case_set or case_set.problem_id != problem.problem_id or not set_match or case_set.testcase_set_id != set_match.group(1):
+                            return None
+                if model is orm_models.TeamMemberRow:
+                    team_match = re.search(r"/participants/([^/]+)", path)
+                    if not team_match or row.participant_team_id != team_match.group(1):
+                        return None
+                values = {}
+                for column in model.__table__.columns:
+                    value = getattr(row, column.name)
+                    if isinstance(value, datetime):
+                        value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+                    values[column.name] = jsonable_encoder(value)
+                return values
     return None
 
 
@@ -214,7 +257,13 @@ def _audit_path_entities(path: str) -> dict[str, str]:
         match = re.match(pattern, path)
         if match:
             return dict(zip(keys, match.groups(), strict=False))
-    return {}
+    entities = {}
+    for segment, field in (("contests", "contest_id"), ("divisions", "division_id"),
+                           ("problems", "problem_id"), ("testcase-sets", "testcase_set_id")):
+        match = re.search(r"/" + segment + r"/([^/]+)", path)
+        if match:
+            entities[field] = match.group(1)
+    return entities
 
 
 async def _audit_request_payload(request: Request) -> tuple[Request, dict[str, Any]]:
@@ -255,13 +304,12 @@ async def operational_audit_middleware(request: Request, call_next):
     scope = _audit_scope(path)
     payload_details: dict[str, Any] = {}
     account = None
+    before = None
     if request.method.upper() in AUDITED_METHODS and scope:
         request, payload_details = await _audit_request_payload(request)
         payload_details["entities"] = _audit_path_entities(path)
-        payload_details["changes"] = _audit_changes(
-            payload_details.get("body"),
-            _audit_existing_values(path),
-        )
+        before = _audit_existing_values(path)
+        payload_details["schema_version"] = 2
         # Keep the actor's identity at the time of the request, including when
         # the action changes their email and revokes the token being used.
         try:
@@ -273,13 +321,31 @@ async def operational_audit_middleware(request: Request, call_next):
             pass
 
     response = await call_next(request)
+    if response.status_code < 400 and getattr(request.state, "operator_access", None):
+        from app.services.access_logging import record_operator_access
+        contest_id, operator_account = request.state.operator_access
+        record_operator_access(request, contest_id, operator_account, bearer_token(request) or "")
     if request.method.upper() not in AUDITED_METHODS or not scope:
         return response
 
     try:
         contest_id = _audit_contest_id(path)
+        changes = []
+        change_kind = "requested"
+        if response.status_code >= 400:
+            change_kind = "failed"
+        elif request.method.upper() == "DELETE":
+            change_kind = "deleted"
+        elif before is not None and request.method.upper() in {"PATCH", "PUT"}:
+            after = _audit_existing_values(path)
+            if after is not None:
+                changes = _audit_changes(after, before)
+                change_kind = "updated"
         details: dict[str, Any] = {
             **payload_details,
+            "changes": changes,
+            "change_kind": change_kind,
+            "target": _audit_mapping({key: before[key] for key in ("title", "name", "team_name", "problem_code", "original_filename", "display_order") if key in before}) if before else {},
             "contest_title": _audit_contest_title(contest_id),
         }
         if request.url.query:

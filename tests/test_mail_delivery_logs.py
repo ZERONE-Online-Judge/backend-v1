@@ -47,14 +47,15 @@ def get_logs(c, **params):
     return response.json()
 
 
-def test_logs_are_strictly_scoped_and_exclude_bodies_and_authentication_codes(context):
+def test_logs_are_strictly_scoped_with_plain_text_previews(context):
     c = context
     logs = get_logs(c)['data']
     assert [row['mail_queue_id'] for row in logs] == [c['items'][0].mail_queue_id]
     assert logs[0]['contest_title'].startswith('메일 대회 ')
     assert logs[0]['sent_at'] is None
     assert 'body_text' not in logs[0] and 'body_html' not in logs[0]
-    assert 'PRIVATE ANSWER' not in str(logs)
+    assert logs[0]['body_preview'] == 'PRIVATE ANSWER'
+    assert logs[0]['preview_restricted'] is False
     # Knowing another contest's ID or reusing a recipient never changes scope.
     assert get_logs(c, contest_id=c['other'])['data'] == logs
     assert client.get(f"/api/operator/contests/{c['other']}/mail-logs", headers=c['viewer']).status_code == 403
@@ -185,3 +186,34 @@ def test_migration_only_backfills_trusted_contest_links_and_never_invents_sent_t
         assert connection.scalar(sa.text('SELECT COUNT(*) FROM mail_queue WHERE sent_at IS NOT NULL')) == 0
         migration.downgrade()
         assert connection.scalar(sa.text('SELECT COUNT(*) FROM mail_queue')) == 5
+
+
+def test_preview_permissions_and_authentication_body_protection(context):
+    c = context
+    path = f"/api/operator/contests/{c['cid']}/mail-logs"
+    own = c['items'][0].mail_queue_id
+    response = client.get(f"{path}/{own}/preview", headers=c['viewer'])
+    assert response.status_code == 200
+    assert response.json()['data']['body_text'] == 'PRIVATE ANSWER'
+    assert client.get(f"{path}/{c['items'][1].mail_queue_id}/preview", headers=c['viewer']).status_code == 404
+    assert client.get(f"{path}/{own}/preview").status_code == 401
+    assert client.get(f"/api/admin/mail-logs/{own}/preview", headers=c['viewer']).status_code == 403
+    for kind in ('general_otp', 'staff_otp', 'participant_otp', 'unknown_private_template'):
+        item = store.enqueue_mail(kind, c['recipient'], '보호 메일', 'SECRET CODE 654321', contest_id=c['cid'])
+        for prefix, headers in ((path, c['viewer']), ('/api/admin/mail-logs', c['admin'])):
+            response = client.get(f"{prefix}/{item.mail_queue_id}/preview", headers=headers)
+            assert response.status_code == 200
+            assert response.json()['data']['restricted'] is True
+            assert response.json()['data']['body_text'] is None
+    assert '654321' not in str(get_logs(c))
+
+
+def test_preview_bounds_and_does_not_return_html(context):
+    c = context
+    item = store.enqueue_mail('contest_notice_created', c['recipient'], '긴 본문', 'z'*41000, contest_id=c['cid'])
+    path=f"/api/operator/contests/{c['cid']}/mail-logs/{item.mail_queue_id}/preview"
+    data=client.get(path, headers=c['viewer']).json()['data']
+    assert len(data['body_text']) == 40000 and data['truncated'] is True
+    assert 'body_html' not in data
+    listed=next(row for row in get_logs(c)['data'] if row['mail_queue_id']==item.mail_queue_id)
+    assert len(listed['body_preview'])==180
