@@ -499,3 +499,46 @@ class PresentationLoginLimitRow(Base):
     client_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     attempts: Mapped[int] = mapped_column(Integer)
+
+
+class VerificationSnapshotRow(Base):
+    __tablename__ = "verification_snapshots"
+    context_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    contest_id: Mapped[str] = mapped_column(String(36), index=True)
+    problem_id: Mapped[str] = mapped_column(String(36), index=True)
+    context: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class VerificationRunRow(Base):
+    __tablename__ = "verification_runs"
+    submission_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    contest_id: Mapped[str] = mapped_column(String(36), index=True)
+    problem_id: Mapped[str] = mapped_column(String(36), index=True)
+    asset_id: Mapped[str] = mapped_column(String(36), index=True)
+    expected_status: Mapped[str] = mapped_column(String(32))
+    context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    analysis_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    __table_args__ = (Index("idx_verification_run_asset_created", "problem_id", "asset_id", "created_at"),)
+
+
+class VerificationAnalysisRow(Base):
+    __tablename__ = "verification_analyses"
+    analysis_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    contest_id: Mapped[str] = mapped_column(String(36), index=True)
+    problem_id: Mapped[str] = mapped_column(String(36), index=True)
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True)
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    model: Mapped[str] = mapped_column(String(100))
+    context_hash: Mapped[str] = mapped_column(String(64))
+    evidence: Mapped[dict] = mapped_column(JSON)
+    report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    coverage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

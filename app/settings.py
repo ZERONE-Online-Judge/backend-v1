@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +44,15 @@ class Settings(BaseSettings):
     object_storage_secure: bool = False
     object_storage_presign_ttl_seconds: int = 900
     local_object_storage_root: str = "/private/tmp/zerone_object_storage"
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-5.4"
+    verification_ai_enabled: bool = True
+    verification_ai_max_input_chars: int = 400_000
+    verification_ai_file_max_bytes: int = 64 * 1024
+    verification_ai_max_output_tokens: int = 16_000
+    verification_ai_timeout_seconds: int = 180
+    verification_ai_daily_limit: int = 50
+    verification_ai_poll_seconds: float = 3.0
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

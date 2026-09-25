@@ -110,7 +110,7 @@ log "ensure shared result cache"
 compose up -d redis
 
 log "ensure background workers"
-RELEASE_VERSION="$release_version" compose up -d --build mail-worker notice-worker bundle-worker
+RELEASE_VERSION="$release_version" compose up -d --build mail-worker notice-worker bundle-worker verification-ai-worker
 
 log "deploy api-$target"
 RELEASE_VERSION="$release_version" "$BLUEGREEN" deploy "$target"

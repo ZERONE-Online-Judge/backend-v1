@@ -3430,6 +3430,8 @@ class DbStore:
             if not row or row.contest_id != contest_id:
                 return None
 
+            from app.services.verification_ai import delete_problem_reviews
+            delete_problem_reviews(db, problem_id)
             item = _problem(row)
             deleted_storage_keys: set[str] = set()
             testcase_set_ids = list(
@@ -3928,6 +3930,7 @@ class DbStore:
         language: str,
         source_code: str,
         *,
+        verification_asset_id: str | None = None,
         submitted_by_name: str | None = None,
         submitted_by_email: str | None = None,
     ) -> Submission:
@@ -3951,6 +3954,9 @@ class DbStore:
             )
             db.add(submission)
             db.flush()
+            if verification_asset_id:
+                from app.services.verification_ai import attach_run
+                attach_run(db, submission, verification_asset_id)
             next_position = (db.scalar(select(func.max(JudgeJobRow.queue_position))) or 0) + 1
             db.add(
                 JudgeJobRow(
@@ -5172,6 +5178,9 @@ class DbStore:
                         }
                         for role, asset in package_role_assets
                     ]
+                    if submission.submission_kind == "operator_test":
+                        from app.services.verification_ai import snapshot_claim
+                        snapshot_claim(db, submission, problem, active_set, testcase_rows)
                     submission.status = SubmissionStatus.PREPARING.value
                     submission.status_updated_at = now_utc()
                     submission.compile_message = None

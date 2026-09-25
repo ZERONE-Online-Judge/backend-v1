@@ -176,6 +176,7 @@ class ContestQuestionUpdateRequest(BaseModel):
 class OperatorTestSubmissionRequest(BaseModel):
     language: str
     source_code: str
+    verification_asset_id: str | None = None
 
 
 class DivisionCreateRequest(BaseModel):
@@ -1216,6 +1217,8 @@ async def operator_wait_submission_status(
 @router.post("/operator/contests/{contest_id}/problems/{problem_id}/test-submissions")
 async def create_operator_test_submission(contest_id: str, problem_id: str, payload: OperatorTestSubmissionRequest, request: Request):
     account = require_contest_staff(request, contest_id, "contest.problem.test")
+    if payload.verification_asset_id:
+        require_contest_staff(request, contest_id, "contest.problem.resource.view")
     if payload.language not in {"c99", "cpp17", "python313", "java8"}:
         raise AppError(422, "validation_error", "Unsupported language.", {"fields": [{"path": "body.language", "code": "invalid_enum"}]})
     if not payload.source_code.strip():
@@ -1226,6 +1229,7 @@ async def create_operator_test_submission(contest_id: str, problem_id: str, payl
             problem_id,
             payload.language,
             payload.source_code,
+            verification_asset_id=payload.verification_asset_id,
             submitted_by_name=account.display_name,
             submitted_by_email=str(account.email),
         )

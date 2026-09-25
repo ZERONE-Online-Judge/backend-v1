@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.routers import admin, analytics, auth, internal_judge, operator, participant, public, presentation, seo, seo_documents, storage
-from app.routers import problem_archives
+from app.routers import problem_archives, verification_ai
 from app.services.errors import AppError
 from app.services.authz import bearer_token
 from app.services.store import store
@@ -397,6 +397,7 @@ app.include_router(participant.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(operator.router, prefix="/api")
 app.include_router(problem_archives.router, prefix="/api")
+app.include_router(verification_ai.router, prefix="/api")
 app.include_router(internal_judge.router, prefix="/api")
 app.include_router(storage.router, prefix="/api")
 
