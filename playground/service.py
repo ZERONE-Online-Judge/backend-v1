@@ -22,6 +22,10 @@ TOKEN = os.environ.get("PLAYGROUND_TOKEN", "")
 IMAGE = os.environ.get("PLAYGROUND_IMAGE", "zoj-verification-playground:1")
 CACHE = Path("/results")
 LOCK = threading.Lock()
+SLOTS = threading.BoundedSemaphore(
+    max(1, min(4, int(os.environ.get("PLAYGROUND_CONCURRENCY", "2"))))
+)
+INFLIGHT = set()
 MAX_BODY = 3 * 1024 * 1024
 LABEL = "org.zoj.verification-playground"
 
@@ -116,7 +120,27 @@ def demux(raw):
     return bytes(result)
 
 
+class BusyError(Exception):
+    pass
+
+
 def execute(job):
+    ident = job.get("request_id")
+    if not isinstance(ident, str):
+        raise ValueError("잘못된 요청 ID")
+    with LOCK:
+        if ident in INFLIGHT or not SLOTS.acquire(blocking=False):
+            raise BusyError("다른 검증 작업 실행 중")
+        INFLIGHT.add(ident)
+    try:
+        return _execute(job)
+    finally:
+        with LOCK:
+            INFLIGHT.remove(ident)
+            SLOTS.release()
+
+
+def _execute(job):
     ident = job.get("request_id")
     if (
         not isinstance(ident, str)
@@ -132,6 +156,11 @@ def execute(job):
         raise ValueError("실행 제한은 1~30초입니다.")
     validate_files(job.get("files"))
     job.setdefault("executables", [])
+    job.setdefault("readonly", [])
+    if not isinstance(job["readonly"], list) or any(
+        not isinstance(p, str) or p not in job["files"] for p in job["readonly"]
+    ):
+        raise ValueError("잘못된 읽기 전용 파일 목록")
     if (
         not isinstance(job["executables"], list)
         or len(job["executables"]) > 48
@@ -165,11 +194,14 @@ def execute(job):
                     "/containers/" + item["Id"], params={"force": "true", "v": "true"}
                 )
         for path in CACHE.iterdir():
-            if time.time() - path.stat().st_mtime > 86400 and path.suffix in {
-                ".json",
-                ".started",
-            }:
-                path.unlink(missing_ok=True)
+            try:
+                if time.time() - path.stat().st_mtime > 86400 and path.suffix in {
+                    ".json",
+                    ".started",
+                }:
+                    path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass  # Another execution may have just pruned this cache entry.
         marker.write_text(request_hash)
         container_id = None
         try:
@@ -179,7 +211,13 @@ def execute(job):
             seed = json.dumps(
                 {
                     k: job[k]
-                    for k in ("files", "command", "timeout_seconds", "executables")
+                    for k in (
+                        "files",
+                        "command",
+                        "timeout_seconds",
+                        "executables",
+                        "readonly",
+                    )
                 }
             ).encode()
             archive = io.BytesIO()
@@ -222,6 +260,13 @@ def execute(job):
                     "격리 실행이 정상 결과를 반환하지 않았습니다."
                 ) from None
             validate_files(result.get("files"))
+            if job["readonly"] and (
+                not result.get("readonly_enforced")
+                or any(
+                    result["files"].get(p) != job["files"][p] for p in job["readonly"]
+                )
+            ):
+                raise ValueError("읽기 전용 파일 보호 검사 실패")
             result["runtime"] = "gvisor"
             result["network"] = "disabled"
             # Atomic checkpoint; retries after a network loss reuse exactly this result.
@@ -283,18 +328,15 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TimeoutError):
             self.reply(422, {"error": "잘못된 실행 요청"})
             return
-        if not LOCK.acquire(blocking=False):
-            self.reply(429, {"error": "다른 검증 작업 실행 중"})
-            return
         try:
             result = execute(job)
             self.reply(200, result)
+        except BusyError:
+            self.reply(429, {"error": "다른 검증 작업 실행 중"})
         except ValueError as error:
             self.reply(422, {"error": str(error)})
         except Exception:
             self.reply(503, {"error": "플레이그라운드 실행 환경을 확인하세요."})
-        finally:
-            LOCK.release()
 
 
 if __name__ == "__main__":

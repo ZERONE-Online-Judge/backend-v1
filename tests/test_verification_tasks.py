@@ -1,5 +1,7 @@
 import copy
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pytest
@@ -18,6 +20,7 @@ from app.services import (
 from app.services.errors import AppError
 from app.services.store import store
 from app.models import SubmissionStatus
+from app.settings import settings
 from test_verification_agent import agent_context, call, judged
 from test_verification_ai import context, client, REPORT, submit
 
@@ -185,9 +188,9 @@ def test_task_permissions_context_and_parent_scope(agent_context):
         == 403
     )
     assert client.get(route, headers=c["headers"]["author"]).json()["data"]["tasks"]
-    with pytest.raises(AppError) as error:
-        create(c, "다른 독립 작업을 새로 시작해 주세요.")
-    assert error.value.status_code == 409
+    second = create(c, "다른 독립 작업을 새로 시작해 주세요.")
+    assert second["task_id"] != tid
+    tasks.cancel(c["cid"], c["pid"], second["task_id"])
     tasks.cancel(c["cid"], c["pid"], tid)
     with pytest.raises(AppError):
         create(c, parent_task_id=str(uuid4()))
@@ -318,3 +321,106 @@ def test_completed_report_requires_a_reconciled_plan(agent_context):
         row, ctx, state, call("finish_task", outcome="completed", report=REPORT)
     )
     assert state["outcome"] == "completed"
+
+
+def test_parallel_claims_are_distinct_and_respect_global_capacity(
+    agent_context, monkeypatch
+):
+    c = agent_context
+    with c["sessions"]() as db:
+        if db.bind.dialect.name != "postgresql":
+            pytest.skip("Cross-worker scheduling is verified on PostgreSQL")
+    monkeypatch.setattr(settings, "verification_ai_concurrency", 3)
+    for i in range(4):
+        create(c, f"독립 요청 {i}의 입력 조건을 검토해 주세요.")
+    gate, release = threading.Barrier(4), threading.Event()
+    seen = []
+
+    def provider(state, _):
+        seen.append(state["task_goal"])
+        gate.wait(timeout=10)
+        assert release.wait(timeout=10)
+        return model(
+            [
+                call(
+                    "ask_user",
+                    question="최댓값 조건을 알려 주세요.",
+                    reason="조건이 없습니다.",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(agent, "request_model", provider)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(agent.process_one) for _ in range(3)]
+        try:
+            gate.wait(timeout=10)
+            assert len(set(seen)) == 3
+            assert not agent.process_one()
+        finally:
+            release.set()
+        assert all(f.result(timeout=10) for f in futures)
+
+
+def test_verification_worker_does_not_scan_completed_judgments(monkeypatch):
+    from app.workers import verification_ai_worker as worker
+
+    stopped = threading.Event()
+
+    def idle():
+        stopped.set()
+        return False
+
+    monkeypatch.setattr(agent, "process_one", idle)
+    monkeypatch.setattr(ai, "process_one", lambda: False)
+    worker.consume(stopped)
+
+
+def test_migration_pauses_legacy_auto_queue_and_preserves_explicit_tasks(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+    from sqlalchemy import create_engine, text
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    path = Path(__file__).parents[1] / "migrations/versions/0038_manual_verification.py"
+    spec = importlib.util.spec_from_file_location("manual_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    engine = create_engine("sqlite://")
+    with engine.begin() as db:
+        db.execute(
+            text(
+                "CREATE TABLE verification_analyses (analysis_id TEXT PRIMARY KEY, status TEXT, started_at DATETIME, created_at DATETIME)"
+            )
+        )
+        db.execute(
+            text("CREATE TABLE verification_tasks (analysis_id TEXT PRIMARY KEY)")
+        )
+        for ident, status in [
+            ("auto", "queued"),
+            ("task", "queued"),
+            ("active", "running"),
+            ("saved", "succeeded"),
+        ]:
+            db.execute(
+                text(
+                    "INSERT INTO verification_analyses VALUES (:id,:status,NULL,'2026-09-25')"
+                ),
+                {"id": ident, "status": status},
+            )
+        db.execute(text("INSERT INTO verification_tasks VALUES ('task')"))
+        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(db)))
+        migration.upgrade()
+        rows = {
+            r.analysis_id: r
+            for r in db.execute(text("SELECT * FROM verification_analyses"))
+        }
+        assert (
+            rows["auto"].status == "awaiting_request"
+            and rows["auto"].requested_at is None
+        )
+        assert rows["task"].status == "queued" and rows["task"].requested_at
+        assert rows["active"].requested_at and rows["saved"].status == "succeeded"
+        migration.downgrade()
+    engine.dispose()

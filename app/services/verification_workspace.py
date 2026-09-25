@@ -42,6 +42,10 @@ def path_name(name):
 def put(state, path, raw):
     path = path_name(path)
     files = state.setdefault("workspace", {})
+    if path in state.get("workspace_readonly", {}):
+        raise caps.ToolError(
+            "채점 기준 파일은 읽기 전용입니다. 원본으로 재현하고 의심 사항을 보고하세요."
+        )
     if len(raw) > MAX_FILE:
         raise caps.ToolError("작업 파일은 256 KiB 이하만 지원합니다.")
     encoded = base64.b64encode(raw).decode()
@@ -61,6 +65,7 @@ def manifest(state):
     return [
         {
             "path": p,
+            "read_only": p in state.get("workspace_readonly", {}),
             "bytes": len(base64.b64decode(v)),
             "sha256": hashlib.sha256(base64.b64decode(v)).hexdigest(),
         }
@@ -70,6 +75,18 @@ def manifest(state):
 
 def handle(row, context, state, files, name, args, call_id):
     workspace = state.setdefault("workspace", {})
+    protected = {
+        item["sha256"]: file_id
+        for file_id, item in files.items()
+        if item.get("read_only") and item.get("sha256")
+    }
+    for path, encoded in workspace.items():
+        checksum = hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+        if checksum in protected:
+            state.setdefault("workspace_readonly", {})[path] = {
+                "file_id": protected[checksum],
+                "sha256": checksum,
+            }
     if name == "workspace_list":
         return {
             "files": manifest(state),
@@ -78,7 +95,14 @@ def handle(row, context, state, files, name, args, call_id):
         }
     if name == "workspace_copy":
         raw = caps.file_bytes(files, args["file_id"])
-        return put(state, args["path"], raw)
+        result = put(state, args["path"], raw)
+        if files[args["file_id"]].get("read_only"):
+            state.setdefault("workspace_readonly", {})[result["path"]] = {
+                "file_id": args["file_id"],
+                "sha256": result["sha256"],
+            }
+            result["read_only"] = True
+        return result
     if name == "workspace_write":
         if not isinstance(args["content"], str):
             raise caps.ToolError("파일 내용은 문자열이어야 합니다.")
@@ -93,6 +117,10 @@ def handle(row, context, state, files, name, args, call_id):
         if path not in workspace:
             raise caps.ToolError("작업 공간에 없는 파일입니다.")
         raw = base64.b64decode(workspace[path])
+        if name != "workspace_read" and path in state.get("workspace_readonly", {}):
+            raise caps.ToolError(
+                "채점 기준 파일은 수정·삭제·솔루션 후보 등록을 할 수 없습니다."
+            )
         if name == "workspace_delete":
             del workspace[path]
             return {"deleted": path}
@@ -164,7 +192,10 @@ def handle(row, context, state, files, name, args, call_id):
             raise caps.ToolError(
                 "명령은 8000바이트 이하, 실행 제한은 1~30초로 지정하세요."
             )
-        request_id = ai.digest([row.analysis_id, call_id, workspace, command, seconds])
+        readonly = sorted(state.get("workspace_readonly", {}))
+        request_id = ai.digest(
+            [row.analysis_id, call_id, workspace, command, seconds, readonly]
+        )
         existing = next((r for r in executions if r["request_id"] == request_id), None)
         if existing:
             return existing
@@ -182,6 +213,7 @@ def handle(row, context, state, files, name, args, call_id):
                 if name in workspace
             ],
             "command": command,
+            "readonly": readonly,
             "timeout_seconds": seconds,
         }
         try:
@@ -223,6 +255,13 @@ def handle(row, context, state, files, name, args, call_id):
                 put(new_state, path, base64.b64decode(encoded, validate=True))
         except (TypeError, ValueError):
             raise caps.ToolError("작업 파일 결과 검증에 실패했습니다.") from None
+        if readonly and (
+            not data.get("readonly_enforced")
+            or any(new_state["workspace"].get(p) != workspace.get(p) for p in readonly)
+        ):
+            raise caps.ToolError(
+                "읽기 전용 채점 파일 보호를 확인하지 못해 실행 결과를 채택하지 않습니다."
+            )
         state["workspace"] = new_state["workspace"]
         state["workspace_executables"] = [
             name for name in data.get("executables", []) if name in state["workspace"]

@@ -23,7 +23,14 @@ from app.services import (
 )
 from app.services.store import store
 from app.settings import settings
-from test_verification_ai import context, submit, client, SECRET, REPORT
+from test_verification_ai import (
+    context,
+    submit,
+    client,
+    SECRET,
+    REPORT,
+    request_completed,
+)
 
 
 @pytest.fixture
@@ -34,7 +41,7 @@ def agent_context(context, monkeypatch):
 
 def queued(c):
     sid = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     with c["sessions"]() as db:
         row = db.scalar(select(ai.Analysis))
         snapshot = db.get(ai.Snapshot, row.context_hash)

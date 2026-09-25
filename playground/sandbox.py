@@ -57,6 +57,17 @@ def main():
             if parent == root:
                 break
             os.chown(parent, 10001, 10001)
+    # Root-owned files plus sticky root-owned ancestor directories also prevent
+    # unlink/rename/replacement by the unprivileged command, not only writes.
+    for name in job.get("readonly", []):
+        dest = root / safe_path(name)
+        os.chown(dest, 0, 0)
+        os.chmod(dest, 0o555 if name in job.get("executables", []) else 0o444)
+        for parent in dest.parents:
+            os.chown(parent, 0, 0)
+            os.chmod(parent, 0o1777)
+            if parent == root:
+                break
     started = time.monotonic()
     proc = subprocess.Popen(
         ["/bin/sh", "-c", job["command"]],
@@ -148,6 +159,7 @@ def main():
                 "files": files,
                 "executables": executables,
                 "notes": notes[:50],
+                "readonly_enforced": True,
             },
             ensure_ascii=False,
         ),

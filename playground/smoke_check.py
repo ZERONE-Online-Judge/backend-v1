@@ -18,7 +18,7 @@ service.CACHE = Path(tempfile.mkdtemp(prefix="zoj-playground-smoke-"))
 atexit.register(lambda: shutil.rmtree(service.CACHE, ignore_errors=True))
 
 
-def run(command, files=None, seconds=10):
+def run(command, files=None, seconds=10, readonly=None):
     return service.execute(
         {
             "request_id": hashlib.sha256(uuid4().bytes).hexdigest(),
@@ -28,6 +28,7 @@ def run(command, files=None, seconds=10):
                 for k, v in (files or {}).items()
             },
             "timeout_seconds": seconds,
+            "readonly": readonly or [],
         }
     )
 
@@ -35,6 +36,33 @@ def run(command, files=None, seconds=10):
 original = run(
     "python main.py < input.txt", {"main.py": "print(4)\n", "input.txt": "2 3\n"}
 )
+protected = run(
+    "python protect.py",
+    {
+        "testlib.h": "// official library",
+        "judge/checker.cpp": "// registered checker",
+        "protect.py": """from pathlib import Path
+import os
+for name in ('testlib.h','judge/checker.cpp'):
+    p = Path(name)
+    for action in (lambda: p.write_text('changed'), lambda: p.unlink(), lambda: p.chmod(0o600), lambda: p.rename(name+'.moved')):
+        try: action(); raise AssertionError('protected file modified: '+name)
+        except PermissionError: pass
+    Path('replacement').write_text('changed')
+    try: os.replace('replacement',name); raise AssertionError('protected file replaced')
+    except PermissionError: pass
+try: Path('judge').rename('moved'); raise AssertionError('protected directory moved')
+except PermissionError: pass
+Path('experiment.txt').write_text('allowed')
+assert Path('testlib.h').read_text() == '// official library'
+print('readonly inputs preserved; experiment files writable')
+""",
+    },
+    readonly=["testlib.h", "judge/checker.cpp"],
+)
+assert protected["exit_code"] == 0 and protected["readonly_enforced"], protected[
+    "stdout"
+]
 assert original["stdout"].strip() == "4" and original["exit_code"] == 0, {
     k: v for k, v in original.items() if k != "files"
 }
@@ -162,3 +190,26 @@ assert java["exit_code"] == 0 and java["stdout"].strip().endswith("5"), {
     k: v for k, v in java.items() if k != "files"
 }
 print("Java compile and execution passed.")
+
+# Independent containers must overlap; each keeps its own filesystem/output.
+from concurrent.futures import ThreadPoolExecutor
+
+
+def parallel_probe(label):
+    return run(
+        "python probe.py",
+        {
+            "probe.py": "import time,json\ns=time.time()\ntime.sleep(2)\nprint(json.dumps([s,time.time(),"
+            + repr(label)
+            + "]))"
+        },
+    )
+
+
+with ThreadPoolExecutor(max_workers=2) as pool:
+    parallel = list(pool.map(parallel_probe, ["one", "two"]))
+assert all(p["exit_code"] == 0 for p in parallel)
+intervals = [json.loads(p["stdout"]) for p in parallel]
+assert max(p[0] for p in intervals) < min(p[1] for p in intervals), intervals
+assert {p[2] for p in intervals} == {"one", "two"}
+print("Two gVisor executions overlap with separate files and outputs.")

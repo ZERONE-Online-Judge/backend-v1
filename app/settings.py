@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     verification_ai_timeout_seconds: int = 180
     verification_ai_daily_limit: int = 50
     verification_ai_poll_seconds: float = 3.0
+    verification_ai_concurrency: int = 3
     verification_agent_enabled: bool = True
     verification_agent_model: str = "gpt-5.4-mini"
     verification_agent_max_cost_usd: float = 0.20

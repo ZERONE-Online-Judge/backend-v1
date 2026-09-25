@@ -186,6 +186,8 @@ services:
     restart: unless-stopped
 
   playground-control:
+    environment:
+      PLAYGROUND_CONCURRENCY: "2"
     profiles: ["verification-playground"]
     build:
       context: ../playground

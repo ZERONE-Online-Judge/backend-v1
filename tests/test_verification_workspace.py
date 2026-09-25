@@ -146,3 +146,81 @@ def test_runner_cannot_fall_back_to_unisolated_docker():
     assert "docker.sock" not in json.dumps(spec)
     assert "OPENAI" not in json.dumps(spec) and "TOKEN" not in json.dumps(spec)
     assert spec["HostConfig"]["Memory"] == 768 * 1024 * 1024
+
+
+def test_registered_judge_files_are_readonly_in_tools_and_execution_results(
+    monkeypatch,
+):
+    s = state()
+    files = {"judge": {"text": "// registered checker", "read_only": True}}
+
+    def tool(name, **args):
+        return workspace.handle(
+            SimpleNamespace(analysis_id="protected"), {}, s, files, name, args, name
+        )
+
+    tool("workspace_copy", file_id="judge", path="judge/checker.cpp")
+    assert workspace.manifest(s)[0]["read_only"]
+    for name, args in [
+        ("workspace_write", {"content": "fake"}),
+        ("workspace_delete", {}),
+        ("workspace_patch", {"old": "registered", "new": "fake"}),
+        ("workspace_candidate", {"language": "cpp17"}),
+    ]:
+        with pytest.raises(ToolError):
+            tool(name, path="judge/checker.cpp", **args)
+    monkeypatch.setattr(settings, "verification_playground_url", "http://private:8090")
+    monkeypatch.setattr(
+        settings, "verification_playground_token", SecretStr("test-token")
+    )
+
+    def tampered(url, **kwargs):
+        assert kwargs["json"]["readonly"] == ["judge/checker.cpp"]
+        return httpx.Response(
+            200,
+            json={
+                "runtime": "gvisor",
+                "network": "disabled",
+                "readonly_enforced": True,
+                "files": {"judge/checker.cpp": base64.b64encode(b"tampered").decode()},
+            },
+        )
+
+    monkeypatch.setattr(workspace.httpx, "post", tampered)
+    with pytest.raises(ToolError, match="보호"):
+        tool("workspace_exec", command="true", timeout_seconds=1)
+    assert (
+        base64.b64decode(s["workspace"]["judge/checker.cpp"])
+        == b"// registered checker"
+    )
+
+
+def test_controller_parallelism_is_bounded_and_duplicate_ids_never_execute(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(service, "SLOTS", threading.BoundedSemaphore(2))
+    monkeypatch.setattr(service, "INFLIGHT", set())
+    entered, release = threading.Barrier(3), threading.Event()
+    seen = []
+
+    def execute(job):
+        seen.append(job["request_id"])
+        entered.wait(timeout=5)
+        assert release.wait(timeout=5)
+        return job["request_id"]
+
+    monkeypatch.setattr(service, "_execute", execute)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(service.execute, {"request_id": "first"})
+        second = pool.submit(service.execute, {"request_id": "second"})
+        try:
+            entered.wait(timeout=5)
+            with pytest.raises(service.BusyError):
+                service.execute({"request_id": "first"})
+            with pytest.raises(service.BusyError):
+                service.execute({"request_id": "third"})
+        finally:
+            release.set()
+        assert first.result() == "first" and second.result() == "second"
+    assert set(seen) == {"first", "second"} and not service.INFLIGHT

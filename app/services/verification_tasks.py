@@ -61,7 +61,7 @@ def list_tasks(cid, pid):
         ).all()
         return {
             "available": available(),
-            "limits": limits(),
+            "limits": {**limits(), "concurrency": ai.concurrency()},
             "tasks": [data(db, task, row) for task, row in rows],
             "sources": [
                 {"asset_id": r["asset_id"], "filename": r["filename"]} for r in refs
@@ -162,18 +162,6 @@ def create(cid, pid, goal, source_asset_id=None, parent_task_id=None, created_by
         cached = db.scalar(select(Analysis).where(Analysis.cache_key == key))
         if cached and db.get(Task, cached.analysis_id):
             return data(db, db.get(Task, cached.analysis_id), cached, full=True)
-        busy = db.scalar(
-            select(Task.analysis_id)
-            .join(Analysis, Task.analysis_id == Analysis.analysis_id)
-            .where(Task.problem_id == pid, Analysis.status.in_(ACTIVE))
-            .limit(1)
-        )
-        if busy:
-            raise AppError(
-                409,
-                "verification_task_running",
-                "이 문제에 진행 중인 검증 작업이 있습니다. 기존 작업을 확인해 주세요.",
-            )
         pending = (
             db.scalar(
                 select(func.count())
@@ -211,6 +199,7 @@ def create(cid, pid, goal, source_asset_id=None, parent_task_id=None, created_by
             context_hash=context_hash,
             evidence=evidence,
             attempts=0,
+            requested_at=now_utc(),
         )
         db.add(row)
         task = Task(
@@ -238,6 +227,7 @@ def inherit(state, parent):
     old = parent.agent_state or {}
     state["workspace"] = copy.deepcopy(old.get("workspace", {}))
     state["workspace_executables"] = list(old.get("workspace_executables", []))
+    state["workspace_readonly"] = copy.deepcopy(old.get("workspace_readonly", {}))
     omitted = []
     for key, item in old.get("artifacts", {}).items():
         extension = {

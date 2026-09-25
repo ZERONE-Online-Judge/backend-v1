@@ -215,11 +215,46 @@ def submit(c, *, expected_status=SubmissionStatus.WRONG_ANSWER, claim=True):
     return sid
 
 
-def test_automatic_report_is_shared_persistent_and_cached(context):
+def request_completed(c):
+    """Explicitly request eligible fixture runs, as an operator button would."""
+    if not ai.enabled():
+        return
+    with c["sessions"]() as db:
+        ids = db.scalars(
+            select(ai.Run.submission_id)
+            .join(SubmissionRow, ai.Run.submission_id == SubmissionRow.submission_id)
+            .where(
+                ai.Run.analysis_id.is_(None),
+                SubmissionRow.status.not_in(ai.PENDING),
+                SubmissionRow.status != ai.Run.expected_status,
+            )
+        ).all()
+    for sid in ids:
+        ai.request_analysis(c["cid"], c["pid"], sid)
+
+
+def test_completed_mismatch_and_views_never_start_an_unrequested_analysis(context):
     c = context
     sid = submit(c)
-    ai.enqueue_completed()
-    ai.enqueue_completed()
+    for _ in range(3):
+        assert ai.list_runs(c["cid"], c["pid"])["runs"][0]["analysis"] is None
+        assert ai.analysis_detail(c["cid"], c["pid"], sid)["analysis"] is None
+        assert not ai.process_one()
+    assert not c["calls"]
+    response = client.post(
+        c["base"] + f"/verification-runs/{sid}/analysis", headers=c["headers"]["owner"]
+    )
+    assert response.status_code == 200
+    with c["sessions"]() as db:
+        assert db.scalar(select(ai.Analysis)).requested_at is not None
+    assert ai.process_one() and len(c["calls"]) == 1
+
+
+def test_requested_report_is_shared_persistent_and_cached(context):
+    c = context
+    sid = submit(c)
+    request_completed(c)
+    request_completed(c)
     assert ai.process_one() and not ai.process_one()
     for role in ("owner", "author"):
         response = client.get(
@@ -258,13 +293,13 @@ def test_claim_snapshot_does_not_use_edited_problem_or_testcase_version(context)
     with c["sessions"]() as db:
         db.get(ProblemRow, c["pid"]).statement = "나중에 바뀐 문제"
         db.commit()
-    ai.enqueue_completed()
+    request_completed(c)
     ai.process_one()
     evidence = json.loads(c["calls"][0][1][0]["text"])
     assert evidence["problem"]["statement"] == "두 정수의 합을 출력하시오."
     assert ai.list_runs(c["cid"], c["pid"])["runs"][0]["stale"] is True
     second = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     ai.process_one()
     assert len(c["calls"]) == 2
     assert (
@@ -276,10 +311,10 @@ def test_claim_snapshot_does_not_use_edited_problem_or_testcase_version(context)
 def test_identical_rerun_reuses_the_same_report(context):
     c = context
     first = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     ai.process_one()
     second = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     assert not ai.process_one() and len(c["calls"]) == 1
     assert (
         ai.analysis_detail(c["cid"], c["pid"], first)["analysis"]["analysis_id"]
@@ -290,7 +325,7 @@ def test_identical_rerun_reuses_the_same_report(context):
 def test_permission_and_contest_boundaries_do_not_leak_hidden_tests(context):
     c = context
     sid = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     ai.process_one()
     path = c["base"] + f"/verification-runs/{sid}/analysis"
     assert client.get(path).status_code == 401
@@ -343,7 +378,7 @@ def test_expected_verdict_and_unfinished_runs_never_trigger_ai(context):
     c = context
     submit(c, expected_status=SubmissionStatus.ACCEPTED)
     pending = submit(c, claim=False)
-    ai.enqueue_completed()
+    request_completed(c)
     assert not ai.process_one()
     assert (
         client.post(
@@ -358,7 +393,7 @@ def test_expected_verdict_and_unfinished_runs_never_trigger_ai(context):
 def test_disabled_provider_keeps_saved_reports_readable(context, monkeypatch):
     c = context
     sid = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     ai.process_one()
     monkeypatch.setattr(settings, "openai_api_key", None)
     assert not ai.enabled()
@@ -369,7 +404,7 @@ def test_disabled_provider_keeps_saved_reports_readable(context, monkeypatch):
         == "succeeded"
     )
     submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     assert not ai.process_one()
     assert len(c["calls"]) == 1
 
@@ -379,7 +414,7 @@ def test_partial_missing_and_changed_files_are_disclosed(context, monkeypatch):
     sid = submit(c)
     object_storage.write_bytes(c["keys"]["input"], b"9 9\n")
     object_storage.delete(c["keys"]["output"])
-    ai.enqueue_completed()
+    request_completed(c)
     ai.process_one()
     coverage = ai.analysis_detail(c["cid"], c["pid"], sid)["analysis"]["coverage"]
     assert coverage["partial"] and coverage["omitted_testcases"] == 1
@@ -389,7 +424,7 @@ def test_partial_missing_and_changed_files_are_disclosed(context, monkeypatch):
 def test_daily_cap_and_failed_request_require_bounded_retry(context, monkeypatch):
     c = context
     sid = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
 
     def fail(*args):
         raise RuntimeError("secret-key-and-provider-body")
@@ -407,7 +442,7 @@ def test_daily_cap_and_failed_request_require_bounded_retry(context, monkeypatch
 def test_problem_deletion_removes_saved_reports(context):
     c = context
     submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     ai.process_one()
     store.delete_problem(c["cid"], c["pid"])
     with c["sessions"]() as db:
@@ -475,7 +510,7 @@ def test_concurrent_workers_make_only_one_provider_call(context):
 
     c = context
     submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: ai.process_one(), range(4)))
     assert results.count(True) == 1 and len(c["calls"]) == 1
@@ -484,7 +519,7 @@ def test_concurrent_workers_make_only_one_provider_call(context):
 def test_deleted_verification_cancels_unstarted_provider_request(context):
     c = context
     sid = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     assert store.delete_problem_asset(c["cid"], c["pid"], c["aid"])
     assert not ai.process_one() and not c["calls"]
     assert ai.list_runs(c["cid"], c["pid"])["runs"] == []
@@ -512,7 +547,7 @@ def test_oversized_case_and_external_image_report_partial_coverage(
         db.commit()
     monkeypatch.setattr(settings, "verification_ai_file_max_bytes", 1024)
     sid = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     ai.process_one()
     coverage = ai.analysis_detail(c["cid"], c["pid"], sid)["analysis"]["coverage"]
     assert coverage["partial"] and coverage["partial_testcases"] == 1
@@ -525,7 +560,7 @@ def test_oversized_case_and_external_image_report_partial_coverage(
 def test_worker_crash_expires_without_automatic_rebilling_and_retry_limit(context):
     c = context
     sid = submit(c)
-    ai.enqueue_completed()
+    request_completed(c)
     with c["sessions"]() as db:
         row = db.scalar(select(ai.Analysis))
         row.status = "running"

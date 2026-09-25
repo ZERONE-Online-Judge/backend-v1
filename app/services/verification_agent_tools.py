@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import timedelta
+from pathlib import PurePosixPath
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -87,6 +88,13 @@ def make_manifest(context, evidence, references):
                 else "resource"
             ),
             "name": item["filename"],
+            "read_only": (
+                PurePosixPath(item["filename"]).name.lower() == "testlib.h"
+                or any(
+                    f"/{role}/" in item["storage_key"]
+                    for role in ("checker", "validator", "package-resource")
+                )
+            ),
         }
     return files
 
