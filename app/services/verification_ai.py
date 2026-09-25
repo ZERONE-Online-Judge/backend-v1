@@ -203,7 +203,7 @@ def snapshot_claim(db, submission, problem, active_set, cases):
     run.analysis_id = None
 
 
-def _analysis_data(row, *, full=False):
+def _analysis_data(row, *, full=False, db=None):
     if row is None:
         return None
     value = {
@@ -220,6 +220,9 @@ def _analysis_data(row, *, full=False):
     }
     if full:
         value["report"] = row.report
+    from app.services.verification_agent import public_state
+
+    value.update(public_state(row, full=full, db=db))
     return value
 
 
@@ -297,7 +300,15 @@ def list_runs(cid, pid):
                     "analysis": _analysis_data(analysis),
                 }
             )
-        return {"available": enabled(), "model": settings.openai_model, "runs": result}
+        return {
+            "available": enabled(),
+            "model": (
+                settings.verification_agent_model
+                if settings.verification_agent_enabled
+                else settings.openai_model
+            ),
+            "runs": result,
+        }
 
 
 def _find_run(db, cid, pid, sid):
@@ -323,6 +334,7 @@ def analysis_detail(cid, pid, sid):
             "analysis": _analysis_data(
                 db.get(Analysis, run.analysis_id) if run.analysis_id else None,
                 full=True,
+                db=db,
             ),
         }
 
@@ -358,12 +370,21 @@ def _queue(db, run, submission):
         "runtime_ms": submission.runtime_ms,
         "memory_kb": submission.memory_kb,
     }
+    engine = 2 if settings.verification_agent_enabled else 1
+    model = settings.verification_agent_model if engine == 2 else settings.openai_model
+    cache_evidence = dict(evidence)
+    if not {run.expected_status, submission.status} & {
+        "time_limit_exceeded",
+        "memory_limit_exceeded",
+    }:
+        cache_evidence.pop("runtime_ms", None)
+        cache_evidence.pop("memory_kb", None)
     key = digest(
         {
             "context": run.context_hash,
-            "evidence": evidence,
-            "model": settings.openai_model,
-            "prompt": PROMPT_VERSION,
+            "evidence": cache_evidence,
+            "model": model,
+            "prompt": "verification-agent-v2.1" if engine == 2 else PROMPT_VERSION,
         }
     )
     insert_once(
@@ -375,7 +396,8 @@ def _queue(db, run, submission):
             problem_id=run.problem_id,
             cache_key=key,
             status="queued",
-            model=settings.openai_model,
+            model=model,
+            engine_version=engine,
             context_hash=run.context_hash,
             evidence=evidence,
             attempts=0,
@@ -392,10 +414,18 @@ def request_analysis(cid, pid, sid):
     with SessionLocal() as db:
         run, submission = _find_run(db, cid, pid, sid)
         existing = db.get(Analysis, run.analysis_id) if run.analysis_id else None
-        if existing and existing.status != "failed":
+        if (
+            existing
+            and existing.status != "failed"
+            and not (
+                settings.verification_agent_enabled
+                and existing.engine_version < 2
+                and existing.status == "succeeded"
+            )
+        ):
             return {
                 "available": enabled(),
-                "analysis": _analysis_data(existing, full=True),
+                "analysis": _analysis_data(existing, full=True, db=db),
             }
         if not enabled():
             raise AppError(
@@ -421,7 +451,7 @@ def request_analysis(cid, pid, sid):
             )
         db.commit()
         db.refresh(row)
-        return {"available": True, "analysis": _analysis_data(row, full=True)}
+        return {"available": True, "analysis": _analysis_data(row, full=True, db=db)}
 
 
 def enqueue_completed():
@@ -790,6 +820,7 @@ def process_one():
         db.execute(
             update(Analysis)
             .where(Analysis.status == "queued", ~visible_run)
+            .where(Analysis.engine_version == 1)
             .values(
                 status="failed",
                 error_message="검증 코드가 삭제되어 분석을 취소했습니다.",
@@ -801,6 +832,7 @@ def process_one():
             update(Analysis)
             .where(
                 Analysis.status == "running",
+                Analysis.engine_version == 1,
                 Analysis.started_at < now_utc() - timedelta(minutes=10),
             )
             .values(
@@ -828,7 +860,7 @@ def process_one():
             return False
         row = db.scalar(
             select(Analysis)
-            .where(Analysis.status == "queued")
+            .where(Analysis.status == "queued", Analysis.engine_version == 1)
             .order_by(Analysis.created_at)
             .limit(1)
             .with_for_update(skip_locked=True)
@@ -893,5 +925,28 @@ def process_one():
 
 
 def delete_problem_reviews(db, problem_id):
-    for model in (Run, Analysis, Snapshot):
+    from app.orm_models import VerificationTrialRow
+
+    for model in (VerificationTrialRow, Run, Analysis, Snapshot):
         db.execute(delete(model).where(model.problem_id == problem_id))
+
+
+def workspace_archive(cid, pid, sid):
+    """Small, permission-scoped snapshot download; never expose model history."""
+    import io
+    import zipfile
+    from app.services.verification_workspace import path_name
+
+    with SessionLocal() as db:
+        run, _ = _find_run(db, cid, pid, sid)
+        row = db.get(Analysis, run.analysis_id) if run.analysis_id else None
+        workspace = (row.agent_state or {}).get("workspace", {}) if row else {}
+        if not workspace:
+            raise not_found("저장된 작업 파일이 없습니다.")
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path, encoded in workspace.items():
+                archive.writestr(
+                    path_name(path), base64.b64decode(encoded, validate=True)
+                )
+        return output.getvalue()

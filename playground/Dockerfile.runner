@@ -1,0 +1,8 @@
+FROM python:3.13-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends g++ gcc openjdk-17-jdk-headless coreutils && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /seed /workspace && chmod 755 /seed /workspace /tmp /var/tmp \
+    && find /usr /bin /sbin -xdev -type f -perm /6000 -exec chmod a-s {} +
+COPY sandbox.py /opt/zoj-sandbox.py
+RUN chmod 444 /opt/zoj-sandbox.py
+WORKDIR /workspace
+ENTRYPOINT ["python", "-I", "/opt/zoj-sandbox.py"]

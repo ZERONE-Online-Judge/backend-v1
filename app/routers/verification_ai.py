@@ -36,3 +36,19 @@ def request_analysis(
 ):
     require_access(request, contest_id, write=True)
     return ok(request, service.request_analysis(contest_id, problem_id, submission_id))
+
+
+@router.get(
+    "/operator/contests/{contest_id}/problems/{problem_id}/verification-runs/{submission_id}/workspace.zip"
+)
+def workspace(contest_id: str, problem_id: str, submission_id: str, request: Request):
+    from fastapi.responses import Response
+
+    require_access(request, contest_id)
+    return Response(
+        service.workspace_archive(contest_id, problem_id, submission_id),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="verification-workspace.zip"'
+        },
+    )

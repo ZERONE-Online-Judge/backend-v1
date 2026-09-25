@@ -171,6 +171,7 @@ services:
     restart: unless-stopped
 
   verification-ai-worker:
+    stop_grace_period: 190s
     logging: *app-logging
     build:
       context: ..
@@ -182,6 +183,28 @@ services:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  playground-control:
+    profiles: ["verification-playground"]
+    build:
+      context: ../playground
+    env_file:
+      - path: ./env/playground.env
+        required: false
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - playground_results:/results
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    logging: *app-logging
     restart: unless-stopped
 
   postgres-backup:
@@ -206,3 +229,4 @@ volumes:
   redis_data:
   minio_data:
   postgres_backups:
+  playground_results:

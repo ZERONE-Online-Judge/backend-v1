@@ -542,3 +542,22 @@ class VerificationAnalysisRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    engine_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    agent_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_step_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class VerificationTrialRow(Base):
+    __tablename__ = "verification_trials"
+    submission_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    analysis_id: Mapped[str] = mapped_column(String(36), index=True)
+    contest_id: Mapped[str] = mapped_column(String(36), index=True)
+    problem_id: Mapped[str] = mapped_column(String(36), index=True)
+    context_hash: Mapped[str] = mapped_column(String(64))
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True)
+    artifact_id: Mapped[str] = mapped_column(String(100))
+    testcase_orders: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    testcase_count: Mapped[int] = mapped_column(Integer)
+    probe: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)

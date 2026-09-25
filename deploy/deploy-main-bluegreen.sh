@@ -110,13 +110,25 @@ log "ensure shared result cache"
 compose up -d redis
 
 log "ensure background workers"
-RELEASE_VERSION="$release_version" compose up -d --build mail-worker notice-worker bundle-worker verification-ai-worker
+RELEASE_VERSION="$release_version" compose up -d --build mail-worker notice-worker bundle-worker
+
+# Trial payload handling must be active in the API before the new verifier queues jobs.
+log "drain verification worker"
+compose stop -t 190 verification-ai-worker
 
 log "deploy api-$target"
 RELEASE_VERSION="$release_version" "$BLUEGREEN" deploy "$target"
 
 log "verify nginx routes to api-$target"
 health_via_nginx "$target"
+
+log "start verification worker against the deployed API"
+if [ -f "$DEPLOY_DIR/env/playground.env" ]; then
+  log "update isolated verification playground"
+  docker build -f "$BACKEND_DIR/playground/Dockerfile.runner" -t zoj-verification-playground:1 "$BACKEND_DIR/playground"
+  compose --profile verification-playground up -d --build playground-control
+fi
+RELEASE_VERSION="$release_version" compose up -d --build verification-ai-worker
 
 if [ "$active" = "blue" ] || [ "$active" = "green" ]; then
   log "stop previous api-$active"

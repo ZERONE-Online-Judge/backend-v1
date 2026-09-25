@@ -83,6 +83,7 @@ def context(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "SessionLocal", sessions)
     monkeypatch.setattr(settings, "openai_api_key", SecretStr("test-key-not-real"))
     monkeypatch.setattr(settings, "verification_ai_daily_limit", 50)
+    monkeypatch.setattr(settings, "verification_agent_enabled", False)
     calls = []
 
     def provider(model, content):

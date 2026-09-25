@@ -8,6 +8,7 @@ on:
       - "app/**"
       - "migrations/**"
       - "deploy/**"
+      - "playground/**"
       - "tests/**"
       - "Dockerfile"
       - "requirements.txt"
@@ -18,6 +19,7 @@ on:
       - "app/**"
       - "migrations/**"
       - "deploy/**"
+      - "playground/**"
       - "tests/**"
       - "Dockerfile"
       - "requirements.txt"
@@ -66,9 +68,34 @@ jobs:
       - name: Run tests
         run: python -m pytest tests
 
+  playground-test:
+    name: Playground Isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install gVisor in the disposable CI runner
+        run: |
+          mkdir -p /tmp/zoj-gvisor-install
+          cd /tmp/zoj-gvisor-install
+          base="https://storage.googleapis.com/gvisor/releases/release/latest/$(uname -m)"
+          curl -fsSL "$base/gvisor.tar.bz2" -o gvisor.tar.bz2
+          curl -fsSL "$base/gvisor.tar.bz2.sha512" -o gvisor.tar.bz2.sha512
+          sha512sum -c gvisor.tar.bz2.sha512
+          sudo tar -xjf gvisor.tar.bz2 -C /usr/local/bin
+          sudo /usr/local/bin/runsc install
+          sudo systemctl reload docker
+      - name: Verify real code execution and isolation
+        run: |
+          python -m pip install httpx==0.28.1
+          docker build -f playground/Dockerfile.runner -t zoj-verification-playground:1 playground
+          python playground/smoke_check.py
+
   deploy:
     name: Deploy Backend
-    needs: test
+    needs: [test, playground-test]
     runs-on: [self-hosted, zoj-prod, backend]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production

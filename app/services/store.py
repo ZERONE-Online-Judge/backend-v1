@@ -9,7 +9,7 @@ import secrets
 from zoneinfo import ZoneInfo
 from fastapi.encoders import jsonable_encoder
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import case as sql_case, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only, object_session, selectinload
 
@@ -702,7 +702,7 @@ class DbStore:
             return {row.submission_id: _submission(row, staff_titles=titles) for row in rows}
 
     def get_submission(self, submission_id: str, *, include_source: bool = True) -> Submission | None:
-        base = select(SubmissionRow).where(SubmissionRow.submission_id == submission_id)
+        base = select(SubmissionRow).where(SubmissionRow.submission_id == submission_id, SubmissionRow.submission_kind != "verification_trial")
         if not include_source:
             base = base.options(
                 load_only(
@@ -1080,7 +1080,7 @@ class DbStore:
             }
 
     def count_submissions(self, *, contest_id: str | None = None, division_id: str | None = None) -> int:
-        filters = [SubmissionRow.submission_kind != "participant_preview"]
+        filters = [SubmissionRow.submission_kind.not_in(["participant_preview", "verification_trial"])]
         if contest_id:
             filters.append(SubmissionRow.contest_id == contest_id)
         if division_id:
@@ -1121,7 +1121,7 @@ class DbStore:
             offset = max(0, int(cursor or "0"))
         except ValueError:
             offset = 0
-        filters = []
+        filters = [SubmissionRow.submission_kind != "verification_trial"]
         if not include_participant_previews:
             filters.append(SubmissionRow.submission_kind != "participant_preview")
         if contest_id:
@@ -5092,10 +5092,14 @@ class DbStore:
             db.flush()
             jobs = []
             safe_max_count = max(1, min(max_count, settings.judge_claim_max_batch_size))
+            from app.orm_models import VerificationTrialRow
+            is_ai_trial = select(VerificationTrialRow.submission_id).where(
+                VerificationTrialRow.submission_id == JudgeJobRow.submission_id
+            ).exists()
             rows = db.scalars(
                 select(JudgeJobRow)
                 .where(JudgeJobRow.status == JudgeJobStatus.PENDING.value)
-                .order_by(JudgeJobRow.queue_position)
+                .order_by(sql_case((is_ai_trial, 1), else_=0), JudgeJobRow.queue_position)
                 .limit(safe_max_count)
                 .with_for_update(skip_locked=True)
             ).all()
@@ -5118,6 +5122,10 @@ class DbStore:
                             .order_by(TestcaseRow.display_order)
                         ).all()
                     package_assets: list[ProblemAssetRow] = []
+                    from app.services.verification_agent_tools import prepare_claim
+                    testcase_rows, trial_subset, trial_valid = prepare_claim(db, submission, row, problem, testcase_rows)
+                    if not trial_valid:
+                        continue
                     package_role_assets: list[tuple[str, ProblemAssetRow]] = []
                     if problem:
                         package_assets = db.scalars(
@@ -5135,7 +5143,7 @@ class DbStore:
                                 package_role_assets.append((role, asset))
                     bundle_url = None
                     bundle_available = False
-                    if problem and active_set:
+                    if problem and active_set and not trial_subset:
                         bundle_key = self._judge_bundle_key(
                             submission.contest_id,
                             problem,
@@ -5170,6 +5178,9 @@ class DbStore:
                                     item["input_text"] = input_text
                                     item["output_text"] = output_text
                             testcases.append(item)
+                    if submission.submission_kind == "verification_trial":
+                        from app.services.verification_agent_tools import probe_payload
+                        testcases = probe_payload(db, submission.submission_id) or testcases
                     package_files = [
                         {
                             **_asset(asset).model_dump(mode="json"),

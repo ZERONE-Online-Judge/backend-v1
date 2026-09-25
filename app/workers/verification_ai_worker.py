@@ -1,15 +1,24 @@
 """Single bounded consumer; restart-safe reports live in the database."""
 
 import time
-from app.services import verification_ai
+import signal
+from app.services import verification_ai, verification_agent
 from app.settings import settings
 
 
 def main():
-    while True:
+    stopping = False
+
+    def stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    while not stopping:
         try:
             verification_ai.enqueue_completed()
-            worked = verification_ai.process_one()
+            worked = verification_agent.process_one() or verification_ai.process_one()
         except Exception:
             # Never log request contents or provider exceptions containing secrets.
             print("[verification-ai] worker cycle failed; retrying", flush=True)

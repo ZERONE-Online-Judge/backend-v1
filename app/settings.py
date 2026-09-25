@@ -53,6 +53,17 @@ class Settings(BaseSettings):
     verification_ai_timeout_seconds: int = 180
     verification_ai_daily_limit: int = 50
     verification_ai_poll_seconds: float = 3.0
+    verification_agent_enabled: bool = True
+    verification_agent_model: str = "gpt-5.4-mini"
+    verification_agent_max_cost_usd: float = 0.20
+    verification_agent_max_input_tokens: int = 60_000
+    verification_agent_max_output_tokens: int = 16_000
+    verification_agent_max_calls: int = 10
+    verification_agent_max_tools: int = 48
+    verification_agent_max_runs: int = 6
+    verification_agent_timeout_seconds: int = 900
+    verification_playground_url: str | None = None
+    verification_playground_token: SecretStr | None = None
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None
