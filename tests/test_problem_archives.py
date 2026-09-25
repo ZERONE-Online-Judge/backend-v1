@@ -1,4 +1,5 @@
 import hashlib
+import gzip
 import io
 import json
 import os
@@ -16,7 +17,7 @@ os.environ.setdefault('ALLOW_EMPTY_OTP', 'true')
 from app.main import app
 from app.database import SessionLocal
 from app.models import ContestStatus, now_utc
-from app.orm_models import ProblemAssetRow, ProblemRow, TestcaseRow as CaseRow, TestcaseSetRow as CaseSetRow
+from app.orm_models import BundleWarmQueueItemRow, ProblemAssetRow, ProblemRow, TestcaseRow as CaseRow, TestcaseSetRow as CaseSetRow
 from app.services.store import store
 from app.services.storage import object_storage
 from app.services import problem_archive as archive_service
@@ -153,6 +154,8 @@ def test_storage_failure_rolls_back_database_and_uploaded_objects(context,monkey
     assert upload(c,content,'import').status_code == 503
     assert len([p for p in store.problems.values() if p.contest_id==c['cid']])==1
     assert written and all(object_storage.size_bytes(key) is None for key in written)
+    with SessionLocal() as db:
+        assert db.scalar(select(BundleWarmQueueItemRow).where(BundleWarmQueueItemRow.contest_id==c['cid'])) is None
 
 
 def test_missing_source_file_blocks_export_and_limits_block_upload(context,monkeypatch):
@@ -206,3 +209,37 @@ def test_contest_start_during_file_copy_rolls_back_import(context,monkeypatch):
     response=upload(c,content,'import');assert response.status_code==409,response.text
     assert len([p for p in store.problems.values() if p.contest_id==c['cid']])==1
     assert written and all(object_storage.size_bytes(key) is None for key in written)
+    with SessionLocal() as db:
+        assert db.scalar(select(BundleWarmQueueItemRow).where(BundleWarmQueueItemRow.contest_id==c['cid'])) is None
+
+
+def test_import_automatically_queues_bundle_and_worker_builds_restored_files(context):
+    c=context
+    response=upload(c,export(c),'import');assert response.status_code==200,response.text
+    pid=response.json()['data']['problem_id']
+    status=store.problem_judge_bundle_status(c['cid'],pid)
+    assert status['status']=='pending' and not status['ready']
+    with SessionLocal() as db:
+        jobs=db.scalars(select(BundleWarmQueueItemRow).where(BundleWarmQueueItemRow.problem_id==pid)).all()
+        assert len(jobs)==1 and jobs[0].attempts==0
+        job_id=jobs[0].bundle_warm_queue_id
+    key=store.warm_problem_judge_bundle(c['cid'],pid)
+    store.complete_bundle_warm_job(job_id)
+    status=store.problem_judge_bundle_status(c['cid'],pid)
+    assert status['ready'] and status['queue']['status']=='succeeded'
+    bundle=json.loads(gzip.decompress(object_storage.read_bytes(key)))
+    assert len(bundle['testcases'])==1
+    assert bundle['testcases'][0]['input_text']=='5 6\n\x00'
+    assert bundle['testcases'][0]['output_text']==''
+    assert {item['role'] for item in bundle['package_files']}=={'checker','package-resource'}
+
+
+def test_import_without_active_testcases_does_not_queue_an_unusable_bundle(context):
+    c=context
+    def deactivate(manifest,files):
+        for item in manifest['testcase_sets']:item['is_active']=False
+    response=upload(c,mutate_zip(export(c),deactivate),'import')
+    assert response.status_code==200,response.text
+    pid=response.json()['data']['problem_id']
+    status=store.problem_judge_bundle_status(c['cid'],pid)
+    assert status['status']=='no_active_testcase_set' and status['queue'] is None

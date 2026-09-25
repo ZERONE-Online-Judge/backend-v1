@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.database import SessionLocal
 from app.models import Problem, now_utc
-from app.orm_models import ContestDivisionRow, ContestRow, ProblemAssetRow, ProblemRow, TestcaseRow, TestcaseSetRow
+from app.orm_models import BundleWarmQueueItemRow, ContestDivisionRow, ContestRow, ProblemAssetRow, ProblemRow, TestcaseRow, TestcaseSetRow
 from app.services.errors import AppError, not_found
 from app.services.storage import object_storage
 
@@ -430,6 +430,10 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
                         output_storage_key=upload(case.output, f'testcases/{set_id}', f'{case.display_order}.out', 'application/octet-stream'),
                         input_sha256=file_by_path[case.input].sha256, output_sha256=file_by_path[case.output].sha256,
                         time_limit_ms_override=case.time_limit_ms_override, memory_limit_mb_override=case.memory_limit_mb_override))
+            # Persist the warm-up request with the problem so workers cannot see
+            # incomplete files, and a failed import cannot leave a queued job.
+            if any(item.is_active for item in manifest.testcase_sets):
+                db.add(BundleWarmQueueItemRow(contest_id=contest_id, problem_id=pid))
             ensure_unlocked()
             db.commit()
             committed = True
