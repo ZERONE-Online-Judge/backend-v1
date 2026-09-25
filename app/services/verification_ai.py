@@ -296,6 +296,7 @@ def list_runs(cid, pid):
                         )
                     },
                     "expected_status": run.expected_status,
+                    "snapshot_available": bool(run.context_hash),
                     "submission": {name: getattr(submission, name) for name in fields},
                     "stale": bool(run.context_hash and run.context_hash != current),
                     "analysis": _analysis_data(analysis),
