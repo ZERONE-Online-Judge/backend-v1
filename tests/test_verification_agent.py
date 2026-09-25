@@ -369,6 +369,9 @@ def test_measured_prompt_prefix_preserves_budget_for_final_report(
     assert agent.budget_for_request(state) is not None
     assert 3000 < state["request_input_bound"] < 8000
     measured = state["request_input_bound"]
+    # Verify prefix invalidation at the measured bound, independent of whether
+    # local tokenization makes a fresh full prompt fit the default 60k budget.
+    state["limits"]["max_input_tokens"] = state["usage"]["input_tokens"] + measured
     state["history"][0]["content"] += "자료 변경"
     assert agent.budget_for_request(state) is None
     assert state["request_input_bound"] > measured

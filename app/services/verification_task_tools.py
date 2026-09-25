@@ -140,7 +140,7 @@ def handle(row, context, state, files, name, args):
     if name == "finish_task":
         from app.services.verification_agent import final_report
 
-        outcome = args["outcome"]
+        outcome = "inconclusive" if state.get("finalizing") else args["outcome"]
         if outcome not in {"completed", "inconclusive"}:
             raise caps.ToolError("작업 결과 상태를 지정하세요.")
         if outcome == "completed" and (

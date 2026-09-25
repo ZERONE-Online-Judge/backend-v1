@@ -219,7 +219,9 @@ def _analysis_data(row, *, full=False, db=None):
         )
     }
     if full:
-        value["report"] = row.report
+        from app.services.verification_agent import report_for_display
+
+        value["report"] = report_for_display(row, db) if db is not None else row.report
     from app.services.verification_agent import public_state
 
     value.update(public_state(row, full=full, db=db))
@@ -418,14 +420,22 @@ def _queue(db, run, submission):
 
 
 def request_analysis(cid, pid, sid):
+    from app.services.verification_agent import can_upgrade_partial
+
     with SessionLocal() as db:
         if db.bind.dialect.name == "postgresql":
             db.execute(select(func.pg_advisory_xact_lock(74327921)))
         run, submission = _find_run(db, cid, pid, sid)
         existing = db.get(Analysis, run.analysis_id) if run.analysis_id else None
+        upgrade_partial = bool(
+            existing
+            and settings.verification_agent_enabled
+            and can_upgrade_partial(existing)
+        )
         if (
             existing
             and existing.status not in {"failed", "awaiting_request"}
+            and not upgrade_partial
             and not (
                 settings.verification_agent_enabled
                 and existing.engine_version < 2
@@ -441,6 +451,14 @@ def request_analysis(cid, pid, sid):
                 503,
                 "verification_ai_not_configured",
                 "서버의 OPENAI_API_KEY 환경변수를 설정해 주세요.",
+            )
+        if upgrade_partial and run.context_hash != digest(
+            current_context(db, _check_problem(db, cid, pid))
+        ):
+            raise AppError(
+                409,
+                "verification_context_changed",
+                "문제 자료가 변경되었습니다. 코드를 다시 채점한 뒤 분석을 요청하세요.",
             )
         row = _queue(db, run, submission)
         row.requested_at = now_utc()

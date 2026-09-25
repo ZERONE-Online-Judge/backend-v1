@@ -453,6 +453,19 @@ def probe_payload(db, submission_id):
 
 
 def inspect_judge(context):
+    overrides = [
+        {
+            k: c.get(k)
+            for k in (
+                "display_order",
+                "time_limit_ms_override",
+                "memory_limit_mb_override",
+            )
+        }
+        for c in context["testcases"]
+        if c.get("time_limit_ms_override") is not None
+        or c.get("memory_limit_mb_override") is not None
+    ]
     with ai.SessionLocal() as db:
         nodes = db.scalars(
             select(JudgeNodeRow).where(
@@ -466,14 +479,10 @@ def inspect_judge(context):
             "language_resource_limits": context["problem"].get(
                 "language_resource_limits"
             ),
-            "testcases": [
-                {
-                    k: v
-                    for k, v in c.items()
-                    if not k.endswith("storage_key") and not k.endswith("sha256")
-                }
-                for c in context["testcases"]
-            ][:100],
+            "testcase_count": len(context["testcases"]),
+            "testcase_overrides": overrides[:100],
+            "overrides_omitted": max(0, len(overrides) - 100),
+            "testcase_policy": "기본 제한을 공유하는 테스트는 나열하지 않습니다. overrides는 별도 제한이 설정된 테스트만 포함합니다.",
             "active_agents": len(nodes),
             "agent_versions": sorted({n.agent_version for n in nodes}),
             "policy": "기존 isolate 샌드박스 및 동일 checker 사용. 언어/케이스 재정의 우선. 기본 Java 시간*2+1000ms, 메모리*2+16MB, Python 시간*3+2000ms, 메모리*2+32MB. BOM/NBSP 정규화. checker 인수: 입력, 참가자 출력, 정답 출력. validator 소스는 조회 가능하나 추가 제출에서 별도 실행하지 않음.",
