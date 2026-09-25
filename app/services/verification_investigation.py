@@ -95,23 +95,30 @@ def validate_finish(row, state, report, runs):
             )
     if report["conclusion"] == "test_gap" and not supported_gap(state, runs):
         raise caps.ToolError(
-            "테스트 누락을 확정할 근거가 부족합니다. 원본 전체 테스트 통과, 같은 반례의 원본 실패, check_probe의 등록 validator·참조 풀이 확인이 필요합니다. 자료가 없으면 inconclusive로 보고하고 필요한 추가 검증을 설명하세요."
+            "테스트 누락을 확정할 근거가 부족합니다. 조사 대상 원본(자유 작업은 선택한 등록 풀이)의 전체 테스트 통과, 같은 코드의 반례 실패, check_probe의 등록 validator·참조 풀이 확인이 필요합니다. 자료가 없으면 inconclusive로 보고하고 필요한 추가 검증을 설명하세요."
         )
 
 
 def supported_gap(state, runs):
-    if not any(
-        r["artifact_id"] == "original"
+    # Free tasks may select a registered source later through list_files.
+    # Its full/probe executions must still belong to the very same artifact.
+    passed = {
+        r["artifact_id"]
+        for r in runs
+        if (
+            r["artifact_id"] == "original"
+            or (state.get("task_goal") and r["artifact_id"].startswith("asset:"))
+        )
         and r["scope"] == "all"
         and r["status"] == "accepted"
-        for r in runs
-    ):
+    }
+    if not passed:
         return False
     for check in state.get("probe_checks", []):
         if check.get("status") != "cross_checked":
             continue
         if any(
-            r["artifact_id"] == "original"
+            r["artifact_id"] in passed
             and r["status"] == "wrong_answer"
             and r.get("probe")
             and ai.digest({k: r["probe"][k] for k in ("input", "expected_output")})

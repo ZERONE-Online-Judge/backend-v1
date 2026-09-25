@@ -303,3 +303,14 @@ def test_complete_old_report_offers_explicit_upgrade_without_automatic_calls(
     )
     assert ai.analysis_detail(c["cid"], c["pid"], sid)["analysis"]["can_retry"]
     assert not agent.process_one()
+
+
+def test_free_investigation_can_compare_a_later_selected_registered_source():
+    row, state, runs = gap()
+    for run in runs:
+        run["artifact_id"] = "asset:registered-wrong-solution"
+    assert not investigation.supported_gap(state, runs)
+    state["task_goal"] = "Find missing tests by comparing registered solutions"
+    assert investigation.supported_gap(state, runs)
+    runs[1]["artifact_id"] = "asset:different-code"
+    assert not investigation.supported_gap(state, runs)
