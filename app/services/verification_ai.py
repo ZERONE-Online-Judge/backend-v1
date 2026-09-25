@@ -372,6 +372,10 @@ def _queue(db, run, submission):
     }
     engine = 2 if settings.verification_agent_enabled else 1
     model = settings.verification_agent_model if engine == 2 else settings.openai_model
+    if engine == 2:
+        from app.services.verification_agent import PROMPT_VERSION as prompt_version
+    else:
+        prompt_version = PROMPT_VERSION
     cache_evidence = dict(evidence)
     if not {run.expected_status, submission.status} & {
         "time_limit_exceeded",
@@ -384,7 +388,7 @@ def _queue(db, run, submission):
             "context": run.context_hash,
             "evidence": cache_evidence,
             "model": model,
-            "prompt": "verification-agent-v2.1" if engine == 2 else PROMPT_VERSION,
+            "prompt": prompt_version,
         }
     )
     insert_once(

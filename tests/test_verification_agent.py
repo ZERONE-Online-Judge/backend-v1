@@ -255,7 +255,7 @@ def test_cost_and_tool_limits_do_not_call_provider(agent_context, monkeypatch):
     assert "도구" in state["report"]["limitations"][0]
 
 
-def test_cache_ignores_non_resource_timing_noise(agent_context):
+def test_cache_ignores_non_resource_timing_noise(agent_context, monkeypatch):
     c = agent_context
     sid, row, _, _ = queued(c)
     with c["sessions"]() as db:
@@ -267,6 +267,9 @@ def test_cache_ignores_non_resource_timing_noise(agent_context):
         resource = ai._queue(db, run, sub).analysis_id
         sub.runtime_ms = 1200
         assert ai._queue(db, run, sub).analysis_id != resource
+        current = ai._queue(db, run, sub).analysis_id
+        monkeypatch.setattr(agent, "PROMPT_VERSION", "test-new-agent-version")
+        assert ai._queue(db, run, sub).analysis_id != current
 
 
 def test_escalation_requires_actual_evidence_and_budget(agent_context):
