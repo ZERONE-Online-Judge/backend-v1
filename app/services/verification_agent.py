@@ -28,7 +28,7 @@ from app.services.errors import AppError
 from app.settings import settings
 
 ENGINE_VERSION = 2
-PROMPT_VERSION = "verification-agent-v2.1"
+PROMPT_VERSION = "verification-agent-v2.2"
 # USD per million tokens, official standard API prices checked 2026-09-25.
 PRICES = {"gpt-5.4-mini": (0.75, 0.075, 4.50), "gpt-5.4": (2.50, 0.25, 15.00)}
 INSTRUCTIONS = """당신은 ZOJ 검증 에이전트다. 한국어로 구체적인 근거와 실제 실행 결과를 보고한다.
@@ -242,16 +242,30 @@ def initial_state(db, row, context):
     }
 
 
-def budget_for_request(state):
-    lim, usage = state["limits"], state["usage"]
-    if state["calls"] >= lim["max_calls"]:
-        return None
-    rates = price(state["model"])
+def prompt_identity(state):
+    return ai.digest([state["model"], state["escalated"], INSTRUCTIONS, TOOLS])
+
+
+def input_bound(state):
+    usage = state["usage"]
+    checkpoint = state.get("input_checkpoint") or {}
+    prefix_length = checkpoint.get("history_length", 0)
+    measured = bool(
+        checkpoint.get("input_tokens", 0) > 0
+        and checkpoint.get("identity") == prompt_identity(state)
+        and 0 < prefix_length <= len(state["history"])
+        and checkpoint.get("history_hash")
+        == ai.digest(state["history"][:prefix_length])
+    )
+    # Reuse the provider's measured token count only for an identical prefix.
+    # This avoids counting all Korean instructions as UTF-8 bytes on every turn.
+    # New content and opaque reasoning still get conservative reservations.
+    items = state["history"][prefix_length:] if measured else state["history"]
     # UTF-8 bytes safely upper-bound text token count. Encrypted reasoning is
     # opaque; reserve all preceding output tokens for it instead of its base64 size.
     history = []
     image_count = 0
-    for item in state["history"]:
+    for item in items:
         if item.get("type") == "reasoning":
             continue
         item = copy.deepcopy(item)
@@ -261,12 +275,24 @@ def budget_for_request(state):
                     part["image_url"] = "<image>"
                     image_count += 1
         history.append(item)
-    bound = (
-        len(json.dumps([INSTRUCTIONS, TOOLS, history], ensure_ascii=False).encode())
-        + usage["output_tokens"]
+    content = history if measured else [INSTRUCTIONS, TOOLS, history]
+    return (
+        (checkpoint["input_tokens"] if measured else 0)
+        + len(json.dumps(content, ensure_ascii=False).encode())
+        + max(
+            0, usage["output_tokens"] - (checkpoint["output_tokens"] if measured else 0)
+        )
         + 2048
         + image_count * 4096
     )
+
+
+def budget_for_request(state):
+    lim, usage = state["limits"], state["usage"]
+    if state["calls"] >= lim["max_calls"]:
+        return None
+    rates = price(state["model"])
+    bound = input_bound(state)
     state["request_input_bound"] = bound
     if usage["input_tokens"] + bound > lim["max_input_tokens"]:
         return None
@@ -531,7 +557,17 @@ def handle_tool(row, context, state, call):
     if name in {"run_code", "run_probe"}:
         state["phase"] = "실제 채점 대기"
         result = caps.run_code(
-            row, state, files, context, args["artifact_id"], args["testcase_orders"]
+            row,
+            state,
+            files,
+            context,
+            args["artifact_id"],
+            args["testcase_orders"] if name == "run_code" else [],
+            (
+                {"input": args["input"], "expected_output": args["expected_output"]}
+                if name == "run_probe"
+                else None
+            ),
         )
         if result.get("waiting_for_capacity") or result.get("status") in ai.PENDING:
             return None
@@ -707,6 +743,14 @@ def step(row, context, state):
             )
             state["usage"]["includes_unconfirmed_request"] = True
         raise
+    if (data.get("usage") or {}).get("input_tokens", 0) > 0:
+        state["input_checkpoint"] = {
+            "identity": prompt_identity(state),
+            "history_length": len(state["history"]),
+            "history_hash": ai.digest(state["history"]),
+            "input_tokens": data["usage"]["input_tokens"],
+            "output_tokens": state["usage"]["output_tokens"],
+        }
     record_usage(state, data)
     if data.get("status") != "completed":
         state["report"] = final_report(

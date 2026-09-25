@@ -322,17 +322,10 @@ def test_incomplete_response_usage_is_saved_and_not_automatically_rebilled(
 def test_probe_uses_isolated_inline_input_and_marks_hypothetical_oracle(agent_context):
     c = agent_context
     _, row, ctx, state = queued(c)
-    files = caps.make_manifest(ctx, row.evidence, state["references"])
-    result = caps.run_code(
-        row,
-        state,
-        files,
-        ctx,
-        "original",
-        [],
-        {"input": "-1 1\n", "expected_output": "0\n"},
+    probe_call = call(
+        "run_probe", artifact_id="original", input="-1 1\n", expected_output="0\n"
     )
-    assert result["scope"] == "probe" and not result["probe"]["validator_checked"]
+    assert agent.handle_tool(row, ctx, state, probe_call) is None
     job = store.claim_jobs(c["node"].judge_node_id, SECRET, 1)[0]
     assert job["bundle_url"] is None
     assert len(job["testcases"]) == 1
@@ -340,6 +333,38 @@ def test_probe_uses_isolated_inline_input_and_marks_hypothetical_oracle(agent_co
     assert job["testcases"][0]["output_text"] == "0\n"
     with c["sessions"]() as db:
         assert len(db.scalars(select(Case)).all()) == 1
+        trial = db.scalar(select(Trial))
+        assert trial.probe["expected_output_source"] == "AI hypothesis"
+        assert not trial.probe["validator_checked"]
+
+
+def test_measured_prompt_prefix_preserves_budget_for_final_report(
+    agent_context, monkeypatch
+):
+    _, row, ctx, state = queued(agent_context)
+    monkeypatch.setattr(
+        agent,
+        "request_model",
+        lambda *_: {
+            "status": "completed",
+            "output": [call("read_file", file_id="original", offset=0, length=200)],
+            "usage": {"input_tokens": 3000, "output_tokens": 100},
+        },
+    )
+    agent.step(row, ctx, state)
+    agent.step(row, ctx, state)
+    # Near the cumulative limit, the provider-measured prefix leaves room for
+    # another response, while re-reserving all Korean UTF-8 bytes would not.
+    state["usage"]["input_tokens"] = 52000
+    assert agent.budget_for_request(state) is not None
+    assert 3000 < state["request_input_bound"] < 8000
+    measured = state["request_input_bound"]
+    state["history"][0]["content"] += "자료 변경"
+    assert agent.budget_for_request(state) is None
+    assert state["request_input_bound"] > measured
+    state["history"][0]["content"] = state["history"][0]["content"][:-5]
+    state["model"] = "gpt-5.4"
+    assert agent.budget_for_request(state) is None
 
 
 def test_network_response_loss_reserves_budget_before_manual_retry(
