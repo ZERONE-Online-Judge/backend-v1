@@ -30,7 +30,7 @@ from app.services.errors import AppError
 from app.settings import settings
 
 ENGINE_VERSION = 2
-PROMPT_VERSION = "verification-agent-v2.3"
+PROMPT_VERSION = "verification-agent-v2.4"
 # USD per million tokens, official standard API prices checked 2026-09-25.
 PRICES = {"gpt-5.4-mini": (0.75, 0.075, 4.50), "gpt-5.4": (2.50, 0.25, 15.00)}
 INSTRUCTIONS = """당신은 ZOJ 검증 에이전트다. 한국어로 구체적인 근거와 실제 실행 결과를 보고한다.
@@ -61,7 +61,7 @@ workspace_candidate와 edit_code는 솔루션 후보 전용이다. checker·vali
 run_probe의 기대 출력은 AI 가설이다. 참조 풀이와 테스트 정답도 오류일 수 있다. 입력 조건·기준 풀이·validator를 확인하고, 실제 실행하지 않은 내용을 검증했다고 주장하지 않는다. 등록 테스트 AC는 모든 입력에 대한 정답 증명이 아니다.
 관련 증거를 충분히 찾기 전에 사용자를 질문으로 돌려보내지 않는다. 사용자만 정할 수 있는 조건이 꼭 필요할 때 ask_user로 한 번에 간결히 질문하고 대기한다. 환경 오류나 재현 불가는 확인한 근거와 제한을 보고한다.
 해결되지 않은 모순이 남으면 실제 실행 후 escalate로 상위 모델을 최대 한 번 사용할 수 있다. 단순 자료 조회·대기에는 사용하지 않는다.
-예산을 아껴 최종 보고서 작성 여유를 남긴다. 충분한 근거가 있으면 finish_task로 요청에 대한 결론·근거·수정법·실제 확인 범위·남은 불확실성을 작성한다. 추가 실험이 필요하면 outcome=inconclusive로 표시한다. 사용자 질문은 ask_user, 완료된 결과는 finish_task를 사용한다."""
+예산을 아껴 최종 보고서 작성 여유를 남긴다. 충분한 근거가 있으면 마지막 update_plan과 finish_task를 한 응답에 묶어 요청에 대한 결론·근거·수정법·실제 확인 범위·남은 불확실성을 작성한다. 계획은 실제 수행한 단계만 done으로 정리한다. 미완료 단계나 추가 실험이 필요하면 outcome=inconclusive로 표시한다. 사용자 질문은 ask_user, 완료된 결과는 finish_task를 사용한다."""
 
 
 def spec(name, description, properties):
@@ -550,7 +550,7 @@ def final_report(row, state, report):
                 f"{key}: 전체 등록 테스트 통과가 확인되지 않은 수정 후보입니다."
             )
     report["limitations"].append(
-        "실제 실행 범위와 판정은 실행 기록을 기준으로 확인하세요. 등록 테스트 통과는 모든 입력에 대한 정답 증명이 아닙니다. 제안 반례의 기대 출력은 AI 가설이며 입력 validator는 실행하지 않았습니다. 실행 기록에 없는 반례는 미실행입니다."
+        "실제 실행 범위와 판정은 실행 기록을 기준으로 확인하세요. 등록 테스트 통과는 모든 입력에 대한 정답 증명이 아닙니다. run_probe의 기대 출력은 AI 가설이며 해당 도구는 입력 validator를 자동 실행하지 않습니다. 별도 validator 실행 여부는 플레이그라운드 기록에서 확인하세요. 실행 기록에 없는 반례는 미실행입니다."
     )
     report["limitations"].append(
         "플레이그라운드의 checker·validator·기준 풀이 실험은 기록된 명령과 파일 범위에서만 유효합니다. 최종 수정 후보는 기존 채점기의 판정과 자원 제한을 기준으로 확인하세요."

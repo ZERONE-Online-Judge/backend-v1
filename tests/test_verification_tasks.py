@@ -205,6 +205,7 @@ def test_findings_require_real_evidence_and_unrun_candidate_cannot_claim_complet
     c = agent_context
     task = create(c, source_asset_id=c["aid"])
     row, ctx, state = load(c, task["task_id"])
+    state["plan"] = [{"title": "수정 후보 전체 검증", "status": "done"}]
     with pytest.raises(caps.ToolError):
         agent.handle_tool(
             row,
@@ -297,3 +298,23 @@ def test_task_tool_schema_references_resolve_from_the_parameter_root():
                     check(child)
 
         check(root)
+
+
+def test_completed_report_requires_a_reconciled_plan(agent_context):
+    c = agent_context
+    row, ctx, state = load(c, create(c)["task_id"])
+    state["plan"] = [{"title": "지문 검토", "status": "in_progress"}]
+    with pytest.raises(caps.ToolError, match="마지막 작업 계획"):
+        agent.handle_tool(
+            row, ctx, state, call("finish_task", outcome="completed", report=REPORT)
+        )
+    agent.handle_tool(
+        row,
+        ctx,
+        state,
+        call("update_plan", steps=[{"title": "지문 검토", "status": "done"}]),
+    )
+    agent.handle_tool(
+        row, ctx, state, call("finish_task", outcome="completed", report=REPORT)
+    )
+    assert state["outcome"] == "completed"

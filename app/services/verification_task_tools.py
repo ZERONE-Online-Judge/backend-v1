@@ -143,6 +143,13 @@ def handle(row, context, state, files, name, args):
         outcome = args["outcome"]
         if outcome not in {"completed", "inconclusive"}:
             raise caps.ToolError("작업 결과 상태를 지정하세요.")
+        if outcome == "completed" and (
+            not state.get("plan")
+            or any(step["status"] != "done" for step in state["plan"])
+        ):
+            raise caps.ToolError(
+                "마지막 작업 계획을 update_plan으로 실제 수행 결과에 맞게 정리하세요. 끝난 단계만 done으로 표시하고, 미완료 작업이 남았다면 inconclusive로 보고하세요."
+            )
         with ai.SessionLocal() as db:
             runs = caps.results(db, row.analysis_id)
         if state["artifacts"] and context["testcases"] and outcome == "completed":
