@@ -3,6 +3,7 @@ import hmac
 import time
 from datetime import timedelta
 from io import BytesIO
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 from urllib.parse import urlparse
@@ -76,6 +77,33 @@ class ObjectStorage:
                 response.release_conn()
         path = Path(settings.local_object_storage_root) / storage_key
         return path.read_bytes()
+
+    @contextmanager
+    def open_reader(self, storage_key: str):
+        """Read large archive objects without loading the whole file in memory."""
+        self.validate_key(storage_key)
+        if self.backend == "minio":
+            response = self._client().get_object(settings.object_storage_bucket, storage_key)
+            try:
+                yield response
+            finally:
+                response.close()
+                response.release_conn()
+        else:
+            with (Path(settings.local_object_storage_root) / storage_key).open("rb") as source:
+                yield source
+
+    def write_stream(self, storage_key: str, source, size: int, content_type: str) -> None:
+        self.validate_key(storage_key)
+        if self.backend == "minio":
+            self._client().put_object(settings.object_storage_bucket, storage_key, source,
+                                     length=size, content_type=content_type)
+            return
+        path = Path(settings.local_object_storage_root) / storage_key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as target:
+            import shutil
+            shutil.copyfileobj(source, target, length=1024 * 1024)
 
     def read_text(self, storage_key: str) -> str:
         return self.read_bytes(storage_key).decode("utf-8")
