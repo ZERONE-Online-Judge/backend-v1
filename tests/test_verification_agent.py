@@ -114,7 +114,6 @@ def test_tool_loop_persists_waits_runs_original_and_candidate_and_shares_report(
                 ],
             )
         ],
-        [call("run_code", artifact_id="candidate-1", testcase_orders=[])],
         [
             call(
                 "finish_report",
@@ -156,9 +155,11 @@ def test_tool_loop_persists_waits_runs_original_and_candidate_and_shares_report(
     assert original["bundle_url"] is None and len(original["testcases"]) == 1
     assert agent.process_one()  # deliver result
     assert agent.process_one()  # edit plan
-    assert agent.process_one()  # edit tool
-    assert agent.process_one()  # run plan
-    assert agent.process_one()  # run tool waits
+    assert agent.process_one()  # edit automatically enqueues full judge run
+    for _ in range(3):
+        ready(c)
+        assert agent.process_one()  # pending edit never recreates code or calls model
+    assert len(requests) == 2
     fixed = judged(
         c, SubmissionStatus.ACCEPTED, source="print(sum(map(int, input().split())))\n"
     )
@@ -171,9 +172,19 @@ def test_tool_loop_persists_waits_runs_original_and_candidate_and_shares_report(
     assert [r["status"] for r in result["executions"]] == ["wrong_answer", "accepted"]
     assert result["artifacts"][0]["source"] == fixed["submission"]["source_code"]
     assert (
-        result["usage"]["input_tokens"] == 2000
+        result["usage"]["input_tokens"] == 1500
         and result["usage"]["estimated_cost_usd"] < 0.01
     )
+    assert result["artifacts"][0]["verification"]["status"] == "passed"
+    edit_result = json.loads(
+        next(
+            item["output"]
+            for item in requests[-1]["history"]
+            if item.get("type") == "function_call_output"
+            and item["call_id"] == "call_edit_code"
+        )
+    )
+    assert edit_result["executions"][0]["status"] == "accepted"
     assert (
         "history" not in result
         and "references" not in result

@@ -21,6 +21,18 @@ def remember(state, call, result):
     except (ValueError, TypeError):
         args = {}
     result = copy.deepcopy(result)
+    if name in {"edit_code", "workspace_candidate"}:
+        for execution in result.get("executions", []):
+            for field in ("judge_message", "compile_message"):
+                if execution.get(field):
+                    execution[field], cut = clip(execution[field], 800)
+                    if cut:
+                        execution["excerpt_only"] = True
+            if execution.get("probe"):
+                execution["probe"] = {
+                    "expected_output_source": "AI hypothesis",
+                    "excerpt_only": True,
+                }
     if name in {"run_code", "run_probe"}:
         key = "trial:" + result.get("submission_id", call["call_id"])
         for field in ("judge_message", "compile_message"):

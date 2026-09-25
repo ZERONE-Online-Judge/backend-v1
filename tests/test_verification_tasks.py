@@ -75,7 +75,6 @@ def test_goal_runs_without_mismatch_submission_and_keeps_shared_evidence(
                 ],
             ),
         ],
-        [call("run_code", artifact_id="candidate-1", testcase_orders=[])],
         [
             call("update_plan", steps=[{**plan[0], "status": "done"}]),
             call(
@@ -94,7 +93,6 @@ def test_goal_runs_without_mismatch_submission_and_keeps_shared_evidence(
     assert agent.process_one() and agent.process_one()
     judged(c, SubmissionStatus.WRONG_ANSWER)
     assert agent.process_one()
-    assert agent.process_one() and agent.process_one()
     assert agent.process_one() and agent.process_one()
     judged(c, SubmissionStatus.ACCEPTED)
     assert agent.process_one()
@@ -241,7 +239,9 @@ def test_findings_require_real_evidence_and_unrun_candidate_cannot_claim_complet
         row, ctx, state, call("finish_task", outcome="inconclusive", report=REPORT)
     )
     assert state["outcome"] == "inconclusive"
-    assert any("실제 코드 실행" in limit for limit in state["report"]["limitations"])
+    assert any(
+        "채점 결과를 기다리고" in limit for limit in state["report"]["limitations"]
+    )
 
 
 def test_delete_problem_removes_tasks_and_stop_prevents_queued_model_calls(

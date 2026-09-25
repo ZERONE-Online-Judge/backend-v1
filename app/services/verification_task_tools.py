@@ -139,6 +139,7 @@ def handle(row, context, state, files, name, args):
         return {"awaiting_user": True}
     if name == "finish_task":
         from app.services.verification_agent import final_report
+        from app.services import verification_candidates as candidates
 
         outcome = "inconclusive" if state.get("finalizing") else args["outcome"]
         if outcome not in {"completed", "inconclusive"}:
@@ -152,24 +153,16 @@ def handle(row, context, state, files, name, args):
             )
         with ai.SessionLocal() as db:
             runs = caps.results(db, row.analysis_id)
-        if state["artifacts"] and context["testcases"] and outcome == "completed":
-            latest = next(reversed(state["artifacts"]))
-            orders = {c["display_order"] for c in context["testcases"]}
-            if not any(
-                r["artifact_id"] == latest
-                and r["status"] not in ai.PENDING
-                and (
-                    r["scope"] == "all"
-                    or (
-                        r["scope"] == "selected"
-                        and set(r["testcase_orders"] or []) == orders
-                    )
-                )
-                for r in runs
-            ):
+        if state["artifacts"] and outcome == "completed":
+            latest = candidates.assessment(
+                row, next(reversed(state["artifacts"].values())), runs
+            )
+            if latest["status"] in {"pending", "unverified"}:
                 raise caps.ToolError(
                     "최종 솔루션 후보를 전체 등록 테스트에서 확인하거나, 미검증 이유를 적고 inconclusive로 마무리하세요."
                 )
+            if latest["status"] != "passed":
+                outcome = "inconclusive"
         report = ai.Report.model_validate(args["report"]).model_dump()
         if not runs and not state.get("playground_runs"):
             report["limitations"].append(

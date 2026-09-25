@@ -292,6 +292,10 @@ def trial_result(db, trial):
         "compile_message": clean_log(sub.compile_message) if sub else "",
         "agent_version": node.agent_version if node else None,
         "context_hash": trial.context_hash,
+        "source_sha256": (
+            hashlib.sha256(sub.source_code.encode()).hexdigest() if sub else None
+        ),
+        "language": sub.language if sub else None,
     }
 
 
