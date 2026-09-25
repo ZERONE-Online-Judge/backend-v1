@@ -36,6 +36,18 @@ from test_verification_ai import (
 @pytest.fixture
 def agent_context(context, monkeypatch):
     monkeypatch.setattr(settings, "verification_agent_enabled", True)
+    for key, value in {
+        "model": "gpt-5.4-mini",
+        "max_cost_usd": 0.20,
+        "max_input_tokens": 60000,
+        "max_output_tokens": 16000,
+        "max_calls": 10,
+        "max_tools": 48,
+        "max_runs": 6,
+        "max_playground_runs": 12,
+        "timeout_seconds": 900,
+    }.items():
+        monkeypatch.setattr(settings, "verification_agent_" + key, value)
     return context
 
 

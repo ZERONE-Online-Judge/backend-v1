@@ -95,6 +95,22 @@ def make_manifest(context, evidence, references):
                     for role in ("checker", "validator", "package-resource")
                 )
             ),
+            "role": next(
+                (
+                    role
+                    for role in ("validator", "checker", "package-resource")
+                    if f"/{role}/" in item["storage_key"]
+                ),
+                "reference",
+            ),
+            "expected_status": next(
+                (
+                    status
+                    for status in ai.EXPECTED
+                    if f"/verification-solutions/{status}/" in item["storage_key"]
+                ),
+                None,
+            ),
         }
     return files
 
@@ -349,7 +365,7 @@ def run_code(row, state, files, context, artifact_id, orders, probe=None):
             .select_from(Trial)
             .where(Trial.analysis_id == row.analysis_id)
         )
-        if used >= max(1, min(10, state["limits"]["max_runs"])):
+        if used >= max(1, min(24, state["limits"]["max_runs"])):
             raise ToolError("추가 채점 횟수 한도에 도달했습니다.")
         active = db.scalar(
             select(func.count())

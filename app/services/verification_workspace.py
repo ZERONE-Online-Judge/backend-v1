@@ -200,8 +200,13 @@ def handle(row, context, state, files, name, args, call_id):
         if existing:
             return existing
         attempts = state.setdefault("playground_attempt_ids", [])
-        if request_id not in attempts and len(attempts) >= 12:
-            raise caps.ToolError("분석당 플레이그라운드 실행 12회 한도에 도달했습니다.")
+        maximum = max(
+            1, min(48, state.get("limits", {}).get("max_playground_runs", 12))
+        )
+        if request_id not in attempts and len(attempts) >= maximum:
+            raise caps.ToolError(
+                f"분석당 플레이그라운드 실행 {maximum}회 한도에 도달했습니다."
+            )
         if request_id not in attempts:
             attempts.append(request_id)
         payload = {

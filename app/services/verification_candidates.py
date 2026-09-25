@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import json
 
 from app.services import verification_ai as ai, verification_agent_tools as caps
 
@@ -76,6 +77,13 @@ def validate(row, context, state, files, call, create):
     # Persist on the pending call: polling/restarting must not create another candidate.
     if "candidate_result" not in call:
         call["candidate_result"] = create()
+        args = json.loads(call.get("arguments", "{}"))
+        purpose = (
+            "comparison"
+            if state.get("investigation_focus") == "unexpected_acceptance"
+            else args.get("purpose", "repair")
+        )
+        state["artifacts"][call["candidate_result"]["artifact_id"]]["purpose"] = purpose
     saved = call["candidate_result"]
     aid = saved["artifact_id"]
     with ai.SessionLocal() as db:
@@ -127,8 +135,21 @@ def guard_report(row, state, report, runs):
             if match
             else "이 설명·코드 조각 자체를 실행해 검증한 기록은 없습니다. 실제 실행 여부와 판정은 아래 저장된 수정 후보의 검증 상태를 확인하세요."
         )
-    if assessments:
-        latest = next(reversed(assessments.values()))
+    repairs = [
+        value
+        for aid, value in assessments.items()
+        if artifacts[aid].get("purpose") != "comparison"
+    ]
+    for rec in report.get("recommendations", []):
+        if rec["target"] == "solution":
+            verified = assessments.get(rec.get("artifact_id"))
+            rec["verification"] = (
+                verified["message"]
+                if verified
+                else "실제 실행된 수정 후보와 연결되지 않은 제안입니다. 검증 완료로 간주하지 마세요."
+            )
+    if repairs:
+        latest = repairs[-1]
         report["verdict_assessment"] = "수정 후보 실행 검증: " + latest["message"]
         if latest["status"] != "passed":
             report["summary"] = (

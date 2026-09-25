@@ -111,6 +111,9 @@ def handle(row, context, state, files, name, args):
         known.update(
             "experiment:" + r["request_id"] for r in state.get("playground_runs", [])
         )
+        known.update(
+            "probe-check:" + r["check_id"] for r in state.get("probe_checks", [])
+        )
         if any(r not in known for r in refs) or (
             entry["status"] == "confirmed" and not refs
         ):
@@ -140,6 +143,7 @@ def handle(row, context, state, files, name, args):
     if name == "finish_task":
         from app.services.verification_agent import final_report
         from app.services import verification_candidates as candidates
+        from app.services import verification_investigation as investigation
 
         outcome = "inconclusive" if state.get("finalizing") else args["outcome"]
         if outcome not in {"completed", "inconclusive"}:
@@ -153,22 +157,28 @@ def handle(row, context, state, files, name, args):
             )
         with ai.SessionLocal() as db:
             runs = caps.results(db, row.analysis_id)
-        if state["artifacts"] and outcome == "completed":
-            latest = candidates.assessment(
-                row, next(reversed(state["artifacts"].values())), runs
-            )
+        investigation.validate_finish(row, state, args["report"], runs)
+        repairs = [
+            a for a in state["artifacts"].values() if a.get("purpose") != "comparison"
+        ]
+        if repairs and outcome == "completed":
+            latest = candidates.assessment(row, repairs[-1], runs)
             if latest["status"] in {"pending", "unverified"}:
                 raise caps.ToolError(
                     "최종 솔루션 후보를 전체 등록 테스트에서 확인하거나, 미검증 이유를 적고 inconclusive로 마무리하세요."
                 )
             if latest["status"] != "passed":
                 outcome = "inconclusive"
-        report = ai.Report.model_validate(args["report"]).model_dump()
+        report = investigation.normalize(args["report"])
+        if report.get("conclusion") == "inconclusive":
+            outcome = "inconclusive"
         if not runs and not state.get("playground_runs"):
             report["limitations"].append(
                 "이 작업은 자료 검토만 수행했습니다. 실제 코드 실행으로 확인한 결과는 없습니다."
             )
         state["report"] = final_report(row, state, report)
+        if state["report"].get("conclusion") == "inconclusive":
+            outcome = "inconclusive"
         state["outcome"] = outcome
         state["phase"] = (
             "요청 검토 완료" if outcome == "completed" else "추가 검증 필요"

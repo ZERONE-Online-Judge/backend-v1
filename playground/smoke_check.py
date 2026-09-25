@@ -87,7 +87,8 @@ assert (
 )
 security = run(
     "python probe.py",
-    {"probe.py": """import os,socket
+    {
+        "probe.py": """import os,socket
 assert not os.path.exists('/var/run/docker.sock')
 assert not os.path.exists('/results')
 assert not os.path.exists('/test')
@@ -100,7 +101,8 @@ s=socket.socket();s.settimeout(.3)
 try: s.connect(('1.1.1.1',443));raise AssertionError('network open')
 except OSError: pass
 print('isolation verified')
-"""},
+"""
+    },
 )
 assert (
     security["exit_code"] == 0 and "isolation verified" in security["stdout"]
@@ -213,3 +215,49 @@ intervals = [json.loads(p["stdout"]) for p in parallel]
 assert max(p[0] for p in intervals) < min(p[1] for p in intervals), intervals
 assert {p[2] for p in intervals} == {"one", "two"}
 print("Two gVisor executions overlap with separate files and outputs.")
+
+# Run the exact backend probe driver in gVisor with immutable synthetic criteria.
+# AST extraction avoids importing the backend/DB into this standalone smoke test.
+import ast
+
+module = ast.parse(
+    (
+        Path(__file__).resolve().parents[1]
+        / "app/services/verification_probe_checks.py"
+    ).read_text()
+)
+driver = next(
+    ast.literal_eval(n.value)
+    for n in module.body
+    if isinstance(n, ast.Assign)
+    and any(isinstance(t, ast.Name) and t.id == "DRIVER" for t in n.targets)
+)
+probe_files = {
+    "checks/check.py": driver,
+    "checks/config.json": json.dumps(
+        {
+            "validator": {"path": "validator.cpp", "language": "cpp17"},
+            "reference": {"path": "reference.py", "language": "python313"},
+        }
+    ),
+    "checks/validator.cpp": "#include <iostream>\nint main(){int a,b;if(!(std::cin>>a>>b))return 1;return (a>=0 && b>=0)?0:1;}",
+    "checks/reference.py": "print(sum(map(int,input().split())))\n",
+    "checks/input.txt": "2 3\n",
+    "checks/expected.txt": "5\n",
+}
+for data, expected, valid, matches in [
+    ("2 3\n", "5\n", True, True),
+    ("-1 3\n", "2\n", False, True),
+    ("2 3\n", "9\n", True, False),
+]:
+    probe_files.update({"checks/input.txt": data, "checks/expected.txt": expected})
+    result = run(
+        "cd checks && python3 -I check.py", probe_files, 30, readonly=list(probe_files)
+    )
+    assert result["exit_code"] == 0 and not result["output_truncated"], result["stdout"]
+    details = json.loads(result["stdout"].split("ZOJ_PROBE_CHECK:")[-1])
+    assert (details["validator"]["exit_code"] == 0) == valid, details
+    assert details["expected_matches_reference"] == matches, details
+print(
+    "Registered immutable validator/reference probe driver: valid, invalid and incorrect expected output passed."
+)

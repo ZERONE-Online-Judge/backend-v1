@@ -104,6 +104,15 @@ def compact(state, *, final=False):
         "notice": "Public evidence checkpoint. Some excerpts are shortened. Saved files, complete execution records, and immutable judge criteria remain unchanged. Do not claim omitted text was reviewed in this context.",
         "plan": state.get("plan", []),
         "findings": state.get("findings", []),
+        "investigation_focus": state.get("investigation_focus"),
+        "probe_checks": [
+            {
+                k: v
+                for k, v in item.items()
+                if k not in {"input", "expected_output", "details"}
+            }
+            for item in state.get("probe_checks", [])
+        ],
         "observations": list(state.get("observations", {}).values()),
         "artifacts": [
             {k: v for k, v in item.items() if k != "source"} | {"artifact_id": aid}
