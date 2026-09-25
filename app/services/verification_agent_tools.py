@@ -68,6 +68,8 @@ def make_manifest(context, evidence, references):
             + clean_log(evidence.get("judge_message"), 16000),
         },
     }
+    if evidence.get("mode") == "task" and not evidence.get("source_code"):
+        files.pop("original")
     for case in context["testcases"]:
         for kind in ("input", "output"):
             files[f"case:{case['display_order']}:{kind}"] = {

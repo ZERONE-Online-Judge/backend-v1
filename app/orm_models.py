@@ -561,3 +561,16 @@ class VerificationTrialRow(Base):
     testcase_count: Mapped[int] = mapped_column(Integer)
     probe: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class VerificationTaskRow(Base):
+    __tablename__ = "verification_tasks"
+    analysis_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    contest_id: Mapped[str] = mapped_column(String(36), index=True)
+    problem_id: Mapped[str] = mapped_column(String(36), index=True)
+    parent_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    goal: Mapped[str] = mapped_column(Text)
+    source_asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)

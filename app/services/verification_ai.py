@@ -929,9 +929,9 @@ def process_one():
 
 
 def delete_problem_reviews(db, problem_id):
-    from app.orm_models import VerificationTrialRow
+    from app.orm_models import VerificationTrialRow, VerificationTaskRow
 
-    for model in (VerificationTrialRow, Run, Analysis, Snapshot):
+    for model in (VerificationTaskRow, VerificationTrialRow, Run, Analysis, Snapshot):
         db.execute(delete(model).where(model.problem_id == problem_id))
 
 
