@@ -9,6 +9,20 @@ from app.services import verification_ai as service
 router = APIRouter(tags=["operator"])
 
 
+def record_audit_result(request, result):
+    analysis = result.get("analysis") or {}
+    request.state.audit_result = {
+        key: value for key, value in {
+            "analysis_id": analysis.get("analysis_id"),
+            "status": analysis.get("status"),
+            "task_id": result.get("task_id"),
+            "source_asset_id": result.get("source_asset_id"),
+            "cancel_requested": result.get("cancel_requested"),
+        }.items() if isinstance(value, (str, bool))
+    }
+    return result
+
+
 def require_access(request, cid, *, write=False):
     # Reports contain hidden tests and source details, so ordinary problem
     # reviewers/participants must never receive them through shared caching.
@@ -45,12 +59,12 @@ def create_task(
     staff = require_access(request, contest_id, write=True)
     return ok(
         request,
-        tasks_service.create(
+        record_audit_result(request, tasks_service.create(
             contest_id,
             problem_id,
             **payload.model_dump(),
             created_by=staff.staff_account_id
-        ),
+        )),
     )
 
 
@@ -71,7 +85,7 @@ def stop_task(contest_id: str, problem_id: str, task_id: str, request: Request):
     from app.services import verification_tasks as tasks_service
 
     require_access(request, contest_id, write=True)
-    return ok(request, tasks_service.cancel(contest_id, problem_id, task_id))
+    return ok(request, record_audit_result(request, tasks_service.cancel(contest_id, problem_id, task_id)))
 
 
 @router.get(
@@ -111,7 +125,7 @@ def request_analysis(
     contest_id: str, problem_id: str, submission_id: str, request: Request
 ):
     require_access(request, contest_id, write=True)
-    return ok(request, service.request_analysis(contest_id, problem_id, submission_id))
+    return ok(request, record_audit_result(request, service.request_analysis(contest_id, problem_id, submission_id)))
 
 
 @router.get(

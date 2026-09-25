@@ -121,3 +121,84 @@ def test_division_scope_and_running_contest_lock(context):
     store.update_contest_settings(c['cid'],status=ContestStatus.RUNNING,start_at=now_utc()-timedelta(minutes=1))
     assert client.delete(c['prefix']+'/divisions/'+local.division_id,headers=c['owner']).status_code==409
     assert local.division_id in store.divisions
+
+
+def test_operator_audit_captures_saved_target_and_only_real_role_identity_changes(context):
+    c = context
+    email = f'audit-target-{uuid4().hex}@example.com'
+    path = c['prefix'] + '/operators'
+    payload = {'email': email.upper(), 'display_name': '  검수자 이름  ', 'roles': ['problem_reviewer', 'audit_viewer']}
+    response = client.post(path, headers=c['owner'], json=payload)
+    assert response.status_code == 200, response.text
+    entry = last_audit(c, path, 'POST')['details']
+    assert entry['change_kind'] == 'created'
+    assert entry['target'] == {'email': email, 'display_name': '검수자 이름', 'roles': ['problem_reviewer', 'audit_viewer']}
+    assert not entry.get('changes')
+
+    # POST is an upsert; do not claim another operator was added or roles changed.
+    response = client.post(path, headers=c['owner'], json={**payload, 'roles': list(reversed(payload['roles']))})
+    assert response.status_code == 200, response.text
+    entry = last_audit(c, path, 'POST')['details']
+    assert entry['change_kind'] == 'updated'
+    assert not entry.get('changes')
+
+    new_email = f'renamed-{uuid4().hex}@example.com'
+    update_path = path + '/' + email
+    response = client.patch(update_path, headers=c['owner'], json={
+        'email': new_email, 'display_name': '검수자 이름', 'roles': ['problem_author']})
+    assert response.status_code == 200, response.text
+    entry = last_audit(c, update_path)['details']
+    assert entry['change_kind'] == 'updated'
+    assert {change['field'] for change in entry['changes']} == {'email', 'roles'}
+    assert entry['target']['email'] == new_email
+    assert entry['target']['roles'] == ['problem_author']
+
+    delete_path = path + '/' + new_email
+    assert client.delete(delete_path, headers=c['owner']).status_code == 200
+    entry = last_audit(c, delete_path, 'DELETE')['details']
+    assert entry['change_kind'] == 'deleted'
+    assert entry['target']['display_name'] == '검수자 이름'
+    assert entry['target']['roles'] == ['problem_author']
+
+
+def test_failed_operator_request_does_not_capture_private_saved_identity(context):
+    c = context
+    path = c['prefix'] + '/operators'
+    response = client.post(path, headers=c['viewer'], json={
+        'email': c['email'], 'display_name': 'forbidden', 'roles': ['problem_reviewer']})
+    assert response.status_code == 403
+    entry = last_audit(c, path, 'POST')['details']
+    assert entry['change_kind'] == 'failed'
+    assert not entry.get('target')
+    assert not entry.get('changes')
+
+
+def test_legacy_verification_labels_are_current_scoped_and_do_not_rewrite_history(context):
+    import json
+    from app.orm_models import OperationalAuditLogRow
+    c = context
+    division = store.create_contest_division(c['cid'], 'LABEL', '유형')
+    problem = store.create_problem(c['cid'], division.division_id, 'B', '현재 문제명', '비공개 지문', 1000, 128, {}, 1)
+    path = c['prefix'] + f'/problems/{problem.problem_id}/verification-tasks'
+    own = store.append_operational_audit_log(scope='operator', action='POST raw', method='POST', path=path,
+        status_code=200, contest_id=c['cid'], details={'entities': {'problem_id': problem.problem_id}})
+    saved = store.append_operational_audit_log(scope='operator', action='POST raw', method='POST', path=path,
+        status_code=200, contest_id=c['cid'], details={'target': {'problem_title': '당시 문제명', 'problem_code': 'A'}})
+    failed = store.append_operational_audit_log(scope='operator', action='POST raw', method='POST', path=path,
+        status_code=403, contest_id=c['cid'], details={})
+    other = store.create_contest('other', 'ZOJ', '', now_utc()+timedelta(days=1), status=ContestStatus.OPEN)
+    # A forged/mismatched path cannot resolve a name from a different contest.
+    foreign = store.append_operational_audit_log(scope='operator', action='POST raw', method='POST',
+        path=f'/api/operator/contests/{other.contest_id}/problems/{problem.problem_id}/verification-tasks',
+        status_code=200, contest_id=other.contest_id, details={})
+    logs, _, _ = store.list_operational_audit_logs()
+    details = {entry.operational_audit_log_id: entry.details for entry in logs}
+    assert details[own.operational_audit_log_id]['related_target'] == {
+        'problem_title': '현재 문제명', 'problem_code': 'B', 'label_source': 'current'}
+    assert 'related_target' not in details[saved.operational_audit_log_id]
+    assert 'related_target' not in details[failed.operational_audit_log_id]
+    assert 'related_target' not in details[foreign.operational_audit_log_id]
+    with store._session() as db:
+        persisted = json.loads(db.get(OperationalAuditLogRow, own.operational_audit_log_id).details)
+    assert 'related_target' not in persisted
+    assert '비공개 지문' not in str(details)

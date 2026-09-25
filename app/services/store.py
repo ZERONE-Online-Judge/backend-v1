@@ -938,7 +938,10 @@ class DbStore:
                 contest_titles = {row.contest_id: row.title for row in contest_rows}
             next_offset = offset + safe_limit
             next_cursor = str(next_offset) if next_offset < total_count else None
-            return [_audit_log_with_contest(row, contest_titles) for row in rows], next_cursor, total_count
+            logs = [_audit_log_with_contest(row, contest_titles) for row in rows]
+            from app.services.audit_context import enrich_current_problem_labels
+            enrich_current_problem_labels(db, logs)
+            return logs, next_cursor, total_count
 
     def append_access_log(
         self,

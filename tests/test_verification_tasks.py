@@ -424,3 +424,23 @@ def test_migration_pauses_legacy_auto_queue_and_preserves_explicit_tasks(monkeyp
         assert rows["active"].requested_at and rows["saved"].status == "succeeded"
         migration.downgrade()
     engine.dispose()
+
+
+def test_task_request_and_stop_audit_preserve_scoped_target_and_status(agent_context):
+    c = agent_context
+    path = c['base'] + '/verification-tasks'
+    response = client.post(path, headers=c['headers']['owner'], json={
+        'goal': '반례와 실행 결과를 확인해 주세요.', 'source_asset_id': c['aid']})
+    assert response.status_code == 200, response.text
+    task = response.json()['data']
+    stop_path = path + '/' + task['task_id'] + '/stop'
+    assert client.post(stop_path, headers=c['headers']['owner']).status_code == 200
+    logs = client.get(f"/api/operator/contests/{c['cid']}/audit-logs", headers=c['headers']['owner']).json()['data']
+    entry = next(log for log in logs if log['path'] == path)['details']
+    assert entry['target'] == {'problem_title': '두 수의 합', 'problem_code': 'A', 'original_filename': 'main.py'}
+    assert entry['analysis']['status'] == 'queued'
+    assert entry['analysis']['task_id'] == task['task_id']
+    stopped = next(log for log in logs if log['path'] == stop_path)['details']
+    assert stopped['analysis']['cancel_requested'] is True
+    assert stopped['analysis']['status'] == 'stopped'
+    assert 'report' not in stopped['analysis']

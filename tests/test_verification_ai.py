@@ -655,3 +655,18 @@ def test_latest_request_and_its_analysis_win_when_older_judgment_finishes_last(c
     assert runs[0]["submission"]["submission_id"] == latest
     assert runs[0]["analysis"] is None
     assert len(c["calls"]) == 1
+
+
+def test_analysis_request_audit_keeps_problem_filename_and_request_time_status(context):
+    c = context
+    sid = submit(c)
+    path = c['base'] + f'/verification-runs/{sid}/analysis'
+    response = client.post(path, headers=c['headers']['owner'])
+    assert response.status_code == 200, response.text
+    result = response.json()['data']
+    logs = client.get(f"/api/operator/contests/{c['cid']}/audit-logs", headers=c['headers']['owner']).json()['data']
+    entry = next(log for log in logs if log['path'] == path and log['method'] == 'POST')['details']
+    assert entry['target'] == {'problem_title': '두 수의 합', 'problem_code': 'A', 'original_filename': 'main.py'}
+    assert entry['analysis'] == {'analysis_id': result['analysis']['analysis_id'], 'status': 'queued'}
+    assert 'source_code' not in entry['target']
+    assert 'report' not in entry['analysis']

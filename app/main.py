@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from app.routers import admin, analytics, auth, internal_judge, operator, participant, public, presentation, seo, seo_documents, storage
 from app.routers import problem_archives, verification_ai
 from app.services.errors import AppError
+from app.services.audit_context import OPERATOR_PATH, VERIFICATION_PATH, operator_snapshot, verification_snapshot
 from app.services.authz import bearer_token
 from app.services.store import store
 from app.settings import settings
@@ -129,6 +130,8 @@ def _audit_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _audit_equal(left: Any, right: Any, field: str) -> bool:
+    if field == "roles" and isinstance(left, list) and isinstance(right, list):
+        return sorted(left) == sorted(right)
     if field.endswith("_at") and isinstance(left, str) and isinstance(right, str):
         try:
             return datetime.fromisoformat(left.replace("Z", "+00:00")) == datetime.fromisoformat(right.replace("Z", "+00:00"))
@@ -164,7 +167,10 @@ def _audit_model_dump(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _audit_existing_values(path: str) -> dict[str, Any] | None:
+def _audit_existing_values(path: str, body=None, *, after=False) -> dict[str, Any] | None:
+    if OPERATOR_PATH.fullmatch(path):
+        with SessionLocal() as db:
+            return operator_snapshot(db, path, body, after=after)
     # Read persisted columns, not rendered notices, defaults, or request values.
     patterns = [
         (r"/operator/contests/([^/]+)/settings", orm_models.ContestRow),
@@ -309,7 +315,7 @@ async def operational_audit_middleware(request: Request, call_next):
     if request.method.upper() in AUDITED_METHODS and scope:
         request, payload_details = await _audit_request_payload(request)
         payload_details["entities"] = _audit_path_entities(path)
-        before = _audit_existing_values(path)
+        before = _audit_existing_values(path, payload_details.get("body"))
         payload_details["schema_version"] = 2
         # Keep the actor's identity at the time of the request, including when
         # the action changes their email and revokes the token being used.
@@ -337,17 +343,32 @@ async def operational_audit_middleware(request: Request, call_next):
             change_kind = "failed"
         elif request.method.upper() == "DELETE":
             change_kind = "deleted"
+        elif OPERATOR_PATH.fullmatch(path):
+            after = _audit_existing_values(path, payload_details.get("body"), after=True)
+            if after is not None:
+                changes = _audit_changes(after, before) if before is not None else []
+                change_kind = "updated" if before is not None else "created"
         elif before is not None and request.method.upper() in {"PATCH", "PUT"}:
             after = _audit_existing_values(path)
             if after is not None:
                 changes = _audit_changes(after, before)
                 change_kind = "updated"
+        target_values = before
+        if response.status_code >= 400:
+            target_values = None
+        elif OPERATOR_PATH.fullmatch(path) and request.method.upper() != "DELETE":
+            target_values = after
+        extra = {}
+        if response.status_code < 400 and VERIFICATION_PATH.fullmatch(path):
+            with SessionLocal() as db:
+                extra = verification_snapshot(db, path, getattr(request.state, "audit_result", None))
         details: dict[str, Any] = {
             **payload_details,
             "changes": changes,
             "change_kind": change_kind,
-            "target": _audit_mapping({key: before[key] for key in ("title", "name", "team_name", "problem_code", "original_filename", "display_order") if key in before}) if before else {},
+            "target": _audit_mapping({key: target_values[key] for key in ("title", "name", "team_name", "problem_code", "original_filename", "display_order", "display_name", "email", "roles") if key in target_values}) if target_values else {},
             "contest_title": _audit_contest_title(contest_id),
+            **_audit_mapping(extra),
         }
         if request.url.query:
             details["query"] = request.url.query
