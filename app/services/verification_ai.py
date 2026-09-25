@@ -267,6 +267,7 @@ def list_runs(cid, pid):
             "language",
             "status",
             "submitted_at",
+            "submitted_by_name",
             "compile_message",
             "judge_message",
             "failed_testcase_order",

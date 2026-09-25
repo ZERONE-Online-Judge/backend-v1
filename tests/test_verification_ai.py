@@ -575,3 +575,83 @@ def test_worker_crash_expires_without_automatic_rebilling_and_retry_limit(contex
         c["base"] + f"/verification-runs/{sid}/analysis", headers=c["headers"]["owner"]
     )
     assert response.status_code == 429
+
+
+@pytest.mark.parametrize("verdict", [
+    SubmissionStatus.ACCEPTED,
+    SubmissionStatus.WRONG_ANSWER,
+    SubmissionStatus.COMPILE_ERROR,
+    SubmissionStatus.SYSTEM_ERROR,
+])
+def test_saved_verdict_is_shared_without_an_ai_request_or_api_key(context, monkeypatch, verdict):
+    c = context
+    monkeypatch.setattr(settings, "openai_api_key", None)
+    sid = submit(c, expected_status=verdict)
+    # Log payload and metrics belong to the persisted submission, not the browser.
+    with c["sessions"]() as db:
+        row = db.get(SubmissionRow, sid)
+        row.compile_message = "compiler diagnostic\n"
+        db.commit()
+    path = c["base"] + "/verification-runs"
+    with TestClient(app) as other_browser:
+        first = client.get(path, headers=c["headers"]["owner"])
+        second = other_browser.get(path, headers=c["headers"]["author"])
+    assert first.status_code == second.status_code == 200
+    data = first.json()["data"]
+    assert data == second.json()["data"]
+    assert data["available"] is False
+    assert len(data["runs"]) == 1
+    run = data["runs"][0]
+    assert run["analysis"] is None
+    saved = run["submission"]
+    assert saved["submission_id"] == sid
+    assert saved["status"] == verdict.value
+    assert saved["submitted_by_name"] == "owner"
+    assert saved["submitted_at"]
+    assert saved["failed_testcase_order"] == 1
+    assert saved["runtime_ms"] == 10
+    assert saved["memory_kb"] == 1024
+    assert saved["compile_message"] == "compiler diagnostic\n"
+    assert "[input]\n2 3\n[expected]\n5\n[actual]\n4" in saved["judge_message"]
+    assert "source_code" not in saved
+    assert not c["calls"]
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers=c["headers"]["reviewer"]).status_code == 403
+
+
+def test_latest_request_and_its_analysis_win_when_older_judgment_finishes_last(context):
+    c = context
+    old = submit(c, claim=False)
+    new = submit(c, claim=False)
+    jobs = store.claim_jobs(c["node"].judge_node_id, SECRET, 2)
+    by_submission = {job["submission"]["submission_id"]: job for job in jobs}
+
+    def finish(sid, verdict, message):
+        job = by_submission[sid]
+        store.report_judge_result(
+            job["judge_job_id"], SECRET, job["lease_token"], verdict,
+            None, message, 1, 10, 1024,
+        )
+
+    path = c["base"] + "/verification-runs"
+    waiting = client.get(path, headers=c["headers"]["author"]).json()["data"]["runs"]
+    assert len(waiting) == 1 and waiting[0]["submission"]["submission_id"] == new
+    finish(new, SubmissionStatus.WRONG_ANSWER, "new result")
+    ai.request_analysis(c["cid"], c["pid"], new)
+    assert ai.process_one()
+    report = ai.analysis_detail(c["cid"], c["pid"], new)["analysis"]
+    finish(old, SubmissionStatus.ACCEPTED, "older request finished later")
+    runs = client.get(path, headers=c["headers"]["author"]).json()["data"]["runs"]
+    assert len(runs) == 1
+    assert runs[0]["submission"]["submission_id"] == new
+    assert runs[0]["submission"]["judge_message"] == "new result"
+    assert runs[0]["analysis"]["analysis_id"] == report["analysis_id"]
+    other = client.get(path + f"/{new}/analysis", headers=c["headers"]["author"])
+    assert other.json()["data"]["analysis"]["report"] == REPORT
+    # A new, matching verdict must not inherit the preceding mismatch analysis.
+    latest = submit(c, expected_status=SubmissionStatus.ACCEPTED)
+    runs = client.get(path, headers=c["headers"]["author"]).json()["data"]["runs"]
+    assert len(runs) == 1
+    assert runs[0]["submission"]["submission_id"] == latest
+    assert runs[0]["analysis"] is None
+    assert len(c["calls"]) == 1
