@@ -39,8 +39,6 @@ def agent_context(context, monkeypatch):
     for key, value in {
         "model": "gpt-5.4-mini",
         "max_cost_usd": 0.20,
-        "max_input_tokens": 60000,
-        "max_output_tokens": 16000,
         "max_calls": 10,
         "max_tools": 48,
         "max_runs": 6,
@@ -386,17 +384,21 @@ def test_measured_prompt_prefix_preserves_budget_for_final_report(
     )
     agent.step(row, ctx, state)
     agent.step(row, ctx, state)
-    # Near the cumulative limit, the provider-measured prefix leaves room for
-    # another response, while re-reserving all Korean UTF-8 bytes would not.
+    # Measured prefixes reduce the input cost reserved for the next request.
     state["usage"]["input_tokens"] = 52000
     assert agent.budget_for_request(state) is not None
     assert 3000 < state["request_input_bound"] < 8000
     measured = state["request_input_bound"]
-    # Verify prefix invalidation at the measured bound, independent of whether
-    # local tokenization makes a fresh full prompt fit the default 60k budget.
-    state["limits"]["max_input_tokens"] = state["usage"]["input_tokens"] + measured
+    # Leave just enough cost for the measured prefix and a minimum response.
+    a, _, c = agent.cost_rates(state["model"], measured)
+    state["limits"]["max_cost_usd"] = (
+        state["usage"]["estimated_cost_usd"]
+        + (measured * a + 1025 * c) / 1_000_000
+    )
+    assert agent.budget_for_request(state) is not None
     state["history"][0]["content"] += "자료 변경"
     assert agent.budget_for_request(state) is None
+    assert state["budget_blocked"]["code"] == "cost"
     assert state["request_input_bound"] > measured
     state["history"][0]["content"] = state["history"][0]["content"][:-5]
     state["model"] = "gpt-5.4"

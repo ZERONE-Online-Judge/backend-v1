@@ -258,7 +258,10 @@ def test_luna_defaults_budget_estimate_and_measured_cache_writes(agent_context):
     defaults = Settings.model_fields
     assert defaults["verification_agent_model"].default == "gpt-6-luna"
     assert defaults["verification_agent_max_calls"].default == 48
-    assert defaults["verification_agent_max_input_tokens"].default == 300000
+    assert "verification_agent_max_input_tokens" not in defaults
+    assert "verification_agent_max_output_tokens" not in defaults
+    assert "max_input_tokens" not in agent.limits()
+    assert "max_output_tokens" not in agent.limits()
     assert agent.price("gpt-6-luna") == (0.10, 0.01, 0.50)
     assert agent.cost_rates("gpt-6-luna", 272001) == (0.25, 0.02, 0.75)
     _, _, _, state = queued(agent_context)

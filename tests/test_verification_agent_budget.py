@@ -23,30 +23,27 @@ def test_unused_tool_schemas_are_loaded_only_when_requested(agent_context, monke
     assert "workspace_exec" in {t["name"] for t in agent.tools_for(state)}
 
 
-def test_input_limit_reserves_one_final_report_call_without_increasing_limits(
+def test_cost_limit_reserves_one_final_report_call_without_increasing_limits(
     agent_context, monkeypatch
 ):
     _, row, ctx, state = queued(agent_context)
     original_limits = copy.deepcopy(state["limits"])
     state["usage"]["input_tokens"] = 50000
+    state["usage"]["estimated_cost_usd"] = 0.17
     state["calls"] = 4
-    state["input_checkpoint"] = {
-        "identity": agent.prompt_identity(state),
-        "history_length": len(state["history"]),
-        "history_hash": ai.digest(state["history"]),
-        "input_tokens": 8000,
-        "output_tokens": 0,
-    }
+    monkeypatch.setattr(
+        agent, "input_bound", lambda s: 3000 if s.get("finalizing") else 8000
+    )
     requests = []
 
     def provider(s, output):
         requests.append(copy.deepcopy(s))
         assert s["finalizing"]
         assert {t["name"] for t in agent.tools_for(s)} == {"finish_report"}
-        assert (
-            s["usage"]["input_tokens"] + s["request_input_bound"]
-            <= s["limits"]["max_input_tokens"]
-        )
+        a, _, c = agent.cost_rates(s["model"], s["request_input_bound"])
+        assert s["usage"]["estimated_cost_usd"] + (
+            s["request_input_bound"] * a + output * c
+        ) / 1_000_000 <= s["limits"]["max_cost_usd"]
         return {
             "status": "completed",
             "output": [call("finish_report", **REPORT)],
@@ -59,9 +56,49 @@ def test_input_limit_reserves_one_final_report_call_without_increasing_limits(
     assert len(requests) == 1
     assert state["limits"] == original_limits
     assert state["report"]["causes"]
-    assert state["stop_reason"]["code"] == "input_tokens"
+    assert state["stop_reason"]["code"] == "cost"
     assert state["phase"] == "일부 검증 후 종료"
     assert state["usage"]["input_tokens"] == 53000
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_cumulative_tokens_do_not_stop_new_or_running_jobs_with_remaining_cost(
+    agent_context, monkeypatch, legacy
+):
+    _, row, ctx, state = queued(agent_context)
+    state["model"] = "gpt-6-luna"
+    state["limits"]["max_cost_usd"] = 1.0
+    state["usage"].update(
+        input_tokens=400000, output_tokens=64000, estimated_cost_usd=0.10
+    )
+    if legacy:
+        state["limits"].update(max_input_tokens=300000, max_output_tokens=32000)
+        brief = json.loads(state["history"][0]["content"])
+        brief["limits"] = copy.deepcopy(state["limits"])
+        state["history"][0]["content"] = json.dumps(brief)
+    requests = []
+
+    def provider(s, output):
+        requests.append(output)
+        assert not s.get("finalizing")
+        assert not s.get("stop_reason")
+        assert "max_input_tokens" not in s["limits"]
+        assert "max_output_tokens" not in s["limits"]
+        assert "max_input_tokens" not in json.loads(s["history"][0]["content"])["limits"]
+        return {
+            "status": "completed",
+            "output": [call("read_file", file_id="original", offset=0, length=200)],
+            "usage": {"input_tokens": 3000, "output_tokens": 100},
+        }
+
+    monkeypatch.setattr(agent, "request_model", provider)
+    assert agent.budget_for_request(state) is not None
+    agent.step(row, ctx, state)
+    assert requests == [4096]
+    assert state["calls"] == 1
+    assert state["usage"]["input_tokens"] == 403000
+    assert state["usage"]["output_tokens"] == 64100
+    assert 0.10 < state["usage"]["estimated_cost_usd"] < 1.0
 
 
 def test_exhausted_budget_retains_judge_facts_and_probe_uncertainty_without_model_call(
@@ -79,7 +116,7 @@ def test_exhausted_budget_retains_judge_facts_and_probe_uncertainty_without_mode
     assert agent.handle_tool(row, ctx, state, probe) is None
     judged(c, SubmissionStatus.WRONG_ANSWER)
     agent.handle_tool(row, ctx, state, probe)
-    state["usage"]["input_tokens"] = state["limits"]["max_input_tokens"]
+    state["usage"]["estimated_cost_usd"] = state["limits"]["max_cost_usd"]
     monkeypatch.setattr(
         agent, "request_model", lambda *_: pytest.fail("no additional bill")
     )
@@ -88,8 +125,34 @@ def test_exhausted_budget_retains_judge_facts_and_probe_uncertainty_without_mode
     assert len(report["causes"]) == 2
     assert "기대 출력의 정당성" in report["causes"][1]["explanation"]
     assert "코드의 근본 원인" in report["causes"][0]["explanation"]
-    assert state["stop_reason"]["code"] == "input_tokens"
+    assert state["stop_reason"]["code"] == "cost"
     assert state["calls"] == 0
+
+
+@pytest.mark.parametrize("usage", [None, {}, {"input_tokens": 3000}])
+def test_missing_usage_reserves_request_cost_instead_of_allowing_free_calls(
+    agent_context, monkeypatch, usage
+):
+    _, row, ctx, state = queued(agent_context)
+    monkeypatch.setattr(
+        agent,
+        "request_model",
+        lambda *_: {
+            "status": "completed",
+            "output": [call("read_file", file_id="original", offset=0, length=200)],
+            "usage": usage,
+        },
+    )
+    agent.step(row, ctx, state)
+    a, _, c = agent.cost_rates(state["model"], state["request_input_bound"])
+    assert state["usage"]["estimated_cost_usd"] == pytest.approx(
+        (state["request_input_bound"] * a + 4096 * c) / 1_000_000
+    )
+    assert state["usage"]["includes_unconfirmed_request"] is True
+    assert "input_checkpoint" not in state
+    state["limits"]["max_cost_usd"] = state["usage"]["estimated_cost_usd"]
+    assert agent.budget_for_request(state) is None
+    assert state["budget_blocked"]["code"] == "cost"
 
 
 def test_compaction_preserves_public_evidence_and_files_without_private_reasoning(
@@ -128,6 +191,7 @@ def test_legacy_partial_report_explains_exact_token_stop_and_requires_explicit_u
     c = agent_context
     sid, row, ctx, state = queued(c)
     state.pop("prompt_version")
+    state["limits"].update(max_input_tokens=60000, max_output_tokens=16000)
     state.update(phase="일부 검증 후 종료", calls=6, request_input_bound=17934)
     state["usage"].update(
         input_tokens=55174, output_tokens=1084, estimated_cost_usd=0.0172281

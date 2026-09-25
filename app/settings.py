@@ -57,8 +57,6 @@ class Settings(BaseSettings):
     verification_agent_enabled: bool = True
     verification_agent_model: str = "gpt-6-luna"
     verification_agent_max_cost_usd: float = 1.00
-    verification_agent_max_input_tokens: int = 300_000
-    verification_agent_max_output_tokens: int = 32_000
     verification_agent_max_calls: int = 48
     verification_agent_max_tools: int = 96
     verification_agent_max_runs: int = 16
