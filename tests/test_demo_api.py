@@ -3471,10 +3471,25 @@ def test_scoreboard_uses_icpc_attempt_policy_per_problem():
     problem_score = next(item for item in team_row["problem_scores"] if item["problem_id"] == problem["problem_id"])
     assert "score" not in problem_score
     assert problem_score["best_submission_id"] is None
-    assert problem_score["attempts"] == 4
-    assert problem_score["wrong_attempts"] == 4
+    assert problem_score["attempts"] == 3
+    assert problem_score["wrong_attempts"] == 3
     assert problem_score["solved"] is False
 
+
+    retry_id = submissions[3]["submission_id"]
+    retried = client.post(f"/api/operator/contests/{contest_id}/submissions/{retry_id}/rejudge", headers=auth_headers(operator["access_token"]))
+    assert retried.status_code == 200
+    assert retried.json()["data"]["submitted_at"] == submissions[3]["submitted_at"]
+    assert retried.json()["data"]["source_code"] == "print(5)"
+    job = claim_jobs_until(node_id, node_secret, [retry_id])[retry_id]
+    result = client.post(f"/api/internal/judge/jobs/{job['judge_job_id']}/result", json={"node_secret": node_secret, "lease_token": job["lease_token"], "final_status": "accepted"})
+    assert result.status_code == 200
+    board = client.get(f"/api/operator/contests/{contest_id}/divisions/{division_id}/scoreboard/internal", headers=auth_headers(operator["access_token"])).json()["data"]
+    team = next(row for row in board["rows"] if row["team_id"] == login["team"]["participant_team_id"])
+    score = next(item for item in team["problem_scores"] if item["problem_id"] == problem["problem_id"])
+    assert score["solved"] is True
+    assert score["wrong_attempts"] == 3
+    assert score["best_submission_id"] == retry_id
 
 def test_scoreboard_ties_zero_solve_and_orders_wrong_only_below_no_submit():
     contest_id, login = participant_login()

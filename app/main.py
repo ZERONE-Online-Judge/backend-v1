@@ -359,6 +359,8 @@ async def operational_audit_middleware(request: Request, call_next):
         elif OPERATOR_PATH.fullmatch(path) and request.method.upper() != "DELETE":
             target_values = after
         extra = {}
+        if response.status_code < 400 and getattr(request.state, "audit_rejudge", None):
+            extra["rejudge"] = request.state.audit_rejudge
         if response.status_code < 400 and VERIFICATION_PATH.fullmatch(path):
             with SessionLocal() as db:
                 extra = verification_snapshot(db, path, getattr(request.state, "audit_result", None))

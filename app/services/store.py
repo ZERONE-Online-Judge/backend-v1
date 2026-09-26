@@ -3926,6 +3926,54 @@ class DbStore:
             db.refresh(submission)
             return _submission(submission)
 
+    def retry_system_error_submission(self, contest_id: str, submission_id: str):
+        """Requeue the same submission once, keeping its source and original time."""
+        with self._session() as db:
+            # Match the job -> submission lock order used by result reporting.
+            jobs = db.scalars(select(JudgeJobRow).where(
+                JudgeJobRow.contest_id == contest_id,
+                JudgeJobRow.submission_id == submission_id,
+            ).order_by(JudgeJobRow.created_at.desc()).with_for_update()).all()
+            submission = db.scalar(select(SubmissionRow).where(
+                SubmissionRow.contest_id == contest_id,
+                SubmissionRow.submission_id == submission_id,
+            ).with_for_update())
+            if not submission:
+                raise AppError(404, "not_found", "제출을 찾을 수 없습니다.")
+            from app.orm_models import VerificationTrialRow
+            if db.get(VerificationTrialRow, submission_id):
+                raise AppError(409, "verification_trial_immutable", "AI 실행 기록은 보존됩니다. 검증 요청창에서 다시 실행해 주세요.")
+            if not jobs or submission.status != "system_error" or any(
+                job.status in {"pending", "running"} for job in jobs
+            ):
+                raise AppError(409, "rejudge_not_available", "채점이 종료된 시스템 에러 제출만 재채점할 수 있습니다.")
+            previous = {key: getattr(submission, key) for key in (
+                "status", "compile_message", "judge_message", "failed_testcase_order",
+                "runtime_ms", "memory_kb", "status_updated_at",
+            )}
+            changed = db.execute(update(SubmissionRow).where(
+                SubmissionRow.submission_id == submission_id,
+                SubmissionRow.status == "system_error",
+            ).values(status="waiting", status_updated_at=now_utc(),
+                compile_message=None, judge_message=None, failed_testcase_order=None,
+                runtime_ms=None, memory_kb=None, progress_current=None, progress_total=None))
+            if changed.rowcount != 1:
+                raise AppError(409, "rejudge_not_available", "이미 재채점을 요청한 제출입니다.")
+            job = jobs[0]
+            job.status = "pending"
+            job.assigned_node_id = None
+            job.lease_token = None
+            job.leased_at = None
+            job.queue_position = (db.scalar(select(func.max(JudgeJobRow.queue_position))) or 0) + 1
+            from app.orm_models import VerificationRunRow
+            run = db.get(VerificationRunRow, submission_id)
+            if run:
+                run.context_hash = None
+                run.analysis_id = None
+            db.commit()
+            db.refresh(submission)
+            return _submission(submission), jsonable_encoder(previous)
+
     def create_operator_test_submission(
         self,
         contest_id: str,
@@ -4473,14 +4521,13 @@ class DbStore:
             submission_count_by_team: dict[str, int] = {}
             accepted_by_team_problem: dict[tuple[str, str], dict] = {}
             problem_attempts_by_team: dict[tuple[str, str], dict] = {}
-            # ICPC-style attempts: every finalized non-AC result counts except CE.
+            # Infrastructure failures and compilation errors are not wrong attempts.
             penalty_statuses = {
                 SubmissionStatus.WRONG_ANSWER.value,
                 SubmissionStatus.RUNTIME_ERROR.value,
                 SubmissionStatus.TIME_LIMIT_EXCEEDED.value,
                 SubmissionStatus.MEMORY_LIMIT_EXCEEDED.value,
                 SubmissionStatus.OUTPUT_LIMIT_EXCEEDED.value,
-                SubmissionStatus.SYSTEM_ERROR.value,
             }
             tracked_statuses = {
                 SubmissionStatus.ACCEPTED.value,

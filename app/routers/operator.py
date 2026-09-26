@@ -1180,6 +1180,22 @@ async def operator_submission_detail(contest_id: str, submission_id: str, reques
     return ok(request, payload)
 
 
+@router.post("/operator/contests/{contest_id}/submissions/{submission_id}/rejudge")
+async def retry_system_error(contest_id: str, submission_id: str, request: Request):
+    require_contest_staff(request, contest_id, "contest.submission.view")
+    require_contest_staff(request, contest_id, "contest.problem.test")
+    submission, previous = store.retry_system_error_submission(contest_id, submission_id)
+    request.state.audit_rejudge = {
+        "submission_id": submission_id,
+        "problem_id": submission.problem_id,
+        "previous_result": previous,
+        "new_status": "waiting",
+        "original_submitted_at": submission.submitted_at.isoformat(),
+    }
+    return ok(request, {**submission.model_dump(mode="json"),
+        "queue_position": _submission_queue_position(contest_id, submission_id)})
+
+
 @router.get("/operator/contests/{contest_id}/submissions/{submission_id}/status:wait")
 async def operator_wait_submission_status(
     contest_id: str,
