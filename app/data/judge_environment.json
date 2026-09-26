@@ -1,0 +1,43 @@
+{
+  "version": "zoj-judge-environment-2026-09-26-v1",
+  "as_of": "2026-09-26",
+  "source": "service-owner-provided configuration",
+  "host": {
+    "cpu_model": "Intel Xeon E5-2698 v4 @ 2.20GHz",
+    "cpu_sockets": 2,
+    "memory_capacity_gb": 256,
+    "memory_module_spec": "DDR4-2933Y ECC",
+    "memory_effective_rate_mt_s": null
+  },
+  "vm": {
+    "planned_count": 6,
+    "transition": "7대에서 6대로 축소 운영 예정",
+    "vcpus_per_agent": 10,
+    "memory_gib_per_agent": 26,
+    "submission_slots_per_agent": 2,
+    "planned_submission_slots": 12
+  },
+  "scope_notes": [
+    "6대는 축소 운영 기준이며 실제 활성 에이전트 수는 inspect_judge.active_agents로 별도 조회합니다.",
+    "10 vCPU·26GiB는 VM 할당량입니다. 단일 풀이에 전용 10코어·26GiB를 보장하지 않으며 문제·언어·테스트의 제한을 적용합니다.",
+    "DDR4-2933Y는 장착 메모리 모듈 표기입니다. 실제 메모리 동작 속도로 환산하지 않습니다.",
+    "기존 7대·14슬롯 동시 부하 기록을 6대·12슬롯의 측정값으로 간주하지 않습니다.",
+    "각 노드의 동시 제출 2건 × 제출별 테스트 병렬 4개로 테스트 작업은 최대 8개입니다. 테스트 수·준비 상태에 따라 실제 동시 실행 수는 줄어듭니다. checker·컴파일 등의 프로세스 수와 동일하지 않습니다.",
+    "3초·1024MB는 에이전트 fallback입니다. 테스트별 재정의, 언어별 제한, 문제 기본값·언어 보정을 먼저 적용하며 26GiB VM 전체가 제출 메모리 제한이 아닙니다."
+  ],
+  "agent_configuration": {
+    "source": "service-owner supplied agent settings",
+    "container_cpus": 10,
+    "container_memory": "26g",
+    "submission_slots": 2,
+    "testcases_parallel_per_submission": 4,
+    "max_parallel_testcases_per_agent": 8,
+    "sandbox_mode": "isolate",
+    "fallback_time_seconds": 3,
+    "fallback_memory_mb": 1024,
+    "sandbox_pids_limit": 128,
+    "output_limit_bytes": 10485760,
+    "poll_interval_seconds": 1,
+    "long_poll_seconds": 20
+  }
+}

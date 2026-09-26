@@ -1,0 +1,307 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-26T22:11:00.342575+09:00",
+  "finishedAt": "2026-09-26T22:12:33.452480+09:00",
+  "displayDate": "2026. 9. 26.",
+  "displayWindow": "2026. 9. 26. 22:11~22:12 KST",
+  "snapshotPath": "/guides/judge-100m-benchmark-2026-09-26.json",
+  "iterations": 100000000,
+  "operation": "total += i % 97",
+  "method": "one outstanding synthetic job at a time; 5 repetitions per language; real production queue; 100000000 iterations; explicit 120000ms/256MB for every language; arithmetic mean; fresh process per run; no warm-up discarded",
+  "timeLimitMs": 120000,
+  "memoryLimitMb": 256,
+  "measurementCount": 20,
+  "environment": {
+    "scope": "전체 채점 에이전트 공통",
+    "cpu": "Intel Xeon E5-2698 v4 @ 2.20GHz",
+    "gcc": "14.2.0",
+    "python": "3.13.13",
+    "configurationNote": "동일한 VM CPU 구성과 공통 에이전트 실행 환경입니다. 2.20GHz는 CPU 모델의 정격 표기입니다."
+  },
+  "cases": [
+    {
+      "id": "loop-c",
+      "label": "C99",
+      "language": "c99",
+      "input": "100000000\n",
+      "output": "4799999352\n",
+      "source": "#include <stdio.h>\nint main(void) {\n    int n; if (scanf(\"%d\", &n) != 1) return 1;\n    long long total = 0;\n    for (int i = 0; i < n; ++i) total += i % 97;\n    printf(\"%lld\\n\", total);\n    return 0;\n}\n",
+      "sampleCount": 5,
+      "runtimeMs": {
+        "mean": 166,
+        "min": 165,
+        "max": 167
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "runtime_ms": 166,
+          "memory_kb": 336,
+          "status": "accepted",
+          "node": "zoj-judge-agent-04",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:00.416859+00:00",
+          "finished_at": "2026-09-26 13:11:01.049968+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 2,
+          "runtime_ms": 166,
+          "memory_kb": 340,
+          "status": "accepted",
+          "node": "zoj-judge-agent-01",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:01.254785+00:00",
+          "finished_at": "2026-09-26 13:11:01.927978+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 3,
+          "runtime_ms": 166,
+          "memory_kb": 340,
+          "status": "accepted",
+          "node": "zoj-judge-agent-05",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:02.070336+00:00",
+          "finished_at": "2026-09-26 13:11:02.730882+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 4,
+          "runtime_ms": 165,
+          "memory_kb": 340,
+          "status": "accepted",
+          "node": "zoj-judge-agent-02",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:02.886509+00:00",
+          "finished_at": "2026-09-26 13:11:03.632454+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 5,
+          "runtime_ms": 167,
+          "memory_kb": 340,
+          "status": "accepted",
+          "node": "zoj-judge-agent-06",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:03.701130+00:00",
+          "finished_at": "2026-09-26 13:11:04.253238+00:00",
+          "other_jobs_observed": 0
+        }
+      ]
+    },
+    {
+      "id": "loop-cpp",
+      "label": "C++17",
+      "language": "cpp17",
+      "input": "100000000\n",
+      "output": "4799999352\n",
+      "source": "#include <iostream>\nint main() {\n    int n; std::cin >> n;\n    long long total = 0;\n    for (int i = 0; i < n; ++i) total += i % 97;\n    std::cout << total << \"\\n\";\n}\n",
+      "sampleCount": 5,
+      "runtimeMs": {
+        "mean": 165.6,
+        "min": 165,
+        "max": 166
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "runtime_ms": 165,
+          "memory_kb": 1864,
+          "status": "accepted",
+          "node": "zoj-judge-agent-07",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:04.537872+00:00",
+          "finished_at": "2026-09-26 13:11:05.705717+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 2,
+          "runtime_ms": 166,
+          "memory_kb": 1864,
+          "status": "accepted",
+          "node": "zoj-judge-agent-06",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:05.755182+00:00",
+          "finished_at": "2026-09-26 13:11:06.766822+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 3,
+          "runtime_ms": 165,
+          "memory_kb": 1864,
+          "status": "accepted",
+          "node": "zoj-judge-agent-02",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:06.974230+00:00",
+          "finished_at": "2026-09-26 13:11:08.217808+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 4,
+          "runtime_ms": 166,
+          "memory_kb": 1852,
+          "status": "accepted",
+          "node": "zoj-judge-agent-05",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:08.599428+00:00",
+          "finished_at": "2026-09-26 13:11:09.581043+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 5,
+          "runtime_ms": 166,
+          "memory_kb": 584,
+          "status": "accepted",
+          "node": "zoj-judge-agent-06",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:09.819604+00:00",
+          "finished_at": "2026-09-26 13:11:10.521899+00:00",
+          "other_jobs_observed": 0
+        }
+      ]
+    },
+    {
+      "id": "loop-python",
+      "label": "Python 3.13",
+      "language": "python313",
+      "input": "100000000\n",
+      "output": "4799999352\n",
+      "source": "n = int(input())\ntotal = 0\nfor i in range(n):\n    total += i % 97\nprint(total)\n",
+      "sampleCount": 5,
+      "runtimeMs": {
+        "mean": 14774.8,
+        "min": 14300,
+        "max": 15211
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "runtime_ms": 15211,
+          "memory_kb": 3388,
+          "status": "accepted",
+          "node": "zoj-judge-agent-07",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:10.651476+00:00",
+          "finished_at": "2026-09-26 13:11:26.025147+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 2,
+          "runtime_ms": 14759,
+          "memory_kb": 3388,
+          "status": "accepted",
+          "node": "zoj-judge-agent-02",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:26.394882+00:00",
+          "finished_at": "2026-09-26 13:11:41.413029+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 3,
+          "runtime_ms": 14903,
+          "memory_kb": 3136,
+          "status": "accepted",
+          "node": "zoj-judge-agent-02",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:41.735201+00:00",
+          "finished_at": "2026-09-26 13:11:56.736763+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 4,
+          "runtime_ms": 14300,
+          "memory_kb": 3140,
+          "status": "accepted",
+          "node": "zoj-judge-agent-06",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:11:57.071474+00:00",
+          "finished_at": "2026-09-26 13:12:11.470090+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 5,
+          "runtime_ms": 14701,
+          "memory_kb": 3136,
+          "status": "accepted",
+          "node": "zoj-judge-agent-06",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:12:11.604994+00:00",
+          "finished_at": "2026-09-26 13:12:26.531442+00:00",
+          "other_jobs_observed": 0
+        }
+      ]
+    },
+    {
+      "id": "loop-java",
+      "label": "Java 8 호환",
+      "language": "java8",
+      "input": "100000000\n",
+      "output": "4799999352\n",
+      "source": "import java.io.BufferedReader;\nimport java.io.InputStreamReader;\npublic class Main {\n    public static void main(String[] args) throws Exception {\n        int n = Integer.parseInt(new BufferedReader(new InputStreamReader(System.in)).readLine());\n        long total = 0;\n        for (int i = 0; i < n; ++i) total += i % 97;\n        System.out.println(total);\n    }\n}\n",
+      "sampleCount": 5,
+      "runtimeMs": {
+        "mean": 216.2,
+        "min": 216,
+        "max": 217
+      },
+      "runs": [
+        {
+          "repeat": 1,
+          "runtime_ms": 217,
+          "memory_kb": 19240,
+          "status": "accepted",
+          "node": "zoj-judge-agent-07",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:12:26.556467+00:00",
+          "finished_at": "2026-09-26 13:12:27.838917+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 2,
+          "runtime_ms": 216,
+          "memory_kb": 19248,
+          "status": "accepted",
+          "node": "zoj-judge-agent-01",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:12:28.178439+00:00",
+          "finished_at": "2026-09-26 13:12:29.364888+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 3,
+          "runtime_ms": 216,
+          "memory_kb": 19064,
+          "status": "accepted",
+          "node": "zoj-judge-agent-02",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:12:29.396468+00:00",
+          "finished_at": "2026-09-26 13:12:30.710270+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 4,
+          "runtime_ms": 216,
+          "memory_kb": 19256,
+          "status": "accepted",
+          "node": "zoj-judge-agent-02",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:12:31.018752+00:00",
+          "finished_at": "2026-09-26 13:12:31.902818+00:00",
+          "other_jobs_observed": 0
+        },
+        {
+          "repeat": 5,
+          "runtime_ms": 216,
+          "memory_kb": 19284,
+          "status": "accepted",
+          "node": "zoj-judge-agent-01",
+          "agent_version": "0.2.18",
+          "submitted_at": "2026-09-26 13:12:32.237399+00:00",
+          "finished_at": "2026-09-26 13:12:33.185404+00:00",
+          "other_jobs_observed": 0
+        }
+      ]
+    }
+  ]
+}

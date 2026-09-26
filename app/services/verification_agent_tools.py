@@ -24,6 +24,7 @@ from app.orm_models import (
     VerificationTrialRow as Trial,
 )
 from app.services import verification_ai as ai
+from app.services import judge_performance
 from app.services.storage import object_storage
 from app.settings import settings
 
@@ -71,6 +72,12 @@ def make_manifest(context, evidence, references):
     }
     if evidence.get("mode") == "task" and not evidence.get("source_code"):
         files.pop("original")
+    files["judge-performance"] = {
+        "category": "document",
+        "name": "채점 서버 사양·1억 회 실측 원본 기록",
+        "text": judge_performance.evidence_text(),
+        "read_only": True,
+    }
     for case in context["testcases"]:
         for kind in ("input", "output"):
             files[f"case:{case['display_order']}:{kind}"] = {
@@ -490,7 +497,9 @@ def inspect_judge(context):
         nodes = db.scalars(
             select(JudgeNodeRow).where(
                 JudgeNodeRow.schedulable.is_(True),
-                JudgeNodeRow.last_heartbeat_at > now_utc() - timedelta(minutes=2),
+                JudgeNodeRow.last_heartbeat_at
+                > now_utc()
+                - timedelta(seconds=settings.judge_node_active_window_seconds),
             )
         ).all()
         return {
@@ -504,6 +513,9 @@ def inspect_judge(context):
             "overrides_omitted": max(0, len(overrides) - 100),
             "testcase_policy": "기본 제한을 공유하는 테스트는 나열하지 않습니다. overrides는 별도 제한이 설정된 테스트만 포함합니다.",
             "active_agents": len(nodes),
+            "active_submission_slots": sum(n.total_slots for n in nodes),
+            "performance_reference": judge_performance.reference(),
+            "performance_evidence_file": "judge-performance",
             "agent_versions": sorted({n.agent_version for n in nodes}),
             "policy": "기존 isolate 샌드박스 및 동일 checker 사용. 언어/케이스 재정의 우선. 기본 Java 시간*2+1000ms, 메모리*2+16MB, Python 시간*3+2000ms, 메모리*2+32MB. BOM/NBSP 정규화. checker 인수: 입력, 참가자 출력, 정답 출력. validator 소스는 조회 가능하나 추가 제출에서 별도 실행하지 않음.",
         }
