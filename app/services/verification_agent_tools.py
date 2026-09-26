@@ -74,7 +74,7 @@ def make_manifest(context, evidence, references):
         files.pop("original")
     files["judge-performance"] = {
         "category": "document",
-        "name": "채점 서버 사양·1억 회 실측 원본 기록",
+        "name": "채점 서버 사양·연산별 TLE 실측 원본 기록",
         "text": judge_performance.evidence_text(),
         "read_only": True,
     }
