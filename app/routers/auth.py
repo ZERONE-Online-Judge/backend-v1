@@ -14,6 +14,24 @@ from app.services.store import SessionConflictError, store
 router = APIRouter(tags=["auth"])
 
 
+@router.get("/notifications/rejudging")
+async def rejudging_notifications(request: Request, contest_id: str | None = None, offset: int = 0, limit: int = 50):
+    from app.services.rejudging_notifications import list_notifications
+    return ok(request, await run_in_threadpool(list_notifications, store, bearer_token(request), contest_id, offset, limit))
+
+
+@router.post("/notifications/rejudging/{notification_id}/read")
+async def read_rejudging_notification(notification_id: str, request: Request, contest_id: str | None = None):
+    from app.services.rejudging_notifications import update_notification
+    return ok(request, await run_in_threadpool(update_notification, store, bearer_token(request), notification_id, "read", contest_id))
+
+
+@router.delete("/notifications/rejudging/{notification_id}")
+async def delete_rejudging_notification(notification_id: str, request: Request, contest_id: str | None = None):
+    from app.services.rejudging_notifications import update_notification
+    return ok(request, await run_in_threadpool(update_notification, store, bearer_token(request), notification_id, "delete", contest_id))
+
+
 @router.get("/auth/session-events")
 async def watch_session(request: Request):
     from app.services.session_events import resolve_session_watch, session_events

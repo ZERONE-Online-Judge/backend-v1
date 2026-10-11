@@ -9,14 +9,15 @@ from datetime import timedelta
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, select, func
+from sqlalchemy import create_engine, inspect, select, func, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.engine import make_url
 
 from app.database import Base
 from app.models import StaffAccount, SubmissionStatus, now_utc
 from app.orm_models import (ContestRow, ContestDivisionRow, ProblemRow, TestcaseSetRow as CaseSet,
-    TestcaseRow as Case, SubmissionRow, RejudgingRow, RejudgingItemRow, JudgeJobRow)
+    TestcaseRow as Case, SubmissionRow, RejudgingRow, RejudgingItemRow, JudgeJobRow,
+    RejudgingNotificationRow as Notice, ParticipantTeamRow, TeamMemberRow)
 from app.services import rejudging
 from app.services.errors import AppError
 from app.services.store import store
@@ -37,12 +38,15 @@ def postgres(monkeypatch):
     engine = create_engine(URL)
     Base.metadata.drop_all(engine)
     # Reproduce a pre-upgrade deployment, then run the real migration.
-    Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables if table.name not in {'rejudgings', 'rejudging_items'}])
+    Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables if table.name not in {'rejudgings', 'rejudging_items', 'rejudging_notifications'}])
+    with engine.begin() as db:
+        db.execute(text('DROP INDEX IF EXISTS ix_team_members_email_lower'))
     monkeypatch.setattr(settings, 'database_url', URL)
     cfg = Config('alembic.ini')
     command.stamp(cfg, '0039_restore_verification_runs')
     command.upgrade(cfg, 'head')
-    assert {'rejudgings', 'rejudging_items'} <= set(inspect(engine).get_table_names())
+    assert {'rejudgings', 'rejudging_items', 'rejudging_notifications'} <= set(inspect(engine).get_table_names())
+    assert 'ix_team_members_email_lower' in {index['name'] for index in inspect(engine).get_indexes('team_members')}
     sessions = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
     monkeypatch.setattr(store, '_session', sessions)
     with sessions() as db:
@@ -82,6 +86,30 @@ def finish(batch):
     assert len(jobs) == 4
     for job in jobs:
         store.report_judge_result(job['judge_job_id'], SECRET, job['lease_token'], SubmissionStatus.ACCEPTED, None, None, None, 10, 100)
+
+
+def test_postgres_applied_notification_and_foreign_key_cleanup(postgres):
+    with postgres() as db:
+        db.add(ParticipantTeamRow(participant_team_id='team', contest_id='contest', division_id='division', team_name='Team'))
+        db.flush()
+        db.add(TeamMemberRow(team_member_id='member', participant_team_id='team', contest_id='contest',
+            role='member', name='Member', email='member@test.com'))
+        db.flush()
+        row = db.get(SubmissionRow, '0')
+        row.participant_team_id, row.team_member_id = 'team', 'member'
+        db.commit()
+    batch = create()
+    finish(batch)
+    rejudging.decide(store, 'contest', batch['rejudging_id'], 'apply', ACTOR)
+    with postgres() as db:
+        notice = db.scalar(select(Notice))
+        assert notice and notice.old_status == 'wrong_answer' and notice.new_status == 'accepted'
+        assert notice.team_member_id == 'member' and notice.reason == 'Test'
+        # Deleting an operator history item cascades its notification, not its submission.
+        db.delete(db.get(RejudgingItemRow, notice.rejudging_item_id))
+        db.commit()
+        assert db.scalar(select(func.count()).select_from(Notice)) == 0
+        assert db.scalar(select(func.count()).select_from(SubmissionRow)) == 4
 
 
 def test_postgres_duplicate_create_and_apply_cancel_race(postgres):

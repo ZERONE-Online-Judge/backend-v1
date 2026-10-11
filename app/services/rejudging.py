@@ -333,6 +333,7 @@ def decide(store, cid, bid, action, actor):
             context, _, _, _ = context_snapshot(db, batch.problem_id)
             if context_digest(context) != batch.context_hash:
                 conflict("테스트·체커·자원 제한이 변경되었습니다. 이 작업을 취소하고 다시 재채점해 주세요.")
+            from app.services.rejudging_notifications import create_for_change
             for item in items:
                 submission = db.scalar(select(SubmissionRow).where(SubmissionRow.submission_id == item.submission_id).with_for_update())
                 old = item.original_result
@@ -344,6 +345,7 @@ def decide(store, cid, bid, action, actor):
                     value = item.candidate_result.get(name)
                     setattr(submission, name, datetime.fromisoformat(value) if name == "status_updated_at" and value else value)
                 submission.status_updated_at = now_utc()
+                create_for_change(db, batch, item, submission, context)
                 run = db.get(VerificationRunRow, item.submission_id)
                 if run:
                     run.context_hash = item.verification_context_hash

@@ -26,6 +26,14 @@ refreshes verification context and invalidates scoreboard caches through
 the existing transaction hooks. Penalties use original submission times.
 Already released scoreboard snapshots retain the existing release policy.
 
+Applying a changed participant verdict creates a durable inbox notification
+for its author in the same transaction. It contains the old/new verdicts,
+operator-entered reason, and a link to the submission. Unchanged verdicts,
+cancelled/unapplied results and operator/preview/AI submissions do not notify.
+Legacy shared-team submissions without an author notify current team members.
+Only the recipient's active session can list, read or hide the notification;
+read/hidden state persists across devices. No email is sent.
+
 A nullable unique active submission key prevents overlapping requests,
 including batches waiting for review. Apply/cancel are serialized with
 job-first locks and a batch compare-and-set. Stale jobs cannot report
@@ -50,16 +58,24 @@ Request, apply and cancellation are recorded in the existing audit log.
 The existing system-error immediate retry endpoint remains available and
 rejects submissions that have an active staged rejudging.
 
+The recipient inbox uses `GET /api/notifications/rejudging` (paginated),
+`POST /api/notifications/rejudging/{id}/read`, and
+`DELETE /api/notifications/rejudging/{id}` (hide). A general login sees its
+own memberships across contests; a legacy participant token also requires
+`contest_id` and is restricted to its own member in that contest. Hidden
+notifications retain their evidence and never reappear in the server feed.
+
 ## Deployment and rollback
 
 Run `alembic upgrade head` before serving the new backend/frontend. Revision
 `0040_staged_rejudging` creates `rejudgings` and `rejudging_items`, indexes,
 foreign keys, and unique active submission/job constraints.
+Revision `0041_rejudging_notifications` adds the durable recipient inbox.
 
 Cancel pending batches before rolling application code back: old agents
 are compatible, but old backends do not recognize staged jobs. Leave the
 new tables in place to preserve evidence. A schema downgrade to `0039`
-removes the two tables (and their evidence) without changing submissions;
+removes the new tables (and their evidence) without changing submissions;
 use it only for a disposable test database or after archiving the records.
 
 ## Verification
