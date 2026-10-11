@@ -96,7 +96,7 @@ def test_read_dismiss_hide_and_read_all_are_independent_and_account_scoped(datab
     assert client.post(f'/api/notifications/{nid}/dismiss', headers=headers(token)).status_code == 200
     dismissed = feed(login(database))
     item = next(item for item in dismissed['items'] if item['notification_id'] == nid)
-    assert item['dismissed_at'] and item['read_at'] is None and dismissed['unread_count'] == 2
+    assert item['dismissed_at'] and item['read_at'] and dismissed['unread_count'] == 1
     assert client.post(f'/api/notifications/{nid}/read', headers=headers(token)).status_code == 200
     assert feed(token)['unread_count'] == 1
     assert client.post(f'/api/notifications/{nid}/unread', headers=headers(token)).status_code == 200
@@ -148,3 +148,15 @@ def test_notification_failure_rolls_back_its_official_result(database, participa
     with database() as db:
         assert db.get(JudgeJobRow, 'job').status == 'running'
         assert db.scalar(select(func.count()).select_from(Notice)) == 0
+
+
+def test_delete_removes_an_unread_item_without_marking_it_read(database, participant):
+    store.create_contest_notice('contest', 'Notice', 'body')
+    token = login(database)
+    nid = feed(token)['items'][0]['notification_id']
+    assert client.delete(f'/api/notifications/{nid}', headers=headers(token)).status_code == 200
+    assert client.post('/api/notifications/read-all', headers=headers(token)).status_code == 200
+    with database() as db:
+        row = db.get(Notice, nid)
+        assert row.deleted_at and row.read_at is None
+    assert feed(token)['total_count'] == 0

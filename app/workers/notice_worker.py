@@ -3,6 +3,7 @@ import time
 
 from app.services.usage_ingest import purge_usage_events
 from app.services.log_retention import cleanup_expired_logs
+from app.services.notifications import cleanup_expired_notifications
 
 from app.services.store import store
 from app.settings import settings
@@ -11,7 +12,19 @@ from app.settings import settings
 async def run_forever() -> None:
     next_usage_cleanup = 0.0
     next_log_cleanup = 0.0
+    next_notification_cleanup = 0.0
     while True:
+        if time.monotonic() >= next_notification_cleanup:
+            try:
+                removed = await asyncio.to_thread(cleanup_expired_notifications, store)
+                batch = max(1, min(settings.notification_cleanup_batch_size, 5000))
+                next_notification_cleanup = time.monotonic() + (
+                    1 if removed >= batch else settings.notification_cleanup_interval_seconds)
+                if removed:
+                    print(f"[notice-worker] expired notifications removed: {removed}", flush=True)
+            except Exception as exc:
+                print(f"[notice-worker] notification cleanup failed: {type(exc).__name__}", flush=True)
+                next_notification_cleanup = time.monotonic() + settings.notification_cleanup_interval_seconds
         if time.monotonic() >= next_log_cleanup:
             try:
                 removed = await asyncio.to_thread(cleanup_expired_logs)

@@ -230,8 +230,8 @@ def test_postgres_general_inbox_read_all_and_independent_dismissal(postgres):
     assert feed['unread_count'] == 2 and feed['next_offset'] == 1
     nid = feed['items'][0]['notification_id']
     notifications.update_notification(store, token, nid, 'dismiss')
-    assert notifications.list_notifications(store, token)['unread_count'] == 2
-    assert notifications.read_all(store, token)['updated_count'] == 2
+    assert notifications.list_notifications(store, token)['unread_count'] == 1
+    assert notifications.read_all(store, token)['updated_count'] == 1
     assert notifications.list_notifications(store, token)['unread_count'] == 0
     notifications.update_notification(store, token, nid, 'unread')
     feed = notifications.list_notifications(store, token)
@@ -240,3 +240,33 @@ def test_postgres_general_inbox_read_all_and_independent_dismissal(postgres):
     notifications.update_notification(store, token, nid, 'delete')
     notifications.update_notification(store, token, nid, 'delete')
     assert notifications.list_notifications(store, token)['unread_count'] == 0
+
+
+def test_postgres_expiry_cleanup_skips_locked_contests_and_preserves_judging_records(postgres, monkeypatch):
+    from app.services import notifications
+    with postgres() as db:
+        db.add(ParticipantTeamRow(participant_team_id='team', contest_id='contest', division_id='division', team_name='Team'))
+        db.flush()
+        db.add(TeamMemberRow(team_member_id='member', participant_team_id='team', contest_id='contest',
+            role='member', name='Member', email='member@test.com'))
+        db.commit()
+    for i in range(3):
+        store.create_contest_notice('contest', str(i), 'body')
+    with postgres() as db:
+        rows = list(db.scalars(select(Notice)))
+        rows[0].read_at = now_utc()
+        rows[1].deleted_at = now_utc()
+        db.get(ContestRow, 'contest').end_at = now_utc() - timedelta(hours=13)
+        db.commit()
+    monkeypatch.setattr(settings, 'notification_cleanup_batch_size', 2)
+    with postgres() as locked:
+        locked.scalar(select(ContestRow).where(ContestRow.contest_id == 'contest').with_for_update())
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(notifications.cleanup_expired_notifications, store).result(timeout=5) == 0
+        locked.rollback()
+    assert notifications.cleanup_expired_notifications(store) == 2
+    assert notifications.cleanup_expired_notifications(store) == 1
+    with postgres() as db:
+        assert db.scalar(select(func.count()).select_from(Notice)) == 0
+        assert db.scalar(select(func.count()).select_from(SubmissionRow)) == 4
+        assert db.get(ContestRow, 'contest')

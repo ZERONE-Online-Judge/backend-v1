@@ -238,6 +238,7 @@ class NotificationRow(Base):
     __table_args__ = (
         UniqueConstraint("rejudging_item_id", "team_member_id", name="uq_rejudge_notice_recipient"),
         Index("ix_notification_feed", "team_member_id", "deleted_at", "created_at"),
+        Index("ix_notification_contest", "contest_id", "notification_id"),
         UniqueConstraint("event_key", "team_member_id", name="uq_notification_event_recipient"),
     )
 

@@ -1,4 +1,4 @@
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     audit_log_retention_days: int = 365
     judge_log_retention_days: int = 90
     log_cleanup_batch_size: int = 1000
+    notification_grace_hours: float = Field(default=12, ge=0)
+    notification_cleanup_batch_size: int = 1000
+    notification_cleanup_interval_seconds: float = Field(default=60, ge=1)
     enable_demo_seed: bool = False
     allow_empty_otp: bool = False
     bootstrap_service_master_email: str | None = None

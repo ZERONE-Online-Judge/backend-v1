@@ -61,3 +61,11 @@ lock waits, cache hit/miss counters and p95/p99 endpoint latency. An idle-time
 measurement is not a concurrent-user capacity guarantee; use synthetic accounts
 and an isolated database for load testing. Cleanup makes space reusable inside
 PostgreSQL; it does not promise an immediate reduction in the data-file size.
+
+
+Participant inbox notifications use a separate contest-based policy. They
+expire at the current contest end time plus `NOTIFICATION_GRACE_HOURS`
+(default 12). The notice worker cleans batches of at most
+`NOTIFICATION_CLEANUP_BATCH_SIZE` (1000) every
+`NOTIFICATION_CLEANUP_INTERVAL_SECONDS` (60). API lists and counts exclude
+expired entries before cleanup completes. See [notifications](notifications.md).

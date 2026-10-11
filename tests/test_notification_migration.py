@@ -20,6 +20,7 @@ def test_sqlite_inbox_upgrade_and_downgrade(tmp_path, monkeypatch):
     inspector = inspect(engine)
     assert 'notifications' in inspector.get_table_names() and 'rejudging_notifications' not in inspector.get_table_names()
     assert {'read_at', 'dismissed_at', 'deleted_at', 'notification_type'} <= {column['name'] for column in inspector.get_columns('notifications')}
+    assert 'ix_notification_contest' in {index['name'] for index in inspector.get_indexes('notifications')}
     command.downgrade(cfg, '0041_rejudging_notifications')
     assert 'rejudging_notifications' in inspect(engine).get_table_names()
     command.upgrade(cfg, 'head')

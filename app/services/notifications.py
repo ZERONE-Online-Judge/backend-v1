@@ -1,17 +1,32 @@
 """Transactional participant inbox, independent of active browser sessions."""
+from datetime import timedelta
 from urllib.parse import quote
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import case, delete, func, or_, select, text, update
 
 from app.models import new_id, now_utc
 from app.orm_models import (NotificationRow as Notice, ContestRow, ParticipantTeamRow,
     TeamMemberRow as Member, ProblemRow)
 from app.services.errors import not_found
+from app.settings import settings
 
 LABELS = {'accepted': '맞았습니다', 'wrong_answer': '틀렸습니다', 'compile_error': '컴파일 에러',
     'runtime_error': '런타임 에러', 'time_limit_exceeded': '시간 초과',
     'memory_limit_exceeded': '메모리 초과', 'output_limit_exceeded': '출력 초과', 'system_error': '시스템 에러'}
+
+
+def _expired_contests(now):
+    # Draft/TBD dates are placeholders. Rescheduling automatically changes the
+    # lifetime of existing notifications because expiry uses the current end_at.
+    return select(ContestRow.contest_id).where(
+        ContestRow.status.not_in(['draft', 'schedule_tbd']),
+        ContestRow.end_at <= now - timedelta(hours=settings.notification_grace_hours),
+    )
+
+
+def _alive(now):
+    return Notice.contest_id.not_in(_expired_contests(now))
 
 
 def _contest_members(contest_id, team_id=None):
@@ -24,7 +39,12 @@ def _contest_members(contest_id, team_id=None):
 def _emit(db, members, event_key, kind, contest_id, title, body, href, **details):
     # One bulk insert for all recipients; duplicate deliveries cannot recreate hidden/read events.
     contest = db.get(ContestRow, contest_id)
-    now = details.pop('created_at', None) or now_utc()
+    from app.services.store import _aware
+    current = now_utc()
+    if not contest or (contest.status not in {'draft', 'schedule_tbd'} and
+        _aware(contest.end_at) + timedelta(hours=settings.notification_grace_hours) <= current):
+        return
+    now = details.pop('created_at', None) or current
     rows = [dict(notification_id=new_id(), team_member_id=member.team_member_id,
         recipient_email=member.email.strip().lower(), event_key=event_key, notification_type=kind,
         contest_id=contest_id, contest_title=contest.title if contest else '대회',
@@ -118,7 +138,7 @@ def _fields(row):
 def list_notifications(store, token, contest_id=None, offset=0, limit=50, kind=None):
     offset, limit = max(0, offset), max(1, min(limit, 100))
     with store._session() as db:
-        filters = [*_scope(db, token, contest_id), Notice.deleted_at.is_(None)]
+        filters = [*_scope(db, token, contest_id), Notice.deleted_at.is_(None), _alive(now_utc())]
         if kind:
             filters.append(Notice.notification_type == kind)
         unread, total = db.execute(select(func.count(case((Notice.read_at.is_(None), 1))), func.count())
@@ -133,6 +153,7 @@ def update_notification(store, token, notification_id, action, contest_id=None):
     with store._session() as db:
         filters = _scope(db, token, contest_id)
         visible = [] if action == "delete" else [Notice.deleted_at.is_(None)]
+        visible.append(_alive(now_utc()))
         row = db.scalar(select(Notice).where(Notice.notification_id == notification_id,
             *filters, *visible).with_for_update())
         if row is None:
@@ -143,6 +164,8 @@ def update_notification(store, token, notification_id, action, contest_id=None):
         elif action in ('read', 'dismiss', 'delete'):
             column = {'read': 'read_at', 'dismiss': 'dismissed_at', 'delete': 'deleted_at'}[action]
             values = {column: func.coalesce(getattr(Notice, column), now)}
+            if action == 'dismiss':
+                values['read_at'] = func.coalesce(Notice.read_at, now)
         else:
             raise ValueError('Unknown notification action')
         db.execute(update(Notice).where(Notice.notification_id == notification_id).values(**values))
@@ -154,6 +177,31 @@ def read_all(store, token, contest_id=None):
     with store._session() as db:
         now = now_utc()
         result = db.execute(update(Notice).where(*_scope(db, token, contest_id),
-            Notice.deleted_at.is_(None), Notice.read_at.is_(None), Notice.created_at <= now).values(read_at=now))
+            Notice.deleted_at.is_(None), Notice.read_at.is_(None), Notice.created_at <= now, _alive(now)).values(read_at=now))
         db.commit()
         return {'updated_count': result.rowcount}
+
+
+def cleanup_expired_notifications(store):
+    """Permanently remove one bounded batch, including read and hidden entries."""
+    now = now_utc()
+    cutoff = now - timedelta(hours=settings.notification_grace_hours)
+    limit = max(1, min(settings.notification_cleanup_batch_size, 5000))
+    with store._session() as db:
+        if db.bind.dialect.name == 'postgresql':
+            db.execute(text("SET LOCAL statement_timeout = '3s'"))
+            db.execute(text("SET LOCAL lock_timeout = '500ms'"))
+        # Lock both notifications and their contests during deletion. A concurrent
+        # schedule extension cannot change an expiry halfway through this batch.
+        ids = list(db.scalars(select(Notice.notification_id).join(ContestRow,
+            Notice.contest_id == ContestRow.contest_id).where(
+                ContestRow.status.not_in(['draft', 'schedule_tbd']), ContestRow.end_at <= cutoff,
+            ).order_by(Notice.contest_id, Notice.notification_id).limit(limit)
+            .with_for_update(skip_locked=True)))
+        count = 0
+        if ids:
+            count = db.execute(delete(Notice).where(
+                Notice.notification_id.in_(ids), Notice.contest_id.in_(_expired_contests(now)),
+            )).rowcount
+        db.commit()
+        return count
