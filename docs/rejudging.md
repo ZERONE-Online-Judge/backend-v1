@@ -71,6 +71,8 @@ Run `alembic upgrade head` before serving the new backend/frontend. Revision
 `0040_staged_rejudging` creates `rejudgings` and `rejudging_items`, indexes,
 foreign keys, and unique active submission/job constraints.
 Revision `0041_rejudging_notifications` adds the durable recipient inbox.
+Revision `0042_notification_inbox` promotes it to the unified inbox,
+preserving verdict-change history, read states and hidden entries.
 
 Cancel pending batches before rolling application code back: old agents
 are compatible, but old backends do not recognize staged jobs. Leave the

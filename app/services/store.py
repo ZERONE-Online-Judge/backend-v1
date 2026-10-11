@@ -2765,6 +2765,8 @@ class DbStore:
             db.add(row)
             if emergency:
                 contest.emergency_notice = body
+            from app.services.notifications import create_notice
+            create_notice(db, row)
             # Contest notices are visible in-app. Disable notice email
             # fan-out to keep transactional mail volume focused on OTP
             # and direct question/answer flows during live operations.
@@ -2909,6 +2911,8 @@ class DbStore:
                 created_by_email=created_by_email,
             )
             db.add(row)
+            from app.services.notifications import create_answer
+            create_answer(db, row, question)
             db.commit()
             db.refresh(row)
             return _answer_for_view(row, db)
@@ -5654,6 +5658,8 @@ class DbStore:
             submission.status_updated_at = now_utc()
             job.status = JudgeJobStatus.SUCCEEDED.value
             job.lease_token = None
+            from app.services.notifications import create_result
+            create_result(db, submission, job)
             db.commit()
             db.refresh(submission)
             db.refresh(job)

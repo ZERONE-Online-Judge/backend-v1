@@ -233,28 +233,39 @@ class RejudgingItemRow(Base):
     verification_context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
-class RejudgingNotificationRow(Base):
-    __tablename__ = "rejudging_notifications"
+class NotificationRow(Base):
+    __tablename__ = "notifications"
     __table_args__ = (
         UniqueConstraint("rejudging_item_id", "team_member_id", name="uq_rejudge_notice_recipient"),
-        Index("ix_rejudge_notice_feed", "team_member_id", "deleted_at", "created_at"),
+        Index("ix_notification_feed", "team_member_id", "deleted_at", "created_at"),
+        UniqueConstraint("event_key", "team_member_id", name="uq_notification_event_recipient"),
     )
 
     notification_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    rejudging_item_id: Mapped[str] = mapped_column(ForeignKey("rejudging_items.rejudging_item_id", ondelete="CASCADE"))
+    rejudging_item_id: Mapped[str | None] = mapped_column(ForeignKey("rejudging_items.rejudging_item_id", ondelete="CASCADE"))
     team_member_id: Mapped[str] = mapped_column(ForeignKey("team_members.team_member_id", ondelete="CASCADE"))
     contest_id: Mapped[str] = mapped_column(ForeignKey("contests.contest_id", ondelete="CASCADE"))
-    submission_id: Mapped[str] = mapped_column(ForeignKey("submissions.submission_id", ondelete="CASCADE"))
-    problem_id: Mapped[str] = mapped_column(ForeignKey("problems.problem_id", ondelete="CASCADE"))
+    submission_id: Mapped[str | None] = mapped_column(ForeignKey("submissions.submission_id", ondelete="CASCADE"))
+    problem_id: Mapped[str | None] = mapped_column(ForeignKey("problems.problem_id", ondelete="CASCADE"))
     contest_title: Mapped[str] = mapped_column(String(255))
-    problem_code: Mapped[str] = mapped_column(String(16))
-    old_status: Mapped[str] = mapped_column(String(32))
-    new_status: Mapped[str] = mapped_column(String(32))
-    reason: Mapped[str] = mapped_column(Text)
+    problem_code: Mapped[str | None] = mapped_column(String(16))
+    old_status: Mapped[str | None] = mapped_column(String(32))
+    new_status: Mapped[str | None] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    notification_type: Mapped[str] = mapped_column(String(32), default="rejudging", server_default="rejudging")
+    event_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    recipient_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    href: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+
+# Keep the old import available for the legacy rejudging API.
+RejudgingNotificationRow = NotificationRow
 
 class ServiceNoticeRow(Base):
     __tablename__ = "service_notices"

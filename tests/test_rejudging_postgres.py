@@ -38,14 +38,14 @@ def postgres(monkeypatch):
     engine = create_engine(URL)
     Base.metadata.drop_all(engine)
     # Reproduce a pre-upgrade deployment, then run the real migration.
-    Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables if table.name not in {'rejudgings', 'rejudging_items', 'rejudging_notifications'}])
+    Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables if table.name not in {'rejudgings', 'rejudging_items', 'notifications'}])
     with engine.begin() as db:
         db.execute(text('DROP INDEX IF EXISTS ix_team_members_email_lower'))
     monkeypatch.setattr(settings, 'database_url', URL)
     cfg = Config('alembic.ini')
     command.stamp(cfg, '0039_restore_verification_runs')
     command.upgrade(cfg, 'head')
-    assert {'rejudgings', 'rejudging_items', 'rejudging_notifications'} <= set(inspect(engine).get_table_names())
+    assert {'rejudgings', 'rejudging_items', 'notifications'} <= set(inspect(engine).get_table_names())
     assert 'ix_team_members_email_lower' in {index['name'] for index in inspect(engine).get_indexes('team_members')}
     sessions = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
     monkeypatch.setattr(store, '_session', sessions)
@@ -180,3 +180,63 @@ def test_postgres_metadata_changes_wait_for_atomic_apply(postgres, monkeypatch):
         assert applying.result(timeout=5)['status'] == 'applied'
         changing.result(timeout=5)
     assert store.get_submission('0').status == 'accepted'
+
+
+def test_postgres_inbox_upgrade_preserves_existing_read_and_hidden_history(postgres):
+    with postgres() as db:
+        db.add(ParticipantTeamRow(participant_team_id='team', contest_id='contest', division_id='division', team_name='Team'))
+        db.flush()
+        db.add(TeamMemberRow(team_member_id='member', participant_team_id='team', contest_id='contest',
+            role='member', name='Member', email='Member@Test.Com'))
+        db.flush()
+        row = db.get(SubmissionRow, '0')
+        row.participant_team_id, row.team_member_id = 'team', 'member'
+        db.commit()
+    batch = create()
+    finish(batch)
+    rejudging.decide(store, 'contest', batch['rejudging_id'], 'apply', ACTOR)
+    with postgres() as db:
+        notice = db.scalar(select(Notice))
+        notice.read_at = notice.deleted_at = now_utc()
+        db.commit()
+        notice_id, item_id, created, read = notice.notification_id, notice.rejudging_item_id, notice.created_at, notice.read_at
+    cfg = Config('alembic.ini')
+    command.downgrade(cfg, '0041_rejudging_notifications')
+    assert 'rejudging_notifications' in inspect(postgres.kw['bind']).get_table_names()
+    command.upgrade(cfg, 'head')
+    with postgres() as db:
+        notice = db.get(Notice, notice_id)
+        assert notice.created_at == created and notice.read_at == notice.deleted_at == read
+        assert notice.recipient_email == 'member@test.com'
+        assert notice.event_key == f'rejudging:{item_id}' and notice.notification_type == 'rejudging'
+        from app.services.notifications import _fields
+        fields = _fields(notice)
+        assert fields['body'] == '틀렸습니다 → 맞았습니다' and fields['href'].endswith('submissionId=0')
+
+
+def test_postgres_general_inbox_read_all_and_independent_dismissal(postgres):
+    from app.services import notifications
+    from tests.test_rejudging_notifications import login
+    with postgres() as db:
+        db.add(ParticipantTeamRow(participant_team_id='team', contest_id='contest', division_id='division', team_name='Team'))
+        db.flush()
+        db.add(TeamMemberRow(team_member_id='member', participant_team_id='team', contest_id='contest',
+            role='member', name='Member', email='member@test.com'))
+        db.commit()
+    store.create_contest_notice('contest', 'First', 'body')
+    store.create_contest_notice('contest', 'Second', 'body')
+    token = login(postgres, 'member', email='member@test.com')
+    feed = notifications.list_notifications(store, token, limit=1)
+    assert feed['unread_count'] == 2 and feed['next_offset'] == 1
+    nid = feed['items'][0]['notification_id']
+    notifications.update_notification(store, token, nid, 'dismiss')
+    assert notifications.list_notifications(store, token)['unread_count'] == 2
+    assert notifications.read_all(store, token)['updated_count'] == 2
+    assert notifications.list_notifications(store, token)['unread_count'] == 0
+    notifications.update_notification(store, token, nid, 'unread')
+    feed = notifications.list_notifications(store, token)
+    item = next(item for item in feed['items'] if item['notification_id'] == nid)
+    assert item['read_at'] is None and item['dismissed_at']
+    notifications.update_notification(store, token, nid, 'delete')
+    notifications.update_notification(store, token, nid, 'delete')
+    assert notifications.list_notifications(store, token)['unread_count'] == 0

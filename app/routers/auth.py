@@ -14,6 +14,18 @@ from app.services.store import SessionConflictError, store
 router = APIRouter(tags=["auth"])
 
 
+@router.get("/notifications")
+async def notifications(request: Request, contest_id: str | None = None, offset: int = 0, limit: int = 50):
+    from app.services.notifications import list_notifications
+    return ok(request, await run_in_threadpool(list_notifications, store, bearer_token(request), contest_id, offset, limit))
+
+
+@router.post("/notifications/read-all")
+async def read_all_notifications(request: Request, contest_id: str | None = None):
+    from app.services.notifications import read_all
+    return ok(request, await run_in_threadpool(read_all, store, bearer_token(request), contest_id))
+
+
 @router.get("/notifications/rejudging")
 async def rejudging_notifications(request: Request, contest_id: str | None = None, offset: int = 0, limit: int = 50):
     from app.services.rejudging_notifications import list_notifications
@@ -29,6 +41,20 @@ async def read_rejudging_notification(notification_id: str, request: Request, co
 @router.delete("/notifications/rejudging/{notification_id}")
 async def delete_rejudging_notification(notification_id: str, request: Request, contest_id: str | None = None):
     from app.services.rejudging_notifications import update_notification
+    return ok(request, await run_in_threadpool(update_notification, store, bearer_token(request), notification_id, "delete", contest_id))
+
+
+@router.post("/notifications/{notification_id}/{action}")
+async def change_notification(notification_id: str, action: str, request: Request, contest_id: str | None = None):
+    from app.services.notifications import update_notification
+    if action not in {"read", "unread", "dismiss"}:
+        raise AppError(404, "not_found", "Notification action not found.")
+    return ok(request, await run_in_threadpool(update_notification, store, bearer_token(request), notification_id, action, contest_id))
+
+
+@router.delete("/notifications/{notification_id}")
+async def hide_notification(notification_id: str, request: Request, contest_id: str | None = None):
+    from app.services.notifications import update_notification
     return ok(request, await run_in_threadpool(update_notification, store, bearer_token(request), notification_id, "delete", contest_id))
 
 
