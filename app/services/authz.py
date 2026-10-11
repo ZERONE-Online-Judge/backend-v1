@@ -32,7 +32,10 @@ def require_service_master(request: Request) -> StaffAccount:
 
 def has_contest_permission(account: StaffAccount, contest_id: str, permission: str) -> bool:
     scopes = account.contest_scopes.get(contest_id, [])
-    return account.is_service_master or "contest.*" in scopes or permission in scopes
+    return (
+        account.is_service_master or "contest.*" in scopes or permission in scopes
+        or (permission == "contest.problem.view" and "contest.problem.review" in scopes)
+    )
 
 
 def is_contest_master(account: StaffAccount, contest_id: str) -> bool:

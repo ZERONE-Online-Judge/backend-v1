@@ -10,11 +10,12 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "notices_manager": {"contest.notice.view", "contest.notice.manage", "contest.notice.create", "contest.notice.update", "contest.notice.delete", "contest.notice.emergency_publish"},
     "audit_viewer": {"contest.audit.view", "contest.access_log.view"},
     "staff_manager": {"contest.staff.view", "contest.staff.manage"},
+    "problems_viewer": {"contest.problem.view"},
     "submissions_viewer": {"contest.submission.view", "contest.submission.source.view"},
     "scoreboard_viewer": {"contest.scoreboard.view"},
     "scoreboard_manager": {"contest.scoreboard.view", "contest.scoreboard.manage", "contest.scoreboard.freeze", "contest.scoreboard.unfreeze", "contest.scoreboard.setting"},
     "problem_author": {"contest.problem.view", "contest.problem.manage", "contest.problem.review", "contest.problem.test", "contest.problem.create", "contest.problem.update", "contest.problem.delete", "contest.problem.reorder", "contest.problem.resource.view", "contest.problem.resource.manage", "contest.testcase.view", "contest.testcase.manage", "contest.generator.view", "contest.generator.manage"},
-    "problem_reviewer": {"contest.problem.review", "contest.problem.test"},
+    "problem_reviewer": {"contest.problem.view", "contest.problem.review", "contest.problem.test"},
     "participant_preview": {"contest.participant.preview"},
 }
 
@@ -45,7 +46,10 @@ def roles_for_scopes(scopes: list[str]) -> list[str]:
         return ["owner"]
     if "contest.*" in scopes:
         return ["master"]
-    return [role for role, permissions in ROLE_PERMISSIONS.items() if permissions <= set(scopes)]
+    permissions_set = set(scopes)
+    if "contest.problem.review" in permissions_set:
+        permissions_set.add("contest.problem.view")
+    return [role for role, permissions in ROLE_PERMISSIONS.items() if permissions <= permissions_set]
 
 
 def title_for_roles(roles: list[str]) -> str | None:
@@ -67,7 +71,7 @@ def title_for_scopes(scopes: list[str]) -> str | None:
         return "총괄"
     if any(scope in {"*", "master", "contest.*"} for scope in scopes):
         return "마스터"
-    author_scopes = {"contest.problem", "contest.problem.*", "contest.problem.view", "contest.problem.manage", "contest.problem.create", "contest.problem.update", "contest.problem.delete", "contest.problem.reorder"}
+    author_scopes = {"contest.problem", "contest.problem.*", "contest.problem.manage", "contest.problem.create", "contest.problem.update", "contest.problem.delete", "contest.problem.reorder"}
     author_groups = ("contest.problem.resource", "contest.testcase", "contest.generator")
     if any(scope in author_scopes or any(scope == group or scope.startswith(group + ".") for group in author_groups) for scope in scopes):
         return "출제진"

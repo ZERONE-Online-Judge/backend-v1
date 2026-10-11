@@ -1,5 +1,6 @@
 """HTTP-level permission matrix, ownership, assignment and storage regression tests."""
 import os
+import json
 import time
 from datetime import timedelta
 from uuid import uuid4
@@ -13,7 +14,7 @@ os.environ.setdefault("ALLOW_EMPTY_OTP", "true")
 from app.main import app
 from app.models import ContestStatus, now_utc
 from app.orm_models import StaffAccountRow, SubmissionRow
-from app.services.contest_roles import ROLE_PERMISSIONS
+from app.services.contest_roles import ROLE_PERMISSIONS, roles_for_scopes
 from app.services.store import store
 from app.services.storage import object_storage
 
@@ -52,12 +53,12 @@ def test_read_permission_matrix(context, role):
         "/notices": "contest.notice.view", "/boards": "contest.board.question.view",
         "/submissions": "contest.submission.view", "/submission-filters": "contest.submission.view",
         "/judge-history": "contest.submission.view", "/scoreboard/internal": "contest.scoreboard.view",
-        "/scoreboard/presentation": "contest.scoreboard.view", "/problems": "contest.problem.review",
+        "/scoreboard/presentation": "contest.scoreboard.view", "/problems": "contest.problem.view",
         "/mail-logs": "contest.audit.view", "/audit-logs": "contest.audit.view", "/access-logs": "contest.access_log.view",
         "/access-log-stats": "contest.access_log.view",
         f"/problems/{c['problem'].problem_id}/testcase-sets": "contest.problem.manage",
         f"/problems/{c['problem'].problem_id}/package-status": "contest.problem.manage",
-        f"/problems/{c['problem'].problem_id}/assets": "contest.problem.review",
+        f"/problems/{c['problem'].problem_id}/assets": "contest.problem.view",
         f"/divisions/{c['division'].division_id}/scoreboard/release": "contest.scoreboard.view",
     }
     for path, permission in routes.items():
@@ -172,6 +173,57 @@ def test_admin_assignment_always_protected_master(context):
     assert response.status_code == 200
     assert response.json()["data"]["contest_roles"][cid] == ["master"]
     assert cid not in response.json()["data"]["protected_master_contests"]
+
+
+def test_problem_viewer_reads_statements_without_private_files_or_judging(context):
+    c = context
+    source = store.create_problem(c["cid"], c["division"].division_id, "B", "View me", "Statement", 1000, 128, {}, 2)
+    pid = source.problem_id
+    store.update_problem(c["cid"], pid, editorial="PRIVATE EDITORIAL")
+    headers = c["tokens"]["problems_viewer"]
+    result = client.get(c["prefix"] + "/problems", headers=headers)
+    assert result.status_code == 200
+    problem = next(item for item in result.json()["data"] if item["problem_id"] == pid)
+    assert problem["statement"] == "Statement"
+    assert problem["editorial"] == ""
+    assert "solved_team_count" not in problem
+    keys = {}
+    for category in ["assets", "editorial-assets", "package-files/checker"]:
+        key = f"contests/{c['cid']}/problems/{pid}/{category}/viewer-{uuid4().hex}.png"
+        object_storage.write_bytes(key, b"image")
+        store.create_problem_asset(c["cid"], pid, "image.png", key, "image/png", 5, "a" * 64)
+        keys[category] = key
+    assets = client.get(c["prefix"] + f"/problems/{pid}/assets", headers=headers)
+    assert assets.status_code == 200
+    listed = {item["storage_key"] for item in assets.json()["data"]}
+    assert keys["assets"] in listed
+    assert keys["editorial-assets"] not in listed
+    assert keys["package-files/checker"] not in listed
+    for category in ["editorial-assets", "package-files/checker"]:
+        assert client.get("/api/storage/objects/" + keys[category], headers=headers).status_code == 403
+    request = client.post(c["prefix"] + f"/problems/{pid}/test-submissions", headers=headers, json={"language": "cpp17", "source_code": "int main(){}"})
+    assert request.status_code == 403
+    assert client.patch(c["prefix"] + f"/problems/{pid}", headers=headers, json={"title": "Forbidden"}).status_code == 403
+    assert store.problems[pid].title == "View me"
+    store.delete_problem(c["cid"], pid)
+
+
+def test_legacy_reviewer_scopes_still_include_problem_viewing(context):
+    c = context
+    account = store.upsert_contest_operator(c["cid"], f"legacy-review-{uuid4().hex}@zoj.com", "Legacy reviewer", ["problem_reviewer"])
+    legacy_scopes = ["contest.view", "contest.problem.review", "contest.problem.test"]
+    with store._session() as db:
+        row = db.get(StaffAccountRow, account.staff_account_id)
+        row.contest_scopes = json.dumps({c["cid"]: legacy_scopes})
+        row.contest_roles = "{}"
+        db.commit()
+    assert set(roles_for_scopes(legacy_scopes)) == {"problems_viewer", "problem_reviewer"}
+    headers = login(str(account.email))
+    result = client.get(c["prefix"] + "/problems", headers=headers)
+    assert result.status_code == 200
+    assert all(item["editorial"] == "" for item in result.json()["data"])
+    assert client.get(c["prefix"] + f"/problems/{c['problem'].problem_id}/assets", headers=headers).status_code == 200
+    assert client.get(c["prefix"] + f"/problems/{c['problem'].problem_id}/testcase-sets", headers=headers).status_code == 403
 
 
 def test_reviewer_ownership_and_private_assets(context):
@@ -347,7 +399,7 @@ def test_notice_management_is_independent_from_board_management(context):
 def test_all_nonmaster_roles_can_be_selected_together(context):
     c = context
     roles = [role for role in ROLE_PERMISSIONS if role not in {"owner", "master", "participant_preview"}]
-    assert len(roles) == 11
+    assert len(roles) == 12
     email = f"all-roles-{uuid4().hex}@zoj.com"
     response = client.post(c["prefix"] + "/operators", headers=c["tokens"]["master"], json={"email": email, "display_name": "All selected", "roles": roles})
     assert response.status_code == 200, response.text

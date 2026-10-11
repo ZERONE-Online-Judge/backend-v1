@@ -1384,10 +1384,10 @@ def presentation_scoreboard(contest_id: str, request: Request):
 
 @router.get("/operator/contests/{contest_id}/problems")
 async def operator_problems(contest_id: str, request: Request):
-    account = require_contest_staff(request, contest_id, "contest.problem.review")
+    account = require_contest_staff(request, contest_id, "contest.problem.view", "contest.problem.review")
     problems = [p for p in store.problems.values() if p.contest_id == contest_id]
     problems.sort(key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
-    if not has_contest_permission(account, contest_id, "contest.problem.view"):
+    if not has_contest_permission(account, contest_id, "contest.problem.resource.view"):
         return page(request, [{**problem.model_dump(mode="json"), "editorial": ""} for problem in problems])
     teams = [
         team
@@ -1507,7 +1507,7 @@ async def delete_problem(contest_id: str, problem_id: str, request: Request):
 
 @router.get("/operator/contests/{contest_id}/problems/{problem_id}/assets")
 async def problem_assets(contest_id: str, problem_id: str, request: Request):
-    account = require_contest_staff(request, contest_id, "contest.problem.review")
+    account = require_contest_staff(request, contest_id, "contest.problem.view", "contest.problem.review")
     try:
         assets = store.problem_assets_for_problem(contest_id, problem_id)
         if not has_contest_permission(account, contest_id, "contest.problem.resource.view"):
