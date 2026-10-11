@@ -19,11 +19,11 @@ client = TestClient(app)
 
 def test_titles_cover_legacy_partial_permissions_and_exclusive_preview():
     assert title_for_scopes(["contest.*", "contest.problem.manage"]) == "마스터"
-    assert title_for_scopes(["contest.testcase.manage", "contest.notice.view"]) == "출제자"
-    assert title_for_scopes(["contest.notice.create", "contest.problem.review"]) == "운영자"
-    assert title_for_scopes(["contest.view", "contest.problem.test"]) == "검수자"
-    assert title_for_roles(["participant_preview"]) == "참가자 미리보기"
-    assert title_for_scopes(["contest.participant.preview"]) == "참가자 미리보기"
+    assert title_for_scopes(["contest.testcase.manage", "contest.notice.view"]) == "출제진"
+    assert title_for_scopes(["contest.notice.create", "contest.problem.review"]) == "검수진"
+    assert title_for_scopes(["contest.view", "contest.problem.test"]) == "검수진"
+    assert title_for_roles(["participant_preview"]) == "미리보기"
+    assert title_for_scopes(["contest.participant.preview"]) == "미리보기"
     assert title_for_scopes([]) is None
 
 
@@ -50,10 +50,10 @@ def workspace():
 
 @pytest.mark.parametrize(("roles", "title"), [
     (["master"], "마스터"),
-    (["problem_reviewer", "posts_manager", "problem_author"], "출제자"),
-    (["problem_reviewer", "audit_viewer"], "운영자"),
-    (["notices_manager"], "운영자"),
-    (["problem_reviewer"], "검수자"),
+    (["problem_reviewer", "posts_manager", "problem_author"], "출제진"),
+    (["problem_reviewer", "audit_viewer"], "검수진"),
+    (["notices_manager"], "운영진"),
+    (["problem_reviewer"], "검수진"),
 ])
 def test_staff_title_is_returned_in_submission_and_both_board_views(workspace, roles, title):
     w = workspace
@@ -88,9 +88,9 @@ def test_titles_follow_current_roles_for_the_submission_contest(workspace):
     other = store.create_contest("Other", "Test", "Test")
     store.upsert_contest_operator(other.contest_id, email, "손동열", ["master"])
     store.update_contest_operator(w["cid"], email, "손동열", ["problem_reviewer", "notices_manager"])
-    assert store.get_submission(submission.submission_id).submitted_by_title == "운영자"
+    assert store.get_submission(submission.submission_id).submitted_by_title == "검수진"
     question = store.get_contest_question(w["cid"], w["question"].contest_question_id)
-    assert next(item for item in question.answers if item.contest_answer_id == answer.contest_answer_id).created_by_title == "운영자"
+    assert next(item for item in question.answers if item.contest_answer_id == answer.contest_answer_id).created_by_title == "검수진"
 
 
 def test_participant_answers_and_submissions_have_no_staff_title(workspace):
@@ -111,8 +111,8 @@ def test_owner_titles_follow_delegation_in_existing_answers_and_submissions(work
     for account in [original, recipient]:
         submissions.append(store.create_operator_test_submission(w['cid'], w['problem'].problem_id, 'cpp17', 'int main(){}', submitted_by_email=str(account.email), submitted_by_name=account.display_name))
         answers.append(store.create_answer(w['cid'], w['question'].contest_question_id, '총괄 표시 확인', 'public', str(account.email)))
-    assert [item.submitted_by_title for item in submissions] == ['총괄', '출제자']
-    assert [item.created_by_title for item in answers] == ['총괄', '출제자']
+    assert [item.submitted_by_title for item in submissions] == ['총괄', '출제진']
+    assert [item.created_by_title for item in answers] == ['총괄', '출제진']
     result = client.post(f"/api/operator/contests/{w['cid']}/owner:transfer", headers=w['master'], json={'email': str(recipient.email)})
     assert result.status_code == 200, result.text
     assert [store.get_submission(item.submission_id).submitted_by_title for item in submissions] == ['마스터', '총괄']

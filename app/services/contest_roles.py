@@ -54,12 +54,12 @@ def title_for_roles(roles: list[str]) -> str | None:
     if "master" in roles:
         return "마스터"
     if "problem_author" in roles:
-        return "출제자"
-    if any(role in ROLE_PERMISSIONS and role not in {"problem_reviewer", "participant_preview"} for role in roles):
-        return "운영자"
+        return "출제진"
     if "problem_reviewer" in roles:
-        return "검수자"
-    return "참가자 미리보기" if "participant_preview" in roles else None
+        return "검수진"
+    if "participant_preview" in roles:
+        return "미리보기"
+    return "운영진" if any(role in ROLE_PERMISSIONS for role in roles) else None
 
 
 def title_for_scopes(scopes: list[str]) -> str | None:
@@ -70,15 +70,15 @@ def title_for_scopes(scopes: list[str]) -> str | None:
     author_scopes = {"contest.problem", "contest.problem.*", "contest.problem.view", "contest.problem.manage", "contest.problem.create", "contest.problem.update", "contest.problem.delete", "contest.problem.reorder"}
     author_groups = ("contest.problem.resource", "contest.testcase", "contest.generator")
     if any(scope in author_scopes or any(scope == group or scope.startswith(group + ".") for group in author_groups) for scope in scopes):
-        return "출제자"
+        return "출제진"
+    if any(scope in {"contest.problem.review", "contest.problem.test"} for scope in scopes):
+        return "검수진"
     non_operational = {"contest.view", "contest.problem.review", "contest.problem.test", "contest.participant.preview"}
     if any(scope.startswith("contest.") and scope not in non_operational for scope in scopes):
-        return "운영자"
-    if any(scope in {"contest.problem.review", "contest.problem.test"} for scope in scopes):
-        return "검수자"
+        return "운영진"
     if "contest.participant.preview" in scopes:
-        return "참가자 미리보기"
-    return "운영자" if "contest.view" in scopes else None
+        return "미리보기"
+    return "운영진" if "contest.view" in scopes else None
 
 
 class ContestOperatorUpdateRequest(BaseModel):

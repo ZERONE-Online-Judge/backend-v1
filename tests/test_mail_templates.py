@@ -205,10 +205,10 @@ def test_operator_assignment_retains_role_schedule_and_link(starts_at):
 
 @pytest.mark.parametrize("roles, role_title, path_prefix", [
     (["master"], "마스터", "/operator/contests/"),
-    (["problem_author", "settings_manager"], "출제자", "/operator/contests/"),
-    (["notices_manager"], "운영자", "/operator/contests/"),
-    (["problem_reviewer"], "검수자", "/operator/contests/"),
-    (["participant_preview"], "참가자 미리보기", "/contests/"),
+    (["problem_author", "settings_manager"], "출제진", "/operator/contests/"),
+    (["notices_manager"], "운영진", "/operator/contests/"),
+    (["problem_reviewer"], "검수진", "/operator/contests/"),
+    (["participant_preview"], "미리보기", "/contests/"),
 ])
 def test_operator_assignment_mail_links_to_accessible_role_route(
     roles, role_title, path_prefix, isolated_store, monkeypatch

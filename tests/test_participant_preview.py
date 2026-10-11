@@ -160,7 +160,7 @@ def test_preview_submission_runs_real_judge_without_official_submission_or_score
     operator_base = f"/api/operator/contests/{c['cid']}/submissions"
     listed = client.get(operator_base, headers=headers(master)).json()["data"]
     assert [item["submission_id"] for item in listed] == [sid]
-    assert listed[0]["submitted_by_title"] == "참가자 미리보기"
+    assert listed[0]["submitted_by_title"] == "미리보기"
     assert listed[0]["source_code"] is None
     detail = client.get(operator_base + "/" + sid, headers=headers(master))
     assert detail.status_code == 200
@@ -301,7 +301,7 @@ def test_operator_log_includes_preview_and_problem_review_with_scoped_access(pre
     payload = listed.json()
     assert payload["page"]["total_count"] == 2
     assert payload["data"][0]["submission_id"] == review_id
-    assert payload["data"][0]["submitted_by_title"] == "검수자"
+    assert payload["data"][0]["submitted_by_title"] == "검수진"
     second = client.get(base, params={"limit": 1, "cursor": payload["page"]["next_cursor"]}, headers=viewer_token).json()
     assert second["data"][0]["submission_id"] == preview_id
     for sid in [preview_id, review_id]:

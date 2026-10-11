@@ -96,12 +96,12 @@ def test_email_update_preserves_id_submissions_authorship_and_invalidates_old_lo
     assert submission.status_code == 200
     assert submission.json()["data"]["submitted_by_email"] == new_email
     assert submission.json()["data"]["submitted_by_name"] == c["target"].display_name
-    assert submission.json()["data"]["submitted_by_title"] == "출제자"
+    assert submission.json()["data"]["submitted_by_title"] == "출제진"
     updated_question = store.get_contest_question(c["cid"], question.contest_question_id)
     saved_answer = next(item for item in updated_question.answers if item.contest_answer_id == answer.contest_answer_id)
     assert saved_answer.created_by_email == new_email
     assert saved_answer.created_by_name == "New display name"
-    assert saved_answer.created_by_title == "출제자"
+    assert saved_answer.created_by_title == "출제진"
     assert store.contest_notices[notice.contest_notice_id].created_by_email == new_email
     with store._session() as db:
         assert db.get(OtpCodeRow, old_email) is None and db.get(OtpCodeRow, new_email) is None
