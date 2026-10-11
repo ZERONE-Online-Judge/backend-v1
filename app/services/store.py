@@ -89,6 +89,7 @@ from app.services.notice_countdown import LABELS as COUNTDOWN_LABELS, countdown_
 from app.services.security import decode_session_token, hash_password, new_session_token, token_hash
 from app.services.node_credentials import valid_node_credential
 from app.services.result_cache import cached_result
+from app.services import rejudging
 from app.services.storage import object_storage
 from app.services.mail_templates import (
     absolute_url,
@@ -1192,7 +1193,7 @@ class DbStore:
         with self._session() as db:
             rows = db.scalars(
                 select(JudgeJobRow)
-                .where(JudgeJobRow.submission_id.in_(submission_ids))
+                .where(JudgeJobRow.submission_id.in_(submission_ids), ~rejudging.is_job())
                 .order_by(JudgeJobRow.created_at.desc())
             ).all()
             jobs: dict[str, JudgeJob] = {}
@@ -1215,7 +1216,7 @@ class DbStore:
             }
 
     def pending_queue_ranks(self, contest_id: str | None = None) -> dict[str, int]:
-        filters = [JudgeJobRow.status == "pending"]
+        filters = [JudgeJobRow.status == "pending", ~rejudging.is_job()]
         if contest_id:
             filters.append(JudgeJobRow.contest_id == contest_id)
         with self._session() as db:
@@ -3429,12 +3430,15 @@ class DbStore:
 
     def delete_problem(self, contest_id: str, problem_id: str) -> Problem | None:
         with self._session() as db:
-            row = db.get(ProblemRow, problem_id)
+            row = db.scalar(select(ProblemRow).where(ProblemRow.problem_id == problem_id).with_for_update())
             if not row or row.contest_id != contest_id:
                 return None
+            if rejudging.active_for_problem(db, problem_id):
+                raise AppError(409, "rejudging_conflict", "이 문제의 재채점 작업을 먼저 반영하거나 취소해 주세요.")
 
             from app.services.verification_ai import delete_problem_reviews
             delete_problem_reviews(db, problem_id)
+            rejudging.delete_problem_history(db, problem_id)
             item = _problem(row)
             deleted_storage_keys: set[str] = set()
             testcase_set_ids = list(
@@ -3933,6 +3937,7 @@ class DbStore:
             jobs = db.scalars(select(JudgeJobRow).where(
                 JudgeJobRow.contest_id == contest_id,
                 JudgeJobRow.submission_id == submission_id,
+                ~rejudging.is_job(),
             ).order_by(JudgeJobRow.created_at.desc()).with_for_update()).all()
             submission = db.scalar(select(SubmissionRow).where(
                 SubmissionRow.contest_id == contest_id,
@@ -3940,6 +3945,8 @@ class DbStore:
             ).with_for_update())
             if not submission:
                 raise AppError(404, "not_found", "제출을 찾을 수 없습니다.")
+            if rejudging.active_for_submission(db, submission_id):
+                raise AppError(409, "rejudging_conflict", "진행 중인 재채점 작업을 먼저 반영하거나 취소해 주세요.")
             from app.orm_models import VerificationTrialRow
             if db.get(VerificationTrialRow, submission_id):
                 raise AppError(409, "verification_trial_immutable", "AI 실행 기록은 보존됩니다. 검증 요청창에서 다시 실행해 주세요.")
@@ -5149,7 +5156,7 @@ class DbStore:
             rows = db.scalars(
                 select(JudgeJobRow)
                 .where(JudgeJobRow.status == JudgeJobStatus.PENDING.value)
-                .order_by(sql_case((is_ai_trial, 1), else_=0), JudgeJobRow.queue_position)
+                .order_by(sql_case((is_ai_trial, 2), (rejudging.is_job(), 1), else_=0), JudgeJobRow.queue_position)
                 .limit(safe_max_count)
                 .with_for_update(skip_locked=True)
             ).all()
@@ -5160,6 +5167,10 @@ class DbStore:
                 row.leased_at = now_utc()
                 submission = db.get(SubmissionRow, row.submission_id)
                 if submission:
+                    rejudging_item = rejudging.item_for_job(db, row.judge_job_id)
+                    if rejudging_item:
+                        jobs.append(rejudging.claim_payload(db, row, submission, rejudging_item))
+                        continue
                     problem = db.get(ProblemRow, submission.problem_id)
                     active_set = db.scalar(
                         select(TestcaseSetRow).where(TestcaseSetRow.problem_id == submission.problem_id, TestcaseSetRow.is_active.is_(True))
@@ -5288,6 +5299,8 @@ class DbStore:
             digest.update(case.testcase_id.encode("utf-8"))
             digest.update(case.input_sha256.encode("utf-8"))
             digest.update(case.output_sha256.encode("utf-8"))
+            digest.update(json.dumps([case.display_order, case.time_limit_ms_override,
+                case.memory_limit_mb_override]).encode("utf-8"))
         for role, asset in sorted(role_assets, key=lambda item: (item[0], item[1].asset_id)):
             digest.update(role.encode("utf-8"))
             digest.update(asset.asset_id.encode("utf-8"))
@@ -5515,6 +5528,8 @@ class DbStore:
             row.assigned_node_id = None
             row.lease_token = None
             row.leased_at = None
+            if rejudging.requeue(db, row):
+                continue
             submission = db.get(SubmissionRow, row.submission_id)
             if submission and submission.status in {SubmissionStatus.PREPARING.value, SubmissionStatus.JUDGING.value}:
                 submission.status = SubmissionStatus.WAITING.value
@@ -5561,6 +5576,12 @@ class DbStore:
             submission = db.get(SubmissionRow, job.submission_id)
             if not submission:
                 return None
+            rejudging_item = rejudging.item_for_job(db, job.judge_job_id)
+            if rejudging_item:
+                rejudging.record_progress(rejudging_item, status, progress_current, progress_total)
+                job.leased_at = now_utc()
+                db.commit()
+                return rejudging.candidate_submission(submission, rejudging_item), _job(job)
             submission.status = status.value
             submission.progress_total = max(progress_total, 0) if progress_total is not None else None
             if progress_current is None:
@@ -5612,6 +5633,15 @@ class DbStore:
             submission = db.get(SubmissionRow, job.submission_id)
             if not submission:
                 return None
+            rejudging_item = rejudging.item_for_job(db, job.judge_job_id)
+            if rejudging_item:
+                rejudging.record_result(rejudging_item, final_status, compile_message, judge_message,
+                    failed_testcase_order, runtime_ms if settings.feature_submission_runtime_metrics else None,
+                    memory_kb if settings.feature_submission_runtime_metrics else None)
+                job.status = JudgeJobStatus.SUCCEEDED.value
+                job.lease_token = None
+                db.commit()
+                return rejudging.candidate_submission(submission, rejudging_item), _job(job)
             submission.status = final_status.value
             submission.compile_message = compile_message
             submission.judge_message = judge_message

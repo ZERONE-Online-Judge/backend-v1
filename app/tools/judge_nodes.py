@@ -26,12 +26,15 @@ def update_credential(name: str, *, enabled: bool | None = None, secret: str | N
             jobs = db.scalars(select(JudgeJobRow).where(
                 JudgeJobRow.assigned_node_id == node.judge_node_id,
                 JudgeJobRow.status == JudgeJobStatus.RUNNING.value,
-            ).with_for_update()).all()
+            ).order_by(JudgeJobRow.judge_job_id).with_for_update()).all()
             for job in jobs:
                 job.status = JudgeJobStatus.PENDING.value
                 job.assigned_node_id = None
                 job.lease_token = None
                 job.leased_at = None
+                from app.services.rejudging import requeue
+                if requeue(db, job):
+                    continue
                 submission = db.get(SubmissionRow, job.submission_id)
                 if submission:
                     submission.status = SubmissionStatus.WAITING.value

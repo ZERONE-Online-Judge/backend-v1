@@ -1782,3 +1782,69 @@ async def create_verified_testcase_set(
         raise AppError(422, "testcase_verification_failed", f"unexpected verifier error: {error}")
     _schedule_bundle_warm(background_tasks, contest_id, problem_id)
     return ok(request, result)
+
+
+class RejudgingCreateRequest(BaseModel):
+    submission_id: str | None = Field(default=None, min_length=1, max_length=36)
+    problem_id: str | None = Field(default=None, min_length=1, max_length=36)
+    team_id: str | None = Field(default=None, min_length=1, max_length=36)
+    language: Literal['c99', 'cpp17', 'python313', 'java8'] | None = None
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator('reason')
+    @classmethod
+    def nonblank_reason(cls, value):
+        if not value.strip():
+            raise ValueError('재채점 사유를 입력해 주세요.')
+        return value.strip()
+
+
+def _rejudging_authority(request, contest_id):
+    account = require_contest_staff(request, contest_id, 'contest.submission.view')
+    require_contest_staff(request, contest_id, 'contest.problem.test')
+    return account
+
+
+@router.post('/operator/contests/{contest_id}/rejudgings')
+async def create_rejudging(contest_id: str, payload: RejudgingCreateRequest, request: Request):
+    from app.services import rejudging
+    account = _rejudging_authority(request, contest_id)
+    if bool(payload.submission_id) == bool(payload.problem_id) or (payload.submission_id and (payload.team_id or payload.language)):
+        raise AppError(422, 'rejudging_scope_invalid', '개별 제출 또는 문제 전체 중 하나를 선택해 주세요.')
+    result = await asyncio.to_thread(rejudging.create, store, contest_id, **payload.model_dump(), actor=account)
+    request.state.audit_rejudge = {key: result[key] for key in ('rejudging_id', 'problem_id', 'problem_code', 'problem_title', 'reason', 'scope', 'total')}
+    request.state.audit_rejudge['operation'] = 'create'
+    return ok(request, result)
+
+
+@router.get('/operator/contests/{contest_id}/rejudgings')
+async def list_rejudgings(contest_id: str, request: Request, offset: int = 0, limit: int = 20):
+    from app.services import rejudging
+    require_contest_staff(request, contest_id, 'contest.submission.view')
+    return ok(request, await asyncio.to_thread(rejudging.list_batches, store, contest_id, max(0, offset), max(1, min(limit, 50))))
+
+
+@router.get('/operator/contests/{contest_id}/rejudgings/{rejudging_id}')
+async def rejudging_detail(contest_id: str, rejudging_id: str, request: Request, offset: int = 0, limit: int = 50):
+    from app.services import rejudging
+    require_contest_staff(request, contest_id, 'contest.submission.view')
+    return ok(request, await asyncio.to_thread(rejudging.detail, store, contest_id, rejudging_id, max(0, offset), max(1, min(limit, 100))))
+
+
+async def _decide_rejudging(contest_id, rejudging_id, action, request):
+    from app.services import rejudging
+    account = _rejudging_authority(request, contest_id)
+    result = await asyncio.to_thread(rejudging.decide, store, contest_id, rejudging_id, action, account)
+    request.state.audit_rejudge = {key: result[key] for key in ('rejudging_id', 'problem_id', 'problem_code', 'problem_title', 'reason', 'total', 'changed_verdicts')}
+    request.state.audit_rejudge['operation'] = action
+    return ok(request, result)
+
+
+@router.post('/operator/contests/{contest_id}/rejudgings/{rejudging_id}/apply')
+async def apply_rejudging(contest_id: str, rejudging_id: str, request: Request):
+    return await _decide_rejudging(contest_id, rejudging_id, 'apply', request)
+
+
+@router.post('/operator/contests/{contest_id}/rejudgings/{rejudging_id}/cancel')
+async def cancel_rejudging(contest_id: str, rejudging_id: str, request: Request):
+    return await _decide_rejudging(contest_id, rejudging_id, 'cancel', request)

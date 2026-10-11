@@ -197,6 +197,39 @@ class JudgeJobRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
+class RejudgingRow(Base):
+    __tablename__ = "rejudgings"
+
+    rejudging_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    contest_id: Mapped[str] = mapped_column(ForeignKey("contests.contest_id"), index=True)
+    problem_id: Mapped[str] = mapped_column(ForeignKey("problems.problem_id"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    scope: Mapped[dict] = mapped_column(JSON)
+    judge_context: Mapped[dict] = mapped_column(JSON)
+    context_hash: Mapped[str] = mapped_column(String(64))
+    requested_by_name: Mapped[str] = mapped_column(String(120))
+    requested_by_email: Mapped[str] = mapped_column(String(255))
+    decided_by_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RejudgingItemRow(Base):
+    __tablename__ = "rejudging_items"
+    __table_args__ = (Index("ix_rejudging_items_batch_submission", "rejudging_id", "submission_id"),)
+
+    rejudging_item_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    rejudging_id: Mapped[str] = mapped_column(ForeignKey("rejudgings.rejudging_id"), index=True)
+    submission_id: Mapped[str] = mapped_column(ForeignKey("submissions.submission_id"))
+    judge_job_id: Mapped[str] = mapped_column(ForeignKey("judge_jobs.judge_job_id"), unique=True)
+    # A nullable unique key prevents overlapping sessions, including ready ones.
+    active_submission_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
+    original_result: Mapped[dict] = mapped_column(JSON)
+    candidate_result: Mapped[dict] = mapped_column(JSON)
+    verification_context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class ServiceNoticeRow(Base):
     __tablename__ = "service_notices"
 
