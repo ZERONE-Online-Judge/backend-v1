@@ -15,7 +15,7 @@ client = TestClient(app)
 
 
 def login(email):
-    result = client.post('/api/auth/general/otp/verify', json={
+    result = TestClient(app).post('/api/auth/general/otp/verify', json={
         'email': email, 'otp_code': '', 'force_new_session': True,
     })
     assert result.status_code == 200, result.text

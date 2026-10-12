@@ -21,7 +21,7 @@ def email():
 
 
 def login(address):
-    response = client.post('/api/auth/general/otp/verify', json={"email": address, "otp_code": "", "force_new_session": True})
+    response = TestClient(app).post('/api/auth/general/otp/verify', json={"email": address, "otp_code": "", "force_new_session": True})
     assert response.status_code == 200, response.text
     return {"Authorization": "Bearer " + response.json()["data"]["operator_session"]["access_token"]}
 

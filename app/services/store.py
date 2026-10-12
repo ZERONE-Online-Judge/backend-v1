@@ -1716,6 +1716,9 @@ class DbStore:
     def _has_general_login_identity(self, db: Session, email: str) -> bool:
         if is_internal_mail_recipient(email):
             return False
+        from app.orm_models import IdentityAccountRow
+        if db.scalar(select(IdentityAccountRow).where(IdentityAccountRow.email == email.lower())):
+            return True
         account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
         if account:
             return True
@@ -1733,9 +1736,9 @@ class DbStore:
         )
         return member is not None
 
-    def create_general_otp(self, email: str) -> str | None:
+    def create_general_otp(self, email: str, allow_new: bool = False) -> str | None:
         with self._session() as db:
-            if not self._has_general_login_identity(db, email):
+            if is_internal_mail_recipient(email) or (not allow_new and not self._has_general_login_identity(db, email)):
                 return None
             code = f"{secrets.randbelow(1_000_000):06d}"
             row = db.get(OtpCodeRow, email)
@@ -1771,6 +1774,8 @@ class DbStore:
             return self._otp_retry_after_seconds(row, GENERAL_OTP_SCOPE)
 
     def _general_profile(self, db: Session, email: str, issue_operator_session: bool = False) -> dict | None:
+        from app.orm_models import IdentityAccountRow
+        identity = db.scalar(select(IdentityAccountRow).where(IdentityAccountRow.email == email.lower()))
         participant_contests = []
         account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == email))
         members = db.scalars(
@@ -1830,16 +1835,22 @@ class DbStore:
                     "default_redirect": "/admin" if account.is_service_master else "/operator",
                 }
 
-        if not members and not operator_contests and not account:
+        if not members and not operator_contests and not account and not identity:
             return None
         return {
-            "account": {"email": email, "display_name": display_name or email},
+            "account": {"email": email, "display_name": identity.display_name if identity else display_name or email, "account_id": identity.account_id if identity else None},
             "participant_contests": sorted(participant_contests, key=lambda item: item["contest"]["start_at"]),
             "operator_contests": sorted(operator_contests, key=lambda item: item["contest"]["start_at"]),
             "operator_session": operator_session,
         }
 
     def _issue_general_session(self, db: Session, email: str, profile: dict) -> dict:
+        from app.orm_models import IdentityAccountRow
+        identity = db.scalar(select(IdentityAccountRow).where(IdentityAccountRow.email == email.lower()))
+        if not identity:
+            identity = IdentityAccountRow(email=email.lower(),display_name=profile["account"]["display_name"])
+            db.add(identity)
+            db.flush()
         access_token = new_session_token("general_access", email, settings.staff_access_token_ttl_seconds)
         refresh_token = new_session_token("general_refresh", email, settings.staff_refresh_token_ttl_seconds)
         issued_at = now_utc()
@@ -1949,11 +1960,17 @@ class DbStore:
 
     def verify_general_otp(self, email: str, otp_code: str, force_new_session: bool = False) -> dict | None:
         with self._session() as db:
-            otp = db.get(OtpCodeRow, email)
+            otp = db.scalar(select(OtpCodeRow).where(OtpCodeRow.email == email).with_for_update())
             demo_bypass = settings.allow_empty_otp and otp_code == ""
-            if not demo_bypass and (not otp or otp.contest_id != GENERAL_OTP_SCOPE or otp.code != otp_code or _aware(otp.expires_at) <= now_utc()):
+            if not demo_bypass and (not otp or otp.verified_at is not None or otp.contest_id != GENERAL_OTP_SCOPE or otp.code != otp_code or _aware(otp.expires_at) <= now_utc()):
                 return None
             profile = self._general_profile(db, email, issue_operator_session=False)
+            if not profile and not demo_bypass:
+                from app.orm_models import IdentityAccountRow
+                identity = IdentityAccountRow(email=email.lower(),display_name=email.split('@')[0])
+                db.add(identity)
+                db.flush()
+                profile = self._general_profile(db,email,issue_operator_session=False)
             if not profile:
                 return None
             conflict = self._active_login_session_summary(db, email)
@@ -1962,7 +1979,12 @@ class DbStore:
             if conflict and force_new_session:
                 self._revoke_active_login_sessions_for_email(db, email)
             if otp:
-                otp.verified_at = now_utc()
+                if not demo_bypass:
+                    consumed = db.execute(update(OtpCodeRow).where(OtpCodeRow.email==email,OtpCodeRow.code==otp_code,OtpCodeRow.verified_at.is_(None)).values(verified_at=now_utc()))
+                    if not consumed.rowcount:
+                        return None
+                else:
+                    otp.verified_at = now_utc()
             return self._issue_general_session(db, email, profile)
 
     def get_general_by_access_token(self, access_token: str) -> dict | None:

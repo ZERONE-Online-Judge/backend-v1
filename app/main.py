@@ -11,9 +11,10 @@ from app import orm_models
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from app.routers import admin, analytics, auth, internal_judge, operator, participant, public, presentation, seo, seo_documents, storage
-from app.routers import problem_archives, verification_ai, editor_bridge, editor_library, editor_mail
+from app.routers import problem_archives, verification_ai, editor_bridge, editor_library, editor_mail, editor_auth
 from app.services.errors import AppError
 from app.services.audit_context import OPERATOR_PATH, VERIFICATION_PATH, operator_snapshot, verification_snapshot
 from app.services.authz import bearer_token
@@ -29,9 +30,12 @@ AUDIT_REDACTED_KEYS = {
     "access_token",
     "node_secret",
     "password",
+    "new_password",
+    "code",
     "otp_code",
     "secret",
     "refresh_token",
+    "session_token",
     "source_code",
     "token",
 }
@@ -68,11 +72,19 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     )
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    # Validation errors must not echo passwords, OTPs, tokens or uploaded code.
+    return JSONResponse(status_code=422,content={"detail":[{key:item[key] for key in ("loc","msg","type") if key in item} for item in exc.errors()]})
+
+
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     request.state.request_id = request.headers.get("x-request-id", f"req_{uuid4().hex}")
     response = await call_next(request)
     response.headers["x-request-id"] = request.state.request_id
+    if request.url.path.startswith(('/api/auth/','/api/editor/auth/')):
+        response.headers['Cache-Control']='no-store'
     return response
 
 
@@ -429,6 +441,7 @@ app.include_router(problem_archives.router, prefix="/api")
 app.include_router(editor_bridge.router, prefix="/api")
 app.include_router(editor_library.router, prefix="/api")
 app.include_router(editor_mail.router, prefix="/api")
+app.include_router(editor_auth.router, prefix="/api")
 app.include_router(verification_ai.router, prefix="/api")
 app.include_router(internal_judge.router, prefix="/api")
 app.include_router(storage.router, prefix="/api")

@@ -4,6 +4,7 @@ import time
 from app.services.usage_ingest import purge_usage_events
 from app.services.log_retention import cleanup_expired_logs
 from app.services.notifications import cleanup_expired_notifications
+from app.services.auth_cleanup import cleanup_expired_auth
 
 from app.services.store import store
 from app.settings import settings
@@ -13,7 +14,15 @@ async def run_forever() -> None:
     next_usage_cleanup = 0.0
     next_log_cleanup = 0.0
     next_notification_cleanup = 0.0
+    next_auth_cleanup = 0.0
     while True:
+        if time.monotonic() >= next_auth_cleanup:
+            try:
+                removed = await asyncio.to_thread(cleanup_expired_auth)
+                next_auth_cleanup = time.monotonic() + (60 if any(count >= 1000 for count in removed.values()) else 3600)
+            except Exception as exc:
+                print(f"[notice-worker] authentication cleanup failed: {type(exc).__name__}", flush=True)
+                next_auth_cleanup = time.monotonic() + 60
         if time.monotonic() >= next_notification_cleanup:
             try:
                 removed = await asyncio.to_thread(cleanup_expired_notifications, store)

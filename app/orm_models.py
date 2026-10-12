@@ -365,6 +365,32 @@ class AuthRateLimitRow(Base):
     count: Mapped[int] = mapped_column(Integer, default=1)
 
 
+class AccountPasswordRow(Base):
+    __tablename__ = "account_passwords"
+    email: Mapped[str] = mapped_column(String(254), primary_key=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    updated_at: Mapped[int] = mapped_column(Integer)
+
+
+class IdentityAccountRow(Base):
+    __tablename__ = "identity_accounts"
+    account_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class PasswordChallengeRow(Base):
+    __tablename__ = "password_challenges"
+    email: Mapped[str] = mapped_column(String(254), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(16), primary_key=True)
+    code_digest: Mapped[str] = mapped_column(String(64))
+    expected_password_hash: Mapped[str] = mapped_column(String(255))
+    requested_at: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[int] = mapped_column(Integer, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class EditorImportRow(Base):
     __tablename__ = "editor_problem_imports"
     operation_key: Mapped[str] = mapped_column(String(64), primary_key=True)

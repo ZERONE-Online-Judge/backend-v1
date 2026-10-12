@@ -103,7 +103,7 @@ def context(tmp_path, monkeypatch):
     ]:
         email = f"{name}-{uuid4().hex}@example.com"
         store.upsert_contest_operator(cid, email, name, [role])
-        result = client.post(
+        result = TestClient(app).post(
             "/api/auth/general/otp/verify",
             json={"email": email, "otp_code": "", "force_new_session": True},
         )

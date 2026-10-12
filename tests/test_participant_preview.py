@@ -20,7 +20,7 @@ client = TestClient(app)
 
 
 def general_login(email):
-    response = client.post("/api/auth/general/otp/verify", json={"email": email, "otp_code": "", "force_new_session": True})
+    response = TestClient(app).post("/api/auth/general/otp/verify", json={"email": email, "otp_code": "", "force_new_session": True})
     assert response.status_code == 200, response.text
     return response.json()["data"]
 

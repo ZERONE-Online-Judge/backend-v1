@@ -30,3 +30,13 @@ def consume(scope, identity, limit, seconds):
         db.commit()
         if not increment.rowcount:
             raise AppError(429, 'auth_rate_limited', '요청이 많습니다. 잠시 후 다시 시도하세요.')
+
+
+def check_otp(email,client_ip):
+    from app.orm_models import OtpCodeRow
+    from app.settings import settings
+    consume('otp-verify-ip',client_ip,200,300)
+    with SessionLocal() as db:
+        row=db.get(OtpCodeRow,email.lower())
+        epoch=row.created_at.isoformat() if row else 'missing'
+    consume('otp-verify-proof',email.lower()+':'+epoch,5,max(300,settings.otp_ttl_seconds))

@@ -63,12 +63,13 @@ def set_contest_mutable(contest_id: str) -> None:
 
 @pytest.fixture(autouse=True)
 def reset_demo_contest_window():
+    client.cookies.clear()
     set_contest_running(first_contest_id())
     yield
 
 
 def staff_tokens(email: str = "test3@zoj.com") -> dict:
-    response = client.post(
+    response = TestClient(app).post(
         "/api/auth/general/otp/verify",
         json={"email": email, "otp_code": "", "force_new_session": True},
     )

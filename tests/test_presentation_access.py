@@ -19,7 +19,7 @@ client = TestClient(app)
 
 
 def staff(email):
-    r = client.post('/api/auth/general/otp/verify', json={'email': email, 'otp_code': '', 'force_new_session': True})
+    r = TestClient(app).post('/api/auth/general/otp/verify', json={'email': email, 'otp_code': '', 'force_new_session': True})
     assert r.status_code == 200, r.text
     return {'Authorization': 'Bearer ' + r.json()['data']['access_token']}
 

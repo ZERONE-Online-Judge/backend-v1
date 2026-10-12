@@ -17,7 +17,7 @@ from app.services.errors import AppError
 from app.services.store import _staff
 
 
-def identity(request, *, secret_override=None, purpose="zoj-editor-v1"):
+def identity(request, *, secret_override=None, purpose="zoj-editor-v1", consume_nonce=True):
     secret = secret_override if secret_override is not None else (settings.editor_bridge_secret.get_secret_value() if settings.editor_bridge_secret else "")
     if len(secret) < 32:
         raise AppError(503, "editor_bridge_disabled", "Editor 연동이 아직 설정되지 않았습니다.")
@@ -39,6 +39,8 @@ def identity(request, *, secret_override=None, purpose="zoj-editor-v1"):
         email = str(TypeAdapter(EmailStr).validate_python(email)).lower()
     except (ValueError, UnicodeError):
         raise AppError(401, "editor_signature_invalid", "Editor 계정 정보가 유효하지 않습니다.")
+    if not consume_nonce:
+        return email, content_hash
     with SessionLocal() as db:
         db.execute(delete(EditorNonceRow).where(EditorNonceRow.expires_at < int(time.time())))
         db.add(EditorNonceRow(nonce=nonce, expires_at=int(time.time()) + 180))
