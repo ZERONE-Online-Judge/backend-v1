@@ -363,7 +363,7 @@ def export_archive(contest_id: str, problem_id: str):
         raise
 
 
-def import_archive(source, contest_id: str, division_id: str, problem_code: str, display_order: int | None = None):
+def import_archive(source, contest_id: str, division_id: str, problem_code: str, display_order: int | None = None, *, editor_context: dict | None = None):
     code = problem_code.strip()
     if not code or len(code) > 16 or any(ord(c) < 32 for c in code):
         raise invalid('문제 번호는 1~16자로 입력해 주세요.')
@@ -381,6 +381,19 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
                 if contest.status == 'running' or (contest.status not in {'draft', 'schedule_tbd', 'ended', 'finalized', 'archived'} and _aware(contest.start_at) <= now < _aware(contest.end_at)):
                     raise AppError(409, 'contest_locked', '대회 진행 중에는 문제를 가져올 수 없습니다.')
             ensure_unlocked()
+            if editor_context:
+                from app.services.editor_bridge import staff
+                from app.services.contest_roles import title_for_roles
+                from app.orm_models import EditorImportRow, OperationalAuditLogRow
+                account = staff(db, editor_context["email"], contest_id, lock=True)
+                receipt = db.get(EditorImportRow, editor_context["operation_key"])
+                if receipt:
+                    if receipt.request_digest != editor_context["request_digest"]:
+                        raise AppError(409, "editor_operation_conflict", "같은 전송 요청의 내용이 변경되었습니다.")
+                    existing = db.get(ProblemRow, receipt.problem_id)
+                    if not existing or existing.contest_id != contest_id:
+                        raise not_found()
+                    return Problem(**{field: getattr(existing, field) for field in Problem.model_fields}).model_dump(mode='json')
             if db.scalar(select(ProblemRow.problem_id).where(ProblemRow.contest_id == contest_id, ProblemRow.division_id == division_id, ProblemRow.problem_code == code)):
                 raise AppError(409, 'problem_archive_code_conflict', '이 참가 유형에 같은 문제 번호가 있습니다. 다른 번호를 입력해 주세요.')
             pid = str(uuid4())
@@ -435,6 +448,13 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
             if any(item.is_active for item in manifest.testcase_sets):
                 db.add(BundleWarmQueueItemRow(contest_id=contest_id, problem_id=pid))
             ensure_unlocked()
+            if editor_context:
+                db.add(EditorImportRow(operation_key=editor_context["operation_key"], request_digest=editor_context["request_digest"], email=account.email, problem_id=pid))
+                db.add(OperationalAuditLogRow(scope="operator", action="Editor 문제 가져오기", method="POST",
+                    path=f"/api/editor/contests/{contest_id}/imports", status_code=200, actor_email=account.email,
+                    actor_name=account.display_name, actor_role="마스터" if account.is_service_master else title_for_roles(account.contest_roles.get(contest_id, [])), contest_id=contest_id, request_id=editor_context["request_id"],
+                    details=json.dumps({"problem_id": pid, "title": problem.title, "problem_code": code,
+                        "division_id": division_id, "testcase_count": sum(len(s.testcases) for s in manifest.testcase_sets)}, ensure_ascii=False)))
             db.commit()
             committed = True
             return Problem(**{field: getattr(problem, field) for field in Problem.model_fields}).model_dump(mode='json')
