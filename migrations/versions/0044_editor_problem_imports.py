@@ -1,8 +1,8 @@
 """Record signed Editor requests and atomic import receipts."""
 from alembic import op
 import sqlalchemy as sa
-revision = "0040_editor_problem_imports"
-down_revision = "0039_restore_verification_runs"
+revision = "0044_editor_problem_imports"
+down_revision = "0043_notification_expiry"
 branch_labels = None
 depends_on = None
 
