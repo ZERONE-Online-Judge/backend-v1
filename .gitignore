@@ -12,3 +12,4 @@ htmlcov/
 deploy/nginx/api-upstream.conf
 deploy/env/*.env
 deploy/env/judge-tls/
+deploy/env/editor-tls/

@@ -13,6 +13,7 @@ x-api-service: &api-service
   logging: *app-logging
   volumes:
     - ${FRONTEND_DIST_PATH:-../../frontend/dist}:/frontend:ro
+    - ./env/editor-tls:/editor-certs:ro
   depends_on:
     migrate:
       condition: service_completed_successfully
