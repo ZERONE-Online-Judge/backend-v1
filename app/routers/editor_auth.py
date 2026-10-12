@@ -33,7 +33,7 @@ class Call(BaseModel):
     email: EmailStr | None = None
     session_token: str | None = Field(default=None, max_length=4096)
     password: str | None = Field(default=None, min_length=1, max_length=128)
-    new_password: str | None = Field(default=None, min_length=15, max_length=128)
+    new_password: str | None = Field(default=None, min_length=8, max_length=128)
     code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
     client_ip: str = Field(default="127.0.0.1", max_length=64)
     force_new_session: bool = False

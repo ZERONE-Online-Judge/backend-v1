@@ -3,27 +3,23 @@
 import hashlib
 import hmac
 import secrets
+import string
 
 ROUNDS = 600_000
 
 
 def validate_password(password):
-    if not 15 <= len(password) <= 128 or not password.strip():
-        raise ValueError(
-            "비밀번호는 15~128자로 입력하세요. 공백과 한글을 사용할 수 있습니다."
-        )
-    if password.lower() in {
-        "123456789012345",
-        "1234567890123456",
-        "passwordpassword",
-        "qwertyuiopasdfgh",
-        "aaaaaaaaaaaaaaa",
-    }:
-        raise ValueError("너무 흔한 비밀번호입니다. 다른 비밀번호를 사용하세요.")
-    try:
-        password.encode("utf-8")
-    except UnicodeError:
-        raise ValueError("비밀번호의 문자를 확인하세요.")
+    if not 8 <= len(password) <= 128:
+        raise ValueError("비밀번호는 8~128자로 입력하세요.")
+    allowed = string.ascii_letters + string.digits + string.punctuation
+    if any(c not in allowed for c in password):
+        raise ValueError("영문·숫자·특수문자만 사용할 수 있습니다. 한글과 공백은 제외하세요.")
+    if not any(c in string.ascii_letters for c in password):
+        raise ValueError("영문을 1개 이상 포함하세요. 대소문자를 구분합니다.")
+    if not any(c in string.digits for c in password):
+        raise ValueError("숫자를 1개 이상 포함하세요.")
+    if not any(c in string.punctuation for c in password):
+        raise ValueError("특수문자를 1개 이상 포함하세요.")
     return password
 
 
@@ -36,7 +32,7 @@ def hash_password(password):
     return f"pbkdf2-sha256-v1${ROUNDS}${salt}${digest}"
 
 
-DUMMY = hash_password("unknown account dummy password")
+DUMMY = hash_password("Unknown1!DummyPassword")
 
 
 def verify_password(password, encoded):

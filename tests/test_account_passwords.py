@@ -1,5 +1,7 @@
 import re
 import time
+import hashlib
+import pytest
 from uuid import uuid4
 from sqlalchemy import delete, select
 from app.database import SessionLocal
@@ -9,12 +11,41 @@ from app.orm_models import (
     AuthRateLimitRow,
     MailQueueItemRow,
 )
-from app.services.account_passwords import verify_password
+from app.services.account_passwords import verify_password, validate_password, hash_password, ROUNDS
 from app.services.store import store
 from test_problem_archives import client, context
 from test_editor_bridge import email_for
 
-PASSWORD = "우리 서비스의 안전한 긴 비밀번호 2026"
+PASSWORD = "ZojTes1!"
+
+
+@pytest.mark.parametrize('value', ['abcdef1!', 'ABCDEF1!', 'aB12345_', 'Zoj1234@', 'A1!' + 'a' * 125])
+def test_new_password_policy_accepts_each_case_and_ascii_symbols(value):
+    assert validate_password(value) == value
+
+
+@pytest.mark.parametrize('value', ['abcde1!', 'abcdef12', 'abcdefg!', '1234567!', '한글abcd1!', 'abcd 12!', 'abcd\t12!', 'abcd１２!', 'abcd12！', 'A1!' + 'a' * 126])
+def test_new_password_policy_rejects_missing_conditions(value, context):
+    with pytest.raises(ValueError):
+        validate_password(value)
+    for path in ['/api/auth/general/password/confirm', '/api/auth/general/password/reset/confirm']:
+        response = client.post(path, headers=context['owner'], json={'otp_code': '123456', 'new_password': value, **({'email': email_for(context)} if '/reset/' in path else {})})
+        assert response.status_code == 422
+        assert value not in response.text
+    from app.routers.editor_auth import Call
+    with pytest.raises(ValueError):
+        Call(new_password=value)
+
+
+def test_password_comparison_is_case_sensitive_and_keeps_legacy_credentials():
+    encoded = hash_password('Abcdef1!')
+    assert verify_password('Abcdef1!', encoded)
+    assert not verify_password('abcdef1!', encoded)
+    legacy = '우리 서비스의 기존 비밀번호 2026'
+    salt = '1' * 32
+    digest = hashlib.pbkdf2_hmac('sha256', legacy.encode(), bytes.fromhex(salt), ROUNDS).hex()
+    old_hash = f'pbkdf2-sha256-v1${ROUNDS}${salt}${digest}'
+    assert verify_password(legacy, old_hash)
 
 
 def test_login_options_only_returns_the_password_method(context):
@@ -134,7 +165,7 @@ def test_reset_uses_independent_single_use_proof_and_hides_registration(context)
     )
     assert known.json()["data"] == unknown.json()["data"]
     code = code_for(email)
-    values = {"email": email, "otp_code": code, "new_password": PASSWORD + " changed"}
+    values = {"email": email, "otp_code": code, "new_password": PASSWORD + "Changed"}
     assert (
         client.post(
             "/api/auth/general/password/reset/confirm",
@@ -160,7 +191,7 @@ def test_reset_uses_independent_single_use_proof_and_hides_registration(context)
     assert (
         client.post(
             "/api/auth/general/password/login",
-            json={"email": email, "password": PASSWORD + " changed"},
+            json={"email": email, "password": PASSWORD + "Changed"},
         ).status_code
         == 200
     )

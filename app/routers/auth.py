@@ -118,7 +118,7 @@ class GeneralPasswordLoginRequest(BaseModel):
 class PasswordConfirm(BaseModel):
     model_config = ConfigDict(extra="forbid")
     otp_code: str = Field(pattern=r"^[0-9]{6}$")
-    new_password: str = Field(min_length=15, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
     @field_validator("new_password")
     @classmethod
