@@ -694,3 +694,28 @@ class VerificationTaskRow(Base):
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class EditorJudgeRunRow(Base):
+    """Standalone Editor work; never a contest submission or scoreboard entry."""
+    __tablename__ = "editor_judge_runs"
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    operation_key: Mapped[str] = mapped_column(String(64), unique=True)
+    owner_id: Mapped[str] = mapped_column(String(36), index=True)
+    dataset_key: Mapped[str] = mapped_column(String(64), default="", index=True)
+    project_id: Mapped[str] = mapped_column(String(32))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON)
+    storage_keys: Mapped[list] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(32), default="waiting", index=True)
+    testcase_count: Mapped[int] = mapped_column(Integer)
+    progress_current: Mapped[int] = mapped_column(Integer, default=0)
+    assigned_node_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    node_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    leased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

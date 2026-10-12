@@ -8,6 +8,7 @@ from app.settings import settings
 from app.services.errors import AppError, not_found
 from app.services.responses import ok
 from app.services.store import store
+from app.services import editor_judging
 
 router = APIRouter(tags=["internal-judge"])
 
@@ -135,6 +136,11 @@ async def claim(node_id: str, payload: ClaimRequest, request: Request):
     while True:
         try:
             jobs = await asyncio.to_thread(store.claim_jobs, node_id, payload.node_secret, payload.max_count)
+            if jobs is not None:
+                # Existing contest/rejudge/AI work is always claimed first.
+                remaining = min(payload.max_count, settings.judge_claim_max_batch_size) - len(jobs)
+                if remaining > 0:
+                    jobs += await asyncio.to_thread(editor_judging.claim_jobs, node_id, payload.node_secret, remaining, session_factory=store._session)
         except ValueError:
             raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
         if jobs is None:
@@ -165,6 +171,16 @@ async def report_result(job_id: str, payload: ResultRequest, request: Request):
             payload.runtime_ms,
             payload.memory_kb,
         )
+        if result is None:
+            editor_result = await asyncio.to_thread(
+                editor_judging.update, job_id, payload.node_secret, payload.lease_token,
+                result={"final_status": payload.final_status.value, "compile_message": payload.compile_message,
+                        "judge_message": payload.judge_message, "failed_testcase_order": payload.failed_testcase_order,
+                        "runtime_ms": payload.runtime_ms, "memory_kb": payload.memory_kb},
+                session_factory=store._session,
+            )
+            if editor_result:
+                return ok(request, editor_result)
     except ValueError as error:
         if "lease mismatch" in str(error):
             raise AppError(409, "lease_conflict", "Lease token mismatch.")
@@ -187,6 +203,14 @@ async def report_progress(job_id: str, payload: ProgressRequest, request: Reques
             payload.progress_current,
             payload.progress_total,
         )
+        if result is None:
+            editor_result = await asyncio.to_thread(
+                editor_judging.update, job_id, payload.node_secret, payload.lease_token,
+                status=payload.status.value, current=payload.progress_current, total=payload.progress_total,
+                session_factory=store._session,
+            )
+            if editor_result:
+                return ok(request, editor_result)
     except ValueError as error:
         if "lease mismatch" in str(error):
             raise AppError(409, "lease_conflict", "Lease token mismatch.")
@@ -206,6 +230,10 @@ async def renew_lease(job_id: str, payload: LeaseRenewRequest, request: Request)
             payload.node_secret,
             payload.lease_token,
         )
+        if job is None:
+            editor_result = await asyncio.to_thread(editor_judging.update, job_id, payload.node_secret, payload.lease_token, session_factory=store._session)
+            if editor_result:
+                return ok(request, editor_result)
     except ValueError as error:
         if "lease mismatch" in str(error):
             raise AppError(409, "lease_conflict", "Lease token mismatch.")

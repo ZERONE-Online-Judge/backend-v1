@@ -5,6 +5,7 @@ from app.services.usage_ingest import purge_usage_events
 from app.services.log_retention import cleanup_expired_logs
 from app.services.notifications import cleanup_expired_notifications
 from app.services.auth_cleanup import cleanup_expired_auth
+from app.services.editor_judging import maintenance as cleanup_editor_judging
 
 from app.services.store import store
 from app.settings import settings
@@ -15,7 +16,14 @@ async def run_forever() -> None:
     next_log_cleanup = 0.0
     next_notification_cleanup = 0.0
     next_auth_cleanup = 0.0
+    next_editor_cleanup = 0.0
     while True:
+        if time.monotonic() >= next_editor_cleanup:
+            try:
+                await asyncio.to_thread(cleanup_editor_judging)
+            except Exception as exc:
+                print(f"[notice-worker] Editor execution cleanup failed: {type(exc).__name__}", flush=True)
+            next_editor_cleanup = time.monotonic() + 60
         if time.monotonic() >= next_auth_cleanup:
             try:
                 removed = await asyncio.to_thread(cleanup_expired_auth)
