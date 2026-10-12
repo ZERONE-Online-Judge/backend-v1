@@ -352,6 +352,21 @@ class StaffAccountRow(Base):
     protected_master_contests: Mapped[str] = mapped_column(Text, default="[]")
 
 
+class EditorNonceRow(Base):
+    __tablename__ = "editor_bridge_nonces"
+    nonce: Mapped[str] = mapped_column(String(32), primary_key=True)
+    expires_at: Mapped[int] = mapped_column(Integer, index=True)
+
+
+class EditorImportRow(Base):
+    __tablename__ = "editor_problem_imports"
+    operation_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(64))
+    email: Mapped[str] = mapped_column(String(255))
+    problem_id: Mapped[str] = mapped_column(ForeignKey("problems.problem_id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
 class StaffSessionRow(Base):
     __tablename__ = "staff_sessions"
 

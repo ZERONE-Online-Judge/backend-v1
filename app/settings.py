@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_env: str = "development"
+    editor_bridge_secret: SecretStr | None = None
     release_color: str = "local"
     release_version: str | None = None
     public_base_url: str = "http://localhost:5173"
