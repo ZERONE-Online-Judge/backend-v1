@@ -17,8 +17,8 @@ from app.services.errors import AppError
 from app.services.store import _staff
 
 
-def identity(request):
-    secret = settings.editor_bridge_secret.get_secret_value() if settings.editor_bridge_secret else ""
+def identity(request, *, secret_override=None, purpose="zoj-editor-v1"):
+    secret = secret_override if secret_override is not None else (settings.editor_bridge_secret.get_secret_value() if settings.editor_bridge_secret else "")
     if len(secret) < 32:
         raise AppError(503, "editor_bridge_disabled", "Editor 연동이 아직 설정되지 않았습니다.")
     encoded = request.headers.get("x-editor-identity", "")
@@ -29,7 +29,7 @@ def identity(request):
     if not re.fullmatch(r"[0-9]{10}", stamp) or abs(int(stamp) - int(time.time())) > 90 or not re.fullmatch(r"[a-f0-9]{32}", nonce) or not re.fullmatch(r"[a-f0-9]{64}", content_hash) or not re.fullmatch(r"[a-f0-9]{64}", signature) or len(encoded) > 512:
         raise AppError(401, "editor_signature_invalid", "Editor 인증 요청이 유효하지 않습니다.")
     path = request.url.path + ("?" + request.url.query if request.url.query else "")
-    canonical = "\n".join(["zoj-editor-v1", request.method, path, stamp, nonce, encoded, content_hash])
+    canonical = "\n".join([purpose, request.method, path, stamp, nonce, encoded, content_hash])
     expected = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         raise AppError(401, "editor_signature_invalid", "Editor 인증 요청이 유효하지 않습니다.")

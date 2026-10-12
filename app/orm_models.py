@@ -358,6 +358,13 @@ class EditorNonceRow(Base):
     expires_at: Mapped[int] = mapped_column(Integer, index=True)
 
 
+class AuthRateLimitRow(Base):
+    __tablename__ = "auth_rate_limits"
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    started_at: Mapped[int] = mapped_column(Integer, index=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+
+
 class EditorImportRow(Base):
     __tablename__ = "editor_problem_imports"
     operation_key: Mapped[str] = mapped_column(String(64), primary_key=True)
