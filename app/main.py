@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.routers import admin, analytics, auth, internal_judge, operator, participant, public, presentation, seo, seo_documents, storage
-from app.routers import problem_archives, verification_ai, editor_bridge
+from app.routers import problem_archives, verification_ai, editor_bridge, editor_library
 from app.services.errors import AppError
 from app.services.audit_context import OPERATOR_PATH, VERIFICATION_PATH, operator_snapshot, verification_snapshot
 from app.services.authz import bearer_token
@@ -90,6 +90,10 @@ def _audit_contest_id(path: str) -> str | None:
 
 
 def _audit_action(method: str, path: str) -> str:
+    if method.upper() == "POST" and re.search(r"/editor-problems/[a-f0-9]{32}/import$", path):
+        return "Editor 문제 가져오기"
+    if method.upper() == "POST" and re.search(r"/editor-problems/[a-f0-9]{32}/packages$", path):
+        return "Editor 검증 패키지 준비"
     normalized_path = ID_SEGMENT_PATTERN.sub("/{id}", path)
     return f"{method.upper()} {normalized_path.removeprefix('/api')}"
 
@@ -359,6 +363,8 @@ async def operational_audit_middleware(request: Request, call_next):
         elif OPERATOR_PATH.fullmatch(path) and request.method.upper() != "DELETE":
             target_values = after
         extra = {}
+        if response.status_code < 400 and getattr(request.state, "editor_import_details", None):
+            extra = request.state.editor_import_details
         if response.status_code < 400 and getattr(request.state, "audit_rejudge", None):
             extra["rejudge"] = request.state.audit_rejudge
         if response.status_code < 400 and VERIFICATION_PATH.fullmatch(path):
@@ -421,6 +427,7 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(operator.router, prefix="/api")
 app.include_router(problem_archives.router, prefix="/api")
 app.include_router(editor_bridge.router, prefix="/api")
+app.include_router(editor_library.router, prefix="/api")
 app.include_router(verification_ai.router, prefix="/api")
 app.include_router(internal_judge.router, prefix="/api")
 app.include_router(storage.router, prefix="/api")

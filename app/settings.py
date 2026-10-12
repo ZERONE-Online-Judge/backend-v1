@@ -7,6 +7,8 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     editor_bridge_secret: SecretStr | None = None
+    editor_api_url: str = ""
+    editor_ca_file: str | None = None
     release_color: str = "local"
     release_version: str | None = None
     public_base_url: str = "http://localhost:5173"

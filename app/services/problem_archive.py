@@ -450,11 +450,12 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
             ensure_unlocked()
             if editor_context:
                 db.add(EditorImportRow(operation_key=editor_context["operation_key"], request_digest=editor_context["request_digest"], email=account.email, problem_id=pid))
-                db.add(OperationalAuditLogRow(scope="operator", action="Editor 문제 가져오기", method="POST",
-                    path=f"/api/editor/contests/{contest_id}/imports", status_code=200, actor_email=account.email,
-                    actor_name=account.display_name, actor_role="마스터" if account.is_service_master else title_for_roles(account.contest_roles.get(contest_id, [])), contest_id=contest_id, request_id=editor_context["request_id"],
-                    details=json.dumps({"problem_id": pid, "title": problem.title, "problem_code": code,
-                        "division_id": division_id, "testcase_count": sum(len(s.testcases) for s in manifest.testcase_sets)}, ensure_ascii=False)))
+                if not editor_context.get("skip_audit"):
+                    db.add(OperationalAuditLogRow(scope="operator", action="Editor 문제 가져오기", method="POST",
+                        path=f"/api/editor/contests/{contest_id}/imports", status_code=200, actor_email=account.email,
+                        actor_name=account.display_name, actor_role="마스터" if account.is_service_master else title_for_roles(account.contest_roles.get(contest_id, [])), contest_id=contest_id, request_id=editor_context["request_id"],
+                        details=json.dumps({"problem_id": pid, "title": problem.title, "problem_code": code,
+                            "division_id": division_id, "testcase_count": sum(len(s.testcases) for s in manifest.testcase_sets)}, ensure_ascii=False)))
             db.commit()
             committed = True
             return Problem(**{field: getattr(problem, field) for field in Problem.model_fields}).model_dump(mode='json')
