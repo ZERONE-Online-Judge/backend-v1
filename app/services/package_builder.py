@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import subprocess
+import re
 
 from app.models import ProblemAsset
 from app.services.storage import object_storage
@@ -30,7 +31,16 @@ PACKAGE_ROLES = {
 _EXECUTABLE_SOURCE_SUFFIXES = {".cpp", ".c", ".py", ".java"}
 
 
+def is_editor_source_asset(asset: ProblemAsset) -> bool:
+    """Reserved Editor archive members contain private source and test metadata."""
+    return asset.original_filename == "editor-project.json" or bool(
+        re.fullmatch(r"blob-[a-f0-9]{64}\.bin", asset.original_filename)
+    )
+
+
 def package_role(asset: ProblemAsset) -> str | None:
+    if is_editor_source_asset(asset):
+        return None
     for role in PACKAGE_ROLES:
         if (
             f"/package-files/{role}/" in asset.storage_key

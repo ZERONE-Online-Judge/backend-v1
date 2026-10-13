@@ -84,6 +84,148 @@ def mutate_zip(content, change):
     return result.getvalue()
 
 
+def multilingual_values(c):
+    image = next(a for a in store.problem_assets_for_problem(c['cid'], c['pid']) if a.mime_type == 'image/png')
+    return {'default_statement_language': 'korean',
+            'statement_translations': {'English': {'title': 'Sum $a+b$', 'statement': '<!--ZOJ_META:'+json.dumps({'inputDescription': 'Two integers', 'outputDescription': 'Their sum', 'note': 'English note', 'examples': [{'input': '1 2\n', 'output': '3\n', 'note': 'English sample'}]})+'-->\nEnglish $a+b$ ![image](asset://'+image.asset_id+')'}},
+            'editorial_translations': {'english': 'PRIVATE English ![image](/api/storage/objects/'+c['keys']['image']+'?expires=1&signature=old)'}}
+
+
+def test_multilingual_archive_and_copy_preserve_documents_and_rewrite_all_assets(context):
+    c = context
+    values = multilingual_values(c)
+    response = client.patch(c['prefix']+'/problems/'+c['pid'], headers=c['owner'], json=values)
+    assert response.status_code == 200, response.text
+    assert response.json()['data']['default_statement_language'] == 'ko'
+    source = store.problems[c['pid']]
+    assert set(source.statement_translations) == {'en'}
+    content = export(c)
+    with zipfile.ZipFile(io.BytesIO(content)) as z:
+        metadata = json.loads(z.read('manifest.json'))['problem']
+    assert 'asset://asset-' in metadata['statement_translations']['en']['statement']
+    assert 'asset://asset-' in metadata['editorial_translations']['en']
+    assert 'signature=' not in metadata['editorial_translations']['en']
+    preview = upload(c, content).json()['data']
+    assert preview['statement_languages'] == ['ko', 'en']
+    imported = upload(c, content, 'import')
+    assert imported.status_code == 200, imported.text
+    copied = client.post(c['prefix']+'/problems:copy', headers=c['owner'], json={'source_problem_id': c['pid'], 'target_division_id': c['division'], 'problem_code': 'C', 'display_order': 2})
+    assert copied.status_code == 200, copied.text
+    for target in [imported.json()['data'], copied.json()['data']]:
+        image = next(a for a in store.problem_assets_for_problem(c['cid'], target['problem_id']) if a.mime_type == 'image/png')
+        assert target['default_statement_language'] == 'ko'
+        assert target['statement_translations']['en']['title'] == 'Sum $a+b$'
+        assert f'asset://{image.asset_id}' in target['statement_translations']['en']['statement']
+        assert f'asset://{image.asset_id}' in target['editorial_translations']['en']
+        assert f'asset://{image.asset_id}' in target['statement']
+        again = upload(c, export({**c, 'pid': target['problem_id']}))
+        assert again.status_code == 200, again.text
+
+
+def test_create_problem_accepts_a_non_korean_default_and_keeps_legacy_defaults(context):
+    c = context
+    result = client.post(c['prefix']+'/problems', headers=c['owner'], json={
+        'division_id': c['division'], 'problem_code': 'D', 'title': 'English default',
+        'statement': 'English body', 'time_limit_ms': 1000, 'memory_limit_mb': 128,
+        'display_order': 1, 'default_statement_language': 'English',
+        'statement_translations': {'KO': {'title': '한국어', 'statement': '한국어 본문'}},
+        'editorial_translations': {'ko': '비공개 한국어 해설'},
+    })
+    assert result.status_code == 200, result.text
+    saved = store.problems[result.json()['data']['problem_id']]
+    assert saved.default_statement_language == 'en'
+    assert saved.statement_translations['ko'].title == '한국어'
+    assert saved.editorial_translations['ko'] == '비공개 한국어 해설'
+    assert store.problems[c['pid']].default_statement_language == 'ko'
+    assert store.problems[c['pid']].statement_translations == {}
+
+
+@pytest.mark.parametrize('values', [
+    {'statement_translations': {'ko': {'statement': 'duplicate default'}}},
+    {'editorial_translations': {'korean': 'duplicate default'}},
+    {'statement_translations': {'en': {'statement': 'one'}, 'English': {'statement': 'two'}}},
+    {'statement_translations': {'../en': {'statement': 'invalid code'}}},
+    {'statement_translations': {'en': {'statement': 'body', 'editorial': 'private text in public field'}}},
+    {'editorial_translations': {'en': '가' * (4 * 1024 * 1024 // 3 + 1)}},
+])
+def test_invalid_translations_do_not_change_problem(context, values):
+    c = context
+    before = store.problems[c['pid']].model_dump()
+    response = client.patch(c['prefix']+'/problems/'+c['pid'], headers=c['owner'], json=values)
+    assert response.status_code == 422, response.text[:300]
+    assert store.problems[c['pid']].model_dump() == before
+
+
+def test_archive_rejects_missing_translated_asset_and_default_collision(context):
+    c = context
+    for statement in ['English ![](asset://missing)', 'English']:
+        def change(manifest, _):
+            manifest['problem']['statement_translations'] = {'en': {'title': 'English', 'statement': statement}}
+            if statement == 'English':
+                manifest['problem']['default_statement_language'] = 'English'
+        result = upload(c, mutate_zip(export(c), change))
+        assert result.status_code == 422, result.text
+
+
+def test_participant_payload_keeps_all_editorials_private_until_allowed(context):
+    from app.routers.participant import _problem_payload
+    c = context
+    store.update_problem(c['cid'], c['pid'], **multilingual_values(c))
+    problem = store.problems[c['pid']]
+    private = _problem_payload(problem, {})
+    assert private['editorial'] == '' and private['editorial_translations'] == {}
+    assert private['statement_translations']['en']['title'] == 'Sum $a+b$'
+    public = _problem_payload(problem, {}, include_editorial=True)
+    assert 'PRIVATE English' in public['editorial_translations']['en']
+
+
+def test_participant_api_does_not_expose_editor_snapshot_or_solution_assets(context):
+    c = context
+    store.update_problem(c['cid'], c['pid'], **multilingual_values(c))
+    key = f"contests/{c['cid']}/problems/{c['pid']}/assets/old-editor-project.json"
+    data = b'{"private_tutorial":"secret", "solutions":"private"}'
+    object_storage.write_bytes(key, data)
+    store.create_problem_asset(c['cid'], c['pid'], 'editor-project.json', key, 'application/json', len(data), hashlib.sha256(data).hexdigest())
+    blob_key = key+'-blob'
+    object_storage.write_bytes(blob_key, b'private test output')
+    store.create_problem_asset(c['cid'], c['pid'], 'blob-'+('a'*64)+'.bin', blob_key, 'application/octet-stream', 19, 'a'*64)
+    store.update_contest_settings(c['cid'], status='ended', start_at=now_utc()-timedelta(days=1), end_at=now_utc()-timedelta(hours=1), problem_access_after_end='public', editorial_access_after_end='private')
+    result = client.get(f"/api/contests/{c['cid']}/problems/{c['pid']}")
+    assert result.status_code == 200, result.text
+    fields = result.json()['data']
+    assert fields['editorial'] == '' and fields['editorial_translations'] == {}
+    assert fields['statement_translations']['en']['title'] == 'Sum $a+b$'
+    result = client.get(f"/api/contests/{c['cid']}/problems/{c['pid']}/assets")
+    assert result.status_code == 200, result.text
+    files = {a['original_filename'] for a in result.json()['data']}
+    assert files == {'그림.png'}
+
+
+def test_editor_multilingual_zip_imports_into_zoj(context):
+    path = os.environ.get('ZOJ_MULTILINGUAL_ARTIFACT')
+    if not path:
+        pytest.skip('Optional cross-service Editor artifact not provided')
+    from pathlib import Path
+    c = context
+    content = Path(path).read_bytes()
+    result = upload(c, content, 'import')
+    assert result.status_code == 200, result.text
+    problem = result.json()['data']
+    assert problem['default_statement_language'] == 'en'
+    assert problem['title'] == 'Sum in English'
+    assert '$a+b$' in problem['statement']
+    assert '한국어 본문' in problem['statement_translations']['ko']['statement']
+    assert '한국어 해설' in problem['editorial_translations']['ko']
+    image = next(a for a in store.problem_assets_for_problem(c['cid'], problem['problem_id']) if a.mime_type == 'image/png')
+    assert f'asset://{image.asset_id}' in problem['statement_translations']['ko']['statement']
+    bundle_key = store.warm_problem_judge_bundle(c['cid'], problem['problem_id'])
+    bundle = json.loads(gzip.decompress(object_storage.read_bytes(bundle_key)))
+    from app.services.package_builder import is_editor_source_asset
+    from types import SimpleNamespace
+    assert not any(is_editor_source_asset(SimpleNamespace(**a)) for a in bundle['package_files'])
+    assert any(a['original_filename'] == 'testlib.h' for a in bundle['package_files'])
+
+
 def test_round_trip_restores_all_bytes_metadata_versions_and_references(context):
     c=context;content=export(c)
     preview=upload(c,content);assert preview.status_code==200,preview.text

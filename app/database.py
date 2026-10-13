@@ -311,6 +311,11 @@ def create_schema() -> None:
             if "editorial" not in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE problems ADD COLUMN editorial TEXT DEFAULT '' NOT NULL"))
+            for name, kind in (("default_statement_language", "VARCHAR(100) DEFAULT 'ko'"),
+                               ("statement_translations", "JSON DEFAULT '{}'"), ("editorial_translations", "JSON DEFAULT '{}'")):
+                if name not in columns:
+                    with engine.begin() as connection:
+                        connection.execute(text(f"ALTER TABLE problems ADD COLUMN {name} {kind} NOT NULL"))
             if "max_score" in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE problems DROP COLUMN max_score"))

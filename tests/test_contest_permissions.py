@@ -179,13 +179,17 @@ def test_problem_viewer_reads_statements_without_private_files_or_judging(contex
     c = context
     source = store.create_problem(c["cid"], c["division"].division_id, "B", "View me", "Statement", 1000, 128, {}, 2)
     pid = source.problem_id
-    store.update_problem(c["cid"], pid, editorial="PRIVATE EDITORIAL")
+    store.update_problem(c["cid"], pid, editorial="PRIVATE EDITORIAL",
+        statement_translations={"en": {"title": "English title", "statement": "Public English"}},
+        editorial_translations={"en": "PRIVATE ENGLISH EDITORIAL"})
     headers = c["tokens"]["problems_viewer"]
     result = client.get(c["prefix"] + "/problems", headers=headers)
     assert result.status_code == 200
     problem = next(item for item in result.json()["data"] if item["problem_id"] == pid)
     assert problem["statement"] == "Statement"
     assert problem["editorial"] == ""
+    assert problem["editorial_translations"] == {}
+    assert problem["statement_translations"]["en"]["statement"] == "Public English"
     assert "solved_team_count" not in problem
     keys = {}
     for category in ["assets", "editorial-assets", "package-files/checker"]:

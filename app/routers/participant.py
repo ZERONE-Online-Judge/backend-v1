@@ -16,6 +16,7 @@ from app.services.participant_preview import (
 )
 from app.services.store import OPERATOR_TEST_TEAM_PREFIX, SessionConflictError, store
 from app.services.storage import object_storage
+from app.services.package_builder import is_editor_source_asset
 from app.settings import settings
 
 router = APIRouter(tags=["participant"])
@@ -74,6 +75,7 @@ def _problem_payload(problem, solve_statuses: dict[str, str], include_editorial:
     item = problem.model_dump(mode="json")
     if not include_editorial:
         item["editorial"] = ""
+        item["editorial_translations"] = {}
     item["solve_status"] = solve_statuses.get(problem.problem_id, "unsolved")
     return item
 
@@ -519,6 +521,9 @@ async def problem_assets(contest_id: str, problem_id: str, request: Request):
             for asset in store.problem_assets_for_problem(contest_id, problem_id)
             if "/package-files/" not in asset.storage_key
             and "/support/" not in asset.storage_key
+            and "/verification-solutions/" not in asset.storage_key
+            # Older Editor exports placed their private source snapshot in assets.
+            and not is_editor_source_asset(asset)
             and (
                 include_editorial_assets
                 or "/editorial-assets/" not in asset.storage_key

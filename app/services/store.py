@@ -17,6 +17,8 @@ from app.database import SessionLocal, create_schema
 from app.services.contest_visibility import contest_is_public, contest_hidden_by_status, normalize_private_resources
 from app.services.errors import AppError, permission_denied
 from app.settings import settings
+from app.problem_languages import validate_statement_fields
+from app.services.package_builder import is_editor_source_asset
 from app.models import (
     AccessLog,
     Contest,
@@ -240,6 +242,9 @@ def _problem(row: ProblemRow) -> Problem:
         title=row.title,
         statement=row.statement,
         editorial=row.editorial or "",
+        default_statement_language=row.default_statement_language or "ko",
+        statement_translations=row.statement_translations or {},
+        editorial_translations=row.editorial_translations or {},
         time_limit_ms=row.time_limit_ms,
         memory_limit_mb=row.memory_limit_mb,
         language_resource_limits=row.language_resource_limits or {},
@@ -3432,6 +3437,9 @@ class DbStore:
         memory_limit_mb: int,
         language_resource_limits: dict | None,
         display_order: int,
+        default_statement_language: str = "ko",
+        statement_translations: dict | None = None,
+        editorial_translations: dict | None = None,
     ) -> Problem:
         with self._session() as db:
             division = db.get(ContestDivisionRow, division_id)
@@ -3444,6 +3452,7 @@ class DbStore:
                 title=title,
                 statement=statement,
                 editorial="",
+                **validate_statement_fields(default_statement_language, statement_translations or {}, editorial_translations or {}),
                 time_limit_ms=time_limit_ms,
                 memory_limit_mb=memory_limit_mb,
                 language_resource_limits=language_resource_limits or {},
@@ -3554,6 +3563,9 @@ class DbStore:
                 title=source.title,
                 statement=source.statement,
                 editorial=source.editorial or "",
+                default_statement_language=source.default_statement_language or "ko",
+                statement_translations=deepcopy(source.statement_translations or {}),
+                editorial_translations=deepcopy(source.editorial_translations or {}),
                 time_limit_ms=source.time_limit_ms,
                 memory_limit_mb=source.memory_limit_mb,
                 language_resource_limits=source.language_resource_limits or {},
@@ -3585,9 +3597,12 @@ class DbStore:
                 .where(ProblemAssetRow.contest_id == contest_id, ProblemAssetRow.problem_id == source_problem_id)
                 .order_by(ProblemAssetRow.created_at, ProblemAssetRow.asset_id)
             ).all()
+            copied_asset_ids = {}
             for asset in source_assets:
+                copied_asset_ids[asset.asset_id] = new_id()
                 db.add(
                     ProblemAssetRow(
+                        asset_id=copied_asset_ids[asset.asset_id],
                         contest_id=contest_id,
                         problem_id=target_problem_id,
                         original_filename=asset.original_filename,
@@ -3604,6 +3619,12 @@ class DbStore:
                 .where(TestcaseSetRow.problem_id == source_problem_id)
                 .order_by(TestcaseSetRow.version, TestcaseSetRow.testcase_set_id)
             ).all()
+            from app.services.problem_archive import rewrite_problem_documents
+            rewritten = rewrite_problem_documents({"statement": target.statement, "editorial": target.editorial,
+                "statement_translations": target.statement_translations, "editorial_translations": target.editorial_translations},
+                copied_asset_ids, {a.storage_key: copied_asset_ids[a.asset_id] for a in source_assets})
+            for key, value in rewritten.items():
+                setattr(target, key, value)
             for source_set in source_sets:
                 target_set = TestcaseSetRow(
                     problem_id=target_problem_id,
@@ -3644,6 +3665,11 @@ class DbStore:
             row = db.get(ProblemRow, problem_id)
             if not row or row.contest_id != contest_id:
                 return None
+            if any(k in values for k in ("default_statement_language", "statement_translations", "editorial_translations")):
+                values.update(validate_statement_fields(
+                    values.get("default_statement_language") or row.default_statement_language or "ko",
+                    values.get("statement_translations") if values.get("statement_translations") is not None else row.statement_translations or {},
+                    values.get("editorial_translations") if values.get("editorial_translations") is not None else row.editorial_translations or {}))
             for key, value in values.items():
                 if value is not None:
                     if key == "division_id":
@@ -5221,6 +5247,8 @@ class DbStore:
                             .order_by(ProblemAssetRow.created_at)
                         ).all()
                         for asset in package_assets:
+                            if is_editor_source_asset(asset):
+                                continue
                             role = None
                             for candidate in ("package-resource", "checker", "validator"):
                                 if f"/package-files/{candidate}/" in asset.storage_key:
@@ -5311,6 +5339,8 @@ class DbStore:
     ) -> str:
         role_assets: list[tuple[str, ProblemAssetRow]] = []
         for asset in package_assets:
+            if is_editor_source_asset(asset):
+                continue
             for role in ("package-resource", "checker", "validator"):
                 if f"/package-files/{role}/" in asset.storage_key:
                     role_assets.append((role, asset))
@@ -5344,6 +5374,8 @@ class DbStore:
     ) -> str:
         role_assets: list[tuple[str, ProblemAssetRow]] = []
         for asset in package_assets:
+            if is_editor_source_asset(asset):
+                continue
             for role in ("package-resource", "checker", "validator"):
                 if f"/package-files/{role}/" in asset.storage_key:
                     role_assets.append((role, asset))

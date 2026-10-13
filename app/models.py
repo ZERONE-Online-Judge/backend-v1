@@ -4,6 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, EmailStr, Field
+from app.problem_languages import ProblemStatements
 
 
 def now_utc() -> datetime:
@@ -154,7 +155,7 @@ class ContestDivision(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 
-class Problem(BaseModel):
+class Problem(ProblemStatements):
     problem_id: str = Field(default_factory=new_id)
     contest_id: str
     division_id: str

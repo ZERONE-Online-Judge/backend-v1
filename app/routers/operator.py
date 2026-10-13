@@ -10,7 +10,8 @@ from urllib.parse import urlencode
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Request, UploadFile
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from app.problem_languages import ProblemStatements, StatementTranslation, validate_statement_fields
 
 from app.models import ContestResourceAccess, ContestStatus, ContestVisibility, ProblemAsset, ScoreboardFreezeMode, ScoreboardReleaseMode, SubmissionStatus, TeamMemberRole, now_utc
 from app.services.authz import has_contest_permission, is_contest_master, require_contest_staff, require_staff
@@ -19,7 +20,7 @@ from app.services.automatic_notices import time_update_notice_body
 from app.services.contest_roles import ContestOperatorCreateRequest, ContestOperatorUpdateRequest, title_for_roles
 from app.services.errors import AppError, not_found, permission_denied
 from app.services.mail_templates import absolute_url, operator_assignment_mail, render_branded_email
-from app.services.package_builder import PackageBuildError, package_role
+from app.services.package_builder import PackageBuildError, package_role, is_editor_source_asset
 from app.services.responses import ok, page
 from app.services.mail_logs import list_mail_logs, mail_log_filters, mail_log_preview
 from app.settings import settings
@@ -192,7 +193,7 @@ class DivisionUpdateRequest(BaseModel):
     display_order: int | None = None
 
 
-class ProblemCreateRequest(BaseModel):
+class ProblemCreateRequest(ProblemStatements):
     division_id: str
     problem_code: str
     title: str
@@ -201,6 +202,11 @@ class ProblemCreateRequest(BaseModel):
     memory_limit_mb: int
     language_resource_limits: dict[str, ProblemLanguageResourceLimitPayload] = Field(default_factory=dict)
     display_order: int
+
+    @model_validator(mode="after")
+    def statement_languages(self):
+        validate_statement_fields(self.default_statement_language, self.statement_translations, self.editorial_translations)
+        return self
 
     @field_validator("language_resource_limits")
     @classmethod
@@ -217,6 +223,9 @@ class ProblemCopyRequest(BaseModel):
 
 
 class ProblemUpdateRequest(BaseModel):
+    default_statement_language: str | None = Field(default=None, min_length=1, max_length=100)
+    statement_translations: dict[str, StatementTranslation] | None = Field(default=None, max_length=20)
+    editorial_translations: dict[str, str] | None = Field(default=None, max_length=20)
     division_id: str | None = None
     problem_code: str | None = None
     title: str | None = None
@@ -1388,7 +1397,7 @@ async def operator_problems(contest_id: str, request: Request):
     problems = [p for p in store.problems.values() if p.contest_id == contest_id]
     problems.sort(key=lambda item: (item.display_order, item.problem_code, item.title, item.problem_id))
     if not has_contest_permission(account, contest_id, "contest.problem.resource.view"):
-        return page(request, [{**problem.model_dump(mode="json"), "editorial": ""} for problem in problems])
+        return page(request, [{**problem.model_dump(mode="json"), "editorial": "", "editorial_translations": {}} for problem in problems])
     teams = [
         team
         for team in store.teams.values()
@@ -1451,6 +1460,9 @@ async def create_problem(contest_id: str, payload: ProblemCreateRequest, request
             memory_limit_mb=payload.memory_limit_mb,
             language_resource_limits=_clean_language_resource_limits(payload.language_resource_limits),
             display_order=payload.display_order,
+            default_statement_language=payload.default_statement_language,
+            statement_translations={k: v.model_dump() for k, v in payload.statement_translations.items()},
+            editorial_translations=payload.editorial_translations,
         )
     except ValueError:
         raise not_found("Contest division is not configured.")
@@ -1516,7 +1528,7 @@ async def problem_assets(contest_id: str, problem_id: str, request: Request):
                 f"contests/{contest_id}/problems/{problem_id}/problem-assets/",
                 f"contests/{contest_id}/problem-assets/",
             )
-            assets = [asset for asset in assets if asset.mime_type.startswith("image/") and asset.storage_key.startswith(statement_prefixes) and package_role(asset) is None]
+            assets = [asset for asset in assets if asset.mime_type.startswith("image/") and asset.storage_key.startswith(statement_prefixes) and package_role(asset) is None and not is_editor_source_asset(asset)]
     except ValueError:
         raise not_found()
     return page(

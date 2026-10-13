@@ -5,7 +5,7 @@ A `.zoj.zip` file contains one problem and its complete registered files. It can
 ## Manifest
 
 - `format`: `"zoj-problem"`; `version`: integer `1`.
-- `problem`: `problem_code`, `title`, `statement`, `editorial`, `time_limit_ms`, `memory_limit_mb`, `language_resource_limits`, `display_order`.
+- `problem`: `problem_code`, `title`, `statement`, `editorial`, `time_limit_ms`, `memory_limit_mb`, `language_resource_limits`, `display_order`. Optional `default_statement_language` (default `ko`), `statement_translations`, and `editorial_translations` preserve all authored languages.
 - `assets`: all registered files, each with `id` (`asset-1`, etc.), `file` (ZIP member path), `original_filename`, `mime_type`, `category`, `asset_status`, `created_at` (ISO 8601). Statement/editorial references use `asset://asset-1`. The importer creates new IDs and rewrites these references, including examples stored inside the statement metadata.
 - Asset categories: `assets`; `package-files/` followed by `main-solution`, `brute-solution`, `wrong-solution`, `checker`, `validator`, `generator`, `manual-input`, `test-script`, `package-resource`, or `interactor`; or `verification-solutions/` followed by `accepted`, `wrong_answer`, `time_limit_exceeded`, or `memory_limit_exceeded`.
 - `testcase_sets`: all versions, not just the active one. Each has positive integer `version`, boolean `is_active`, and `testcases`. At most one version can be active.
@@ -31,3 +31,42 @@ Exports require `contest.problem.resource.view`. Inspection/import require `cont
 - `POST /api/operator/contests/{contest}/problem-archives:import?division_id=...&problem_code=...`: same ZIP request body; returns the new problem. Optional positive `display_order` can override append order.
 
 Keep an unmodified exported ZIP as the reference example when authoring files outside ZOJ. Unknown manifest fields or unsupported versions are rejected rather than partially interpreted.
+
+## Statement languages
+
+`title`, `statement`, and `editorial` contain the default language. Alternate
+languages use separate maps and must not repeat the default language:
+
+```json
+{
+  "default_statement_language": "ko",
+  "statement_translations": {
+    "en": {"title": "Sum", "statement": "Compute $a+b$."}
+  },
+  "editorial_translations": {"en": "Add both integers."}
+}
+```
+
+Each translated statement supports the same ZOJ_META input/output descriptions,
+notes, and examples as the default statement. All languages retain KaTeX and
+image references. Asset IDs and old storage URLs are rewritten in every
+language during export/import and problem copying. Editorial translations
+remain separate from public statements and follow the existing editorial
+access policy. English-language names such as `english` normalize to `en`.
+
+The private `editor-project.json` source snapshot is preserved for Editor
+restoration, excluded from participant attachments and judge runtime resources.
+This also protects snapshots from older exports that put them in `assets`.
+Verification solution files are excluded from participant attachment responses.
+
+Each map supports 20 languages and 4 MiB of UTF-8 document text in total;
+translated titles are limited to 255 characters. Missing fields in older ZIPs
+default to Korean and empty maps. Older receivers with strict manifests cannot
+read the new fields: upgrade ZOJ before deploying Editor multilingual export.
+
+Operators manage translations in the problem's statement tab. Promoting an
+existing translation to default swaps both documents and editorials without
+discarding the former default. Empty translated bodies remain drafts and are
+hidden from participant language choices. Translations without examples use
+the default examples. The browser remembers a participant's chosen language
+and falls back to the default when the next problem has no such translation.

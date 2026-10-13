@@ -16,6 +16,7 @@ from urllib.parse import unquote
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, field_validator
+from app.problem_languages import ProblemStatements, validate_statement_fields
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -50,7 +51,7 @@ class ResourceLimit(ArchiveModel):
     memory_limit_mb: StrictInt | None = Field(default=None, ge=16, le=1024)
 
 
-class ArchiveProblem(ArchiveModel):
+class ArchiveProblem(ProblemStatements, ArchiveModel):
     problem_code: str = Field(min_length=1, max_length=16)
     title: str = Field(min_length=1, max_length=255)
     statement: str = Field(max_length=4 * 1024 * 1024)
@@ -151,6 +152,23 @@ def _rewrite_document(text: str, ids: dict[str, str], storage: dict[str, str] | 
     return text
 
 
+def rewrite_problem_documents(values, ids, storage=None):
+    for field in ("statement", "editorial"):
+        values[field] = _rewrite_document(values.get(field) or "", ids, storage)
+    values["statement_translations"] = {language: {**item,
+        "statement": _rewrite_document(item["statement"], ids, storage)}
+        for language, item in (values.get("statement_translations") or {}).items()}
+    values["editorial_translations"] = {language: _rewrite_document(text, ids, storage)
+        for language, text in (values.get("editorial_translations") or {}).items()}
+    return values
+
+
+def problem_document_texts(problem):
+    return [problem.statement, problem.editorial,
+            *(item.statement for item in problem.statement_translations.values()),
+            *problem.editorial_translations.values()]
+
+
 def _safe_zip_path(name: str):
     if not name or len(name) > 240 or name.startswith('/') or '\\' in name or ':' in name or any(ord(c) < 32 for c in name):
         raise invalid('압축 파일에 허용되지 않는 경로가 있습니다.')
@@ -168,6 +186,8 @@ def _unique_json(pairs):
 
 
 def _validate_references(manifest: Manifest):
+    validate_statement_fields(manifest.problem.default_statement_language,
+        manifest.problem.statement_translations, manifest.problem.editorial_translations)
     files = {file.path: file for file in manifest.files}
     asset_ids = [asset.id for asset in manifest.assets]
     versions = [item.version for item in manifest.testcase_sets]
@@ -184,7 +204,7 @@ def _validate_references(manifest: Manifest):
             referenced.update([case.input, case.output])
     if referenced != set(files):
         raise invalid('문제에 연결되지 않았거나 누락된 파일이 있습니다.')
-    for text in [manifest.problem.statement, manifest.problem.editorial]:
+    for text in problem_document_texts(manifest.problem):
         if set(re.findall(r'asset://([A-Za-z0-9-]+)', text)) - set(asset_ids):
             raise invalid('지문이나 해설에 누락된 첨부 파일 참조가 있습니다.')
 
@@ -271,7 +291,8 @@ def summary(manifest: Manifest):
             'example_count': examples, 'testcase_count': sum(len(item.testcases) for item in manifest.testcase_sets),
             'testcase_sets': [{'version': item.version, 'is_active': item.is_active, 'count': len(item.testcases)} for item in manifest.testcase_sets],
             'assets': [{'filename': item.original_filename, 'category': item.category} for item in manifest.assets],
-            'has_external_links': bool(re.search(r'https?://', manifest.problem.statement + manifest.problem.editorial))}
+            'statement_languages': [manifest.problem.default_statement_language, *manifest.problem.statement_translations],
+            'has_external_links': any(re.search(r'https?://', text) for text in problem_document_texts(manifest.problem))}
 
 
 def inspect_archive(source):
@@ -291,8 +312,7 @@ def export_archive(contest_id: str, problem_id: str):
             ids = {asset.asset_id: f'asset-{index}' for index, asset in enumerate(assets, 1)}
             storage_ids = {asset.storage_key: ids[asset.asset_id] for asset in assets}
             metadata = {field: getattr(problem, field) for field in ArchiveProblem.model_fields}
-            for field in ('statement', 'editorial'):
-                metadata[field] = _rewrite_document(metadata[field] or '', ids, storage_ids)
+            rewrite_problem_documents(metadata, ids, storage_ids)
             metadata['language_resource_limits'] = metadata['language_resource_limits'] or {}
             data = {'format': 'zoj-problem', 'version': 1, 'problem': metadata, 'assets': [], 'testcase_sets': [], 'files': []}
             total_size = 0
@@ -401,8 +421,7 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
             payload = manifest.problem.model_dump()
             payload.update(problem_id=pid, contest_id=contest_id, division_id=division_id, problem_code=code,
                            display_order=display_order or ((db.scalar(select(func.max(ProblemRow.display_order)).where(ProblemRow.contest_id == contest_id, ProblemRow.division_id == division_id)) or 0) + 1))
-            for field in ('statement', 'editorial'):
-                payload[field] = _rewrite_document(payload[field], asset_ids)
+            rewrite_problem_documents(payload, asset_ids)
             problem = ProblemRow(**payload)
             db.add(problem)
             db.flush()
