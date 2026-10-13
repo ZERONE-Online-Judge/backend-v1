@@ -36,6 +36,16 @@ CORE_PAGES = {
             "출제와 검수, 참가자 관리, 코드 제출과 채점, 공지와 질문 답변, 최종 결과 공개까지 하나의 흐름으로 연결합니다.",
         ],
     },
+    "/editor": {
+        "title": "ZOJ Editor 소개 | 지문부터 검증·협업·문제 패키지까지",
+        "heading": "좋은 문제의 시작, ZOJ Editor",
+        "description": "ZOJ Editor에서 지문과 수식, 테스트 생성과 풀이 검증, 스트레스 테스트, 협업과 리비전을 한곳에서 준비하세요. 완성한 문제를 패키지로 내보내고 ZOJ 대회에 등록할 수 있습니다.",
+        "paragraphs": [
+            "언어별 지문과 LaTeX 수식을 작성하고, Generator·Validator·Main 풀이로 테스트 입력과 정답을 준비합니다.",
+            "기대 판정과 실제 판정을 비교하고 스트레스 테스트로 반례를 찾습니다. ZOJ 실제 채점기로 시간과 메모리도 확인할 수 있습니다.",
+            "작업 사본과 커밋·리비전으로 협업하고, 검증된 문제를 패키지로 내보내거나 업로드 권한이 있는 ZOJ 대회에 등록하세요.",
+        ],
+    },
     "/contests": {
         "title": "프로그래밍 대회 목록 | ZOJ",
         "heading": "프로그래밍 대회 목록",
@@ -100,6 +110,7 @@ CORE_PAGES = {
 
 NAVIGATION_LINKS = [
     {"href": "/about", "label": "ZOJ 소개"},
+    {"href": "/editor", "label": "Editor 소개"},
     {"href": "/contests", "label": "대회 목록"},
     {"href": "/notices", "label": "공지사항"},
     {"href": "/judge-status", "label": "채점 상태"},

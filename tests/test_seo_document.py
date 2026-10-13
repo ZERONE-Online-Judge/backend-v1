@@ -86,7 +86,8 @@ def request_page(fixture, path, **kwargs):
 
 def test_public_initial_html_has_unique_metadata_visible_content_and_working_assets(html_client):
     titles, descriptions, canonicals = set(), set(), set()
-    for path in ("/", "/about", "/contests", "/notices", "/judge-status", "/support/help"):
+    paths = ("/", "/about", "/editor", "/contests", "/notices", "/judge-status", "/support/help")
+    for path in paths:
         response = request_page(html_client, path)
         metadata = seo.build_page_metadata(path)
         assert response.status_code == 200
@@ -119,7 +120,7 @@ def test_public_initial_html_has_unique_metadata_visible_content_and_working_ass
         titles.add(metadata["title"])
         descriptions.add(metadata["description"])
         canonicals.add(metadata["canonical"])
-    assert len(titles) == len(descriptions) == len(canonicals) == 6
+    assert len(titles) == len(descriptions) == len(canonicals) == len(paths)
 
 
 def test_template_verification_is_preserved_and_environment_can_override_it(html_client, monkeypatch):

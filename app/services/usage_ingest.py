@@ -23,7 +23,7 @@ from app.settings import settings
 RETENTION_DAYS = 395
 SERVICES = {"public": "공개 서비스", "contest": "대회 참가 화면", "operator": "대회 운영 화면", "admin": "서비스 관리"}
 PAGE_LABELS = {
-    "public.home": "메인", "public.about": "ZOJ 소개", "public.contests": "대회 목록",
+    "public.home": "메인", "public.about": "ZOJ 소개", "public.editor": "Editor 소개", "public.contests": "대회 목록",
     "public.notices": "공지사항", "public.notice": "공지 상세", "public.judge-status": "채점 상태",
     "public.support": "이용안내", "public.rules": "규정", "public.help": "도움말",
     "public.privacy": "개인정보처리방침", "public.contact": "서비스 문의", "public.login": "로그인",
@@ -36,7 +36,7 @@ PAGE_LABELS = {
     "admin.home": "관리 홈", "admin.contests": "대회 관리", "admin.judge": "채점 관리",
     "admin.audit-logs": "서비스 운영 로그", "admin.inquiries": "문의 관리", "admin.analytics": "운영 통계",
 }
-PUBLIC_PATHS = {"/": "home", "/about": "about", "/contests": "contests", "/notices": "notices", "/judge-status": "judge-status", "/support": "support", "/login": "login"}
+PUBLIC_PATHS = {"/": "home", "/about": "about", "/editor": "editor", "/contests": "contests", "/notices": "notices", "/judge-status": "judge-status", "/support": "support", "/login": "login"}
 PUBLIC_PATHS.update({f"/support/{key}": key for key in ["rules", "help", "privacy", "contact"]})
 UUID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 BOT_PATTERN = re.compile(r"bot\b|crawler|spider|headless|lighthouse|slurp|facebookexternalhit", re.I)
