@@ -51,7 +51,7 @@ def clear_cookie(response):
 
 def resolve(token):
     if not token or not decode_session_token(token, "general_refresh"):
-        raise AppError(401, "authentication_required", "공통 로그인 세션이 필요합니다.")
+        raise AppError(401, "authentication_required", "ZOJ 로그인 세션이 필요합니다.")
     with SessionLocal() as db:
         session = db.scalar(
             select(GeneralSessionRow).where(

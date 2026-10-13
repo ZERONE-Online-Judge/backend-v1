@@ -420,7 +420,7 @@ async def restore_shared_login(request:Request,response:Response,payload:General
     token=request.cookies.get(COOKIE) or (payload.refresh_token if payload else None)
     result=await run_in_threadpool(store.refresh_general_session,token) if token else None
     if not result:
-        raise AppError(401,'authentication_required','공통 로그인 세션이 없습니다.')
+        raise AppError(401,'authentication_required','ZOJ 로그인 세션이 없습니다.')
     if not request.cookies.get(COOKIE):
         set_cookie(response,result['refresh_token'])
     return ok(request,result)

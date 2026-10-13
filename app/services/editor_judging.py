@@ -85,7 +85,7 @@ def owner(db, email, lock=False):
         query = query.with_for_update()
     row = db.scalar(query)
     if not row:
-        raise AppError(403, "editor_identity_missing", "ZOJ 공통 계정으로 로그인한 뒤 검증하세요.")
+        raise AppError(403, "editor_identity_missing", "ZOJ에 로그인한 뒤 검증하세요.")
     return row
 
 
