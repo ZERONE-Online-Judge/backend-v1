@@ -373,6 +373,10 @@ def _node(row: JudgeNodeRow) -> JudgeNode:
         agent_version=row.agent_version,
         last_heartbeat_at=_aware(row.last_heartbeat_at),
         schedulable=row.schedulable,
+        allow_zoj=row.allow_zoj,
+        allow_editor=row.allow_editor,
+        execution_capabilities=row.execution_capabilities or [],
+        execution_revision=row.execution_revision,
     )
 
 
@@ -5103,13 +5107,15 @@ class DbStore:
         if not valid_node_credential(node, node_secret):
             raise ValueError("node secret mismatch")
 
-    def register_node(self, node_name: str, node_secret: str, total_slots: int, agent_version: str = "unknown") -> JudgeNode:
+    def register_node(self, node_name: str, node_secret: str, total_slots: int, agent_version: str = "unknown", execution_capabilities: list[str] | None = None, execution_revision: str | None = None) -> JudgeNode:
         with self._session() as db:
             row = db.scalar(select(JudgeNodeRow).where(JudgeNodeRow.node_name == node_name))
             self._check_node_secret(row, node_secret)
             row.total_slots = total_slots
             row.free_slots = total_slots
             row.agent_version = agent_version or "unknown"
+            row.execution_capabilities = execution_capabilities or []
+            row.execution_revision = execution_revision
             row.last_heartbeat_at = now_utc()
             db.commit()
             db.refresh(row)
@@ -5199,6 +5205,11 @@ class DbStore:
             self._check_node_secret(node, node_secret)
             self._recover_expired_judge_leases(db)
             db.flush()
+            from app.services.editor_execution import available_slots
+            max_count = min(max_count, available_slots(db, node)) if node.allow_zoj else 0
+            if max_count <= 0:
+                db.commit()
+                return []
             jobs = []
             safe_max_count = max(1, min(max_count, settings.judge_claim_max_batch_size))
             from app.orm_models import VerificationTrialRow

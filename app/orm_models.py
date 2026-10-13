@@ -493,6 +493,10 @@ class JudgeNodeRow(Base):
     agent_version: Mapped[str] = mapped_column(String(64), default="unknown")
     last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     schedulable: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_zoj: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    allow_editor: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    execution_capabilities: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    execution_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class JudgeAgentLogRow(Base):
@@ -720,5 +724,27 @@ class EditorJudgeRunRow(Base):
     leased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EditorExecutionTaskRow(Base):
+    """Bounded tool invocations; separate from submissions and scoreboards."""
+    __tablename__ = "editor_execution_tasks"
+    task_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    operation_key: Mapped[str] = mapped_column(String(64), unique=True)
+    owner_id: Mapped[str] = mapped_column(String(36), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON)
+    input_key: Mapped[str] = mapped_column(Text)
+    result_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="waiting", index=True)
+    assigned_node_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    node_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    leased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

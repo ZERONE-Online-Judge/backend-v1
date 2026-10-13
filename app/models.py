@@ -341,6 +341,10 @@ class JudgeNode(BaseModel):
     agent_version: str = "unknown"
     last_heartbeat_at: datetime = Field(default_factory=now_utc)
     schedulable: bool = True
+    allow_zoj: bool = True
+    allow_editor: bool = True
+    execution_capabilities: list[str] = Field(default_factory=list)
+    execution_revision: str | None = None
 
 
 class JudgeAgentLog(BaseModel):

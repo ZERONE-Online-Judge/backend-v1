@@ -100,7 +100,7 @@ def public_run(row):
 
 def capabilities():
     with SessionLocal() as db:
-        nodes = db.scalars(select(JudgeNodeRow).where(JudgeNodeRow.schedulable.is_(True))).all()
+        nodes = db.scalars(select(JudgeNodeRow).where(JudgeNodeRow.schedulable.is_(True), JudgeNodeRow.allow_editor.is_(True))).all()
         versions = sorted({n.agent_version for n in nodes})
         revision = hashlib.sha256(json.dumps(["editor-dispatch-v1", settings.release_version, versions], separators=(",", ":")).encode()).hexdigest()[:16]
         return {
@@ -352,6 +352,11 @@ def claim_jobs(node_id, node_secret, max_count, session_factory=None):
                 row.result = {"final_status": "system_error", "judge_message": "채점기 연결이 반복해서 중단되었습니다."}
                 row.completed_at = now_utc()
         db.flush()
+        from app.services.editor_execution import available_slots
+        max_count = min(max_count, available_slots(db, node)) if node.allow_editor else 0
+        if max_count <= 0:
+            db.commit()
+            return []
         rows = db.scalars(select(Run).where(Run.status == "waiting").order_by(Run.created_at, Run.run_id).limit(min(max_count, settings.judge_claim_max_batch_size)).with_for_update(skip_locked=True)).all()
         jobs = []
         for row in rows:
@@ -382,7 +387,7 @@ def update(run_id, node_secret, lease_token, *, result=None, status=None, curren
         node = db.get(JudgeNodeRow, row.assigned_node_id) if row.assigned_node_id else None
         if not valid_node_credential(node, node_secret):
             raise ValueError("node secret invalid")
-        if not row.lease_token or not hmac.compare_digest(row.lease_token, lease_token):
+        if not row.lease_token or not hmac.compare_digest(row.lease_token.encode(), lease_token.encode()):
             raise ValueError("lease mismatch")
         if result is not None and row.status not in ACTIVE:
             if row.result == result:

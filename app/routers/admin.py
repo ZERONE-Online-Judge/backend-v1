@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, StrictBool, ConfigDict, field_validator, model_validator
 
 from app.models import ContestStatus, ContestVisibility, JudgeNode, now_utc
 from app.settings import settings
@@ -30,7 +30,7 @@ def _page_slice(items: list, limit: int, cursor: str | None) -> tuple[list, str 
     return items[start:end], next_cursor
 
 
-def _node_with_activity(node: JudgeNode, jobs: dict | None = None) -> dict:
+def _node_with_activity(node: JudgeNode, jobs: dict | None = None, editor_running: int = 0) -> dict:
     active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
     heartbeat_age = max(0, int((now_utc() - node.last_heartbeat_at).total_seconds()))
     actual_running = len(
@@ -40,6 +40,7 @@ def _node_with_activity(node: JudgeNode, jobs: dict | None = None) -> dict:
             if job.status == "running" and job.assigned_node_id == node.judge_node_id
         ]
     )
+    actual_running += editor_running
     payload = node.model_dump(mode="json")
     payload["is_active"] = node.last_heartbeat_at >= active_since
     payload["heartbeat_age_seconds"] = heartbeat_age
@@ -413,7 +414,9 @@ async def judge_dashboard(
     require_service_master(request)
     jobs = list(store.judge_jobs.values())
     jobs_by_id = {job.judge_job_id: job for job in jobs}
-    node_payloads = [_node_with_activity(node, jobs_by_id) for node in store.judge_nodes.values()]
+    from app.services import editor_execution
+    editor_stats = await asyncio.to_thread(editor_execution.stats, store._session)
+    node_payloads = [_node_with_activity(node, jobs_by_id, editor_stats["running_by_node"].get(node.judge_node_id, 0)) for node in store.judge_nodes.values()]
     queue_payload: list[dict] = []
     queue_page = {"limit": max(1, min(limit, 300)), "next_cursor": None}
     if include_queue:
@@ -432,8 +435,10 @@ async def judge_dashboard(
             "queue": queue_payload,
             "queue_page": queue_page,
             "queue_stats": {
-                "pending_count": len([job for job in jobs if job.status == "pending"]),
-                "running_count": len([job for job in jobs if job.status == "running"]),
+                "pending_count": len([job for job in jobs if job.status == "pending"]) + editor_stats["pending_count"],
+                "editor_pending_count": editor_stats["pending_count"],
+                "running_count": len([job for job in jobs if job.status == "running"]) + editor_stats["running_count"],
+                "editor_running_count": editor_stats["running_count"],
                 "succeeded_count": len([job for job in jobs if job.status == "succeeded"]),
             },
         },
@@ -648,3 +653,31 @@ async def admin_mail_logs(request: Request, filters: dict = Depends(mail_log_fil
     require_service_master(request)
     logs, next_cursor, total = list_mail_logs(contest_id=contest_id or None, **filters)
     return page(request, logs, next_cursor=next_cursor, limit=filters["limit"], total_count=total, current_cursor=filters["cursor"])
+
+
+class NodeWorkloadsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    allow_zoj: StrictBool
+    allow_editor: StrictBool
+
+    @model_validator(mode="after")
+    def one_workload(self):
+        if not self.allow_zoj and not self.allow_editor:
+            raise ValueError("ZOJ 또는 Editor 중 하나 이상 선택하세요.")
+        return self
+
+
+@router.patch("/admin/judge/nodes/{node_id}/workloads")
+async def update_node_workloads(node_id: str, payload: NodeWorkloadsRequest, request: Request):
+    require_service_master(request)
+    from sqlalchemy import select
+    from app.orm_models import JudgeNodeRow
+    def save():
+        with store._session() as db:
+            node = db.scalar(select(JudgeNodeRow).where(JudgeNodeRow.judge_node_id == node_id).with_for_update())
+            if not node:
+                raise not_found()
+            node.allow_zoj, node.allow_editor = payload.allow_zoj, payload.allow_editor
+            db.commit()
+            return {"judge_node_id": node_id, **payload.model_dump()}
+    return ok(request, await asyncio.to_thread(save))

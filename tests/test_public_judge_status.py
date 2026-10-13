@@ -19,12 +19,12 @@ def test_public_status_only_exposes_connected_node_count(monkeypatch, active_cou
     now = now_utc()
     monkeypatch.setattr(public, "now_utc", lambda: now)
     nodes = {
-        str(index): SimpleNamespace(last_heartbeat_at=now, running_job_count=7)
+        str(index): SimpleNamespace(last_heartbeat_at=now, running_job_count=7, schedulable=True, allow_zoj=True)
         for index in range(active_count)
     }
     nodes["offline"] = SimpleNamespace(
         last_heartbeat_at=now - timedelta(seconds=max(5, settings.judge_node_active_window_seconds) + 1),
-        running_job_count=9,
+        running_job_count=9, schedulable=True, allow_zoj=True,
     )
     monkeypatch.setattr(public, "store", SimpleNamespace(
         judge_nodes=nodes,
@@ -38,7 +38,7 @@ def test_public_status_only_exposes_connected_node_count(monkeypatch, active_cou
 
 
 def test_workload_changes_do_not_change_public_status(monkeypatch):
-    node = SimpleNamespace(last_heartbeat_at=now_utc(), running_job_count=0)
+    node = SimpleNamespace(last_heartbeat_at=now_utc(), running_job_count=0, schedulable=True, allow_zoj=True)
     jobs = {}
     monkeypatch.setattr(public, "store", SimpleNamespace(judge_nodes={"node": node}, judge_jobs=jobs))
 

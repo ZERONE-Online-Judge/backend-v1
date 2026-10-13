@@ -1,14 +1,14 @@
 import asyncio
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models import JUDGE_FINAL_STATUSES, JUDGE_PROGRESS_STATUSES, SubmissionStatus
 from app.settings import settings
 from app.services.errors import AppError, not_found
 from app.services.responses import ok
 from app.services.store import store
-from app.services import editor_judging
+from app.services import editor_judging, editor_execution
 
 router = APIRouter(tags=["internal-judge"])
 
@@ -21,6 +21,22 @@ class RegisterNodeRequest(NodeCredentialRequest):
     node_name: str = Field(min_length=1, max_length=120)
     total_slots: int = Field(default=10, ge=1, le=1024)
     agent_version: str = Field(default="0.1.0", max_length=64)
+    execution_capabilities: list[str] = Field(default_factory=list, max_length=10)
+    execution_revision: str | None = Field(default=None, max_length=128)
+
+    @field_validator("execution_capabilities")
+    @classmethod
+    def supported_capabilities(cls, value):
+        if any(item != "editor-execute-v1" for item in value):
+            raise ValueError("Unsupported execution capability")
+        return sorted(set(value))
+
+
+    @model_validator(mode="after")
+    def runtime_revision_required(self):
+        if self.execution_capabilities and not self.execution_revision:
+            raise ValueError("Runtime revision is required for Editor execution")
+        return self
 
 
 class HeartbeatRequest(NodeCredentialRequest):
@@ -88,6 +104,8 @@ async def register_node(payload: RegisterNodeRequest, request: Request):
             payload.node_secret,
             payload.total_slots,
             payload.agent_version,
+            payload.execution_capabilities,
+            payload.execution_revision,
         )
     except ValueError:
         raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
@@ -140,7 +158,11 @@ async def claim(node_id: str, payload: ClaimRequest, request: Request):
                 # Existing contest/rejudge/AI work is always claimed first.
                 remaining = min(payload.max_count, settings.judge_claim_max_batch_size) - len(jobs)
                 if remaining > 0:
-                    jobs += await asyncio.to_thread(editor_judging.claim_jobs, node_id, payload.node_secret, remaining, session_factory=store._session)
+                    from app.services import editor_execution
+                    jobs += await asyncio.to_thread(editor_execution.claim_jobs, node_id, payload.node_secret, remaining, session_factory=store._session)
+                    remaining = min(payload.max_count, settings.judge_claim_max_batch_size) - len(jobs)
+                    if remaining > 0:
+                        jobs += await asyncio.to_thread(editor_judging.claim_jobs, node_id, payload.node_secret, remaining, session_factory=store._session)
         except ValueError:
             raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")
         if jobs is None:
@@ -234,6 +256,9 @@ async def renew_lease(job_id: str, payload: LeaseRenewRequest, request: Request)
             editor_result = await asyncio.to_thread(editor_judging.update, job_id, payload.node_secret, payload.lease_token, session_factory=store._session)
             if editor_result:
                 return ok(request, editor_result)
+            task_result = await asyncio.to_thread(editor_execution.update, job_id, payload.node_secret, payload.lease_token, session_factory=store._session)
+            if task_result:
+                return ok(request, task_result)
     except ValueError as error:
         if "lease mismatch" in str(error):
             raise AppError(409, "lease_conflict", "Lease token mismatch.")
@@ -241,3 +266,43 @@ async def renew_lease(job_id: str, payload: LeaseRenewRequest, request: Request)
     if not job:
         raise not_found()
     return ok(request, {"accepted": True, "job": job.model_dump(mode="json")})
+
+
+@router.post("/internal/judge/editor-tasks/{task_id}/result")
+async def report_editor_task(task_id: str, request: Request):
+    import json
+    from app.services.editor_protocol import MAX_WIRE_BYTES
+    secret, lease = request.headers.get("X-Judge-Node-Secret", ""), request.headers.get("X-Judge-Lease", "")
+    encoded = request.headers.get("X-Judge-Node-Credential")
+    if encoded is not None:
+        import base64
+        try:
+            if len(encoded) > 6144:
+                raise ValueError("Credential exceeds limit")
+            secret = base64.b64decode(encoded, altchars=b'-_', validate=True).decode('utf-8')
+        except (ValueError, UnicodeError):
+            raise AppError(403, "node_secret_invalid", "Judge node credential is invalid.")
+    if not 1 <= len(secret) <= 1024 or not 1 <= len(lease) <= 128:
+        raise AppError(403, "node_secret_invalid", "Judge node credential is missing.")
+    try:
+        accepted = await asyncio.to_thread(editor_execution.update, task_id, secret, lease, session_factory=store._session)
+        if not accepted:
+            raise not_found()
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > MAX_WIRE_BYTES:
+                raise AppError(413, "editor_result_large", "실행 결과가 전송 한도를 넘었습니다.")
+            content.extend(chunk)
+        try:
+            value = json.loads(content)
+        except (ValueError, UnicodeError):
+            raise AppError(422, "editor_result_invalid", "JSON 실행 결과를 전송하세요.")
+        if not isinstance(value, dict) or set(value) not in [{"result"}, {"error"}]:
+            raise AppError(422, "editor_result_invalid", "실행 결과 또는 오류 하나를 전송하세요.")
+        if "error" in value and (not isinstance(value["error"], str) or not value["error"] or len(value["error"]) > 4000):
+            raise AppError(422, "editor_result_invalid", "실행 오류 형식을 확인하세요.")
+        return ok(request, await asyncio.to_thread(editor_execution.update, task_id, secret, lease, **value, session_factory=store._session))
+    except ValueError as error:
+        if "lease mismatch" in str(error):
+            raise AppError(409, "lease_conflict", "Lease token mismatch.")
+        raise AppError(403, "node_secret_invalid", "Judge node secret is invalid.")

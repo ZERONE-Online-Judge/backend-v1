@@ -295,6 +295,9 @@ def create_schema() -> None:
                     connection.execute(text("ALTER TABLE team_members ADD COLUMN session_revoked_at DATETIME"))
         if "judge_nodes" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("judge_nodes")}
+            for name, declaration in [("allow_zoj", "BOOLEAN NOT NULL DEFAULT 1"), ("allow_editor", "BOOLEAN NOT NULL DEFAULT 1"), ("execution_capabilities", "JSON NOT NULL DEFAULT '[]'"), ("execution_revision", "VARCHAR(128)")]:
+                if name not in columns:
+                    connection.execute(text(f"ALTER TABLE judge_nodes ADD COLUMN {name} {declaration}"))
             if "agent_version" not in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE judge_nodes ADD COLUMN agent_version VARCHAR(64) DEFAULT 'unknown' NOT NULL"))

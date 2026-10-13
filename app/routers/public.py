@@ -167,7 +167,7 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
 def judge_status(request: Request):
     nodes = list(store.judge_nodes.values())
     active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
-    active_nodes = [node for node in nodes if node.last_heartbeat_at >= active_since]
+    active_nodes = [node for node in nodes if node.schedulable and node.allow_zoj and node.last_heartbeat_at >= active_since]
     # Submission activity is private: even aggregate workload can reveal
     # competitors' submissions during a contest.
     return ok(
