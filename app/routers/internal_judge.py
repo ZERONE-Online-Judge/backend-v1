@@ -27,7 +27,7 @@ class RegisterNodeRequest(NodeCredentialRequest):
     @field_validator("execution_capabilities")
     @classmethod
     def supported_capabilities(cls, value):
-        if any(item != "editor-execute-v1" for item in value):
+        if any(item not in {"editor-execute-v1", editor_judging.FULL_VERIFICATION} for item in value):
             raise ValueError("Unsupported execution capability")
         return sorted(set(value))
 
@@ -59,6 +59,7 @@ class ResultRequest(NodeCredentialRequest):
     failed_testcase_order: int | None = None
     runtime_ms: int | None = None
     memory_kb: int | None = None
+    testcase_results: list[editor_judging.CaseResult] | None = Field(default=None, max_length=1000)
 
     @field_validator("final_status")
     @classmethod
@@ -73,6 +74,8 @@ class ProgressRequest(NodeCredentialRequest):
     status: SubmissionStatus
     progress_current: int | None = None
     progress_total: int | None = None
+    testcase_result: editor_judging.CaseResult | None = None
+    testcase_results: list[editor_judging.CaseResult] | None = Field(default=None, max_length=1000)
 
     @field_validator("status")
     @classmethod
@@ -198,7 +201,8 @@ async def report_result(job_id: str, payload: ResultRequest, request: Request):
                 editor_judging.update, job_id, payload.node_secret, payload.lease_token,
                 result={"final_status": payload.final_status.value, "compile_message": payload.compile_message,
                         "judge_message": payload.judge_message, "failed_testcase_order": payload.failed_testcase_order,
-                        "runtime_ms": payload.runtime_ms, "memory_kb": payload.memory_kb},
+                        "runtime_ms": payload.runtime_ms, "memory_kb": payload.memory_kb,
+                        **({"testcase_results": [case.model_dump() for case in payload.testcase_results]} if payload.testcase_results is not None else {})},
                 session_factory=store._session,
             )
             if editor_result:
@@ -229,6 +233,8 @@ async def report_progress(job_id: str, payload: ProgressRequest, request: Reques
             editor_result = await asyncio.to_thread(
                 editor_judging.update, job_id, payload.node_secret, payload.lease_token,
                 status=payload.status.value, current=payload.progress_current, total=payload.progress_total,
+                testcase_result=payload.testcase_result.model_dump() if payload.testcase_result else None,
+                testcase_results=[case.model_dump() for case in payload.testcase_results] if payload.testcase_results is not None else None,
                 session_factory=store._session,
             )
             if editor_result:

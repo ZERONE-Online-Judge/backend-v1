@@ -1,5 +1,6 @@
 """Authenticated Editor snapshots dispatched to the existing judge protocol."""
 import gzip
+import base64
 import copy
 import hashlib
 import hmac
@@ -30,6 +31,9 @@ RUNNING = {"preparing", "judging"}
 MAX_ARCHIVE = 128 * 1024**2
 MAX_CONTENT = 256 * 1024**2
 HASH = r"^[a-f0-9]{64}$"
+FULL_VERIFICATION = "editor-judge-full-v1"
+MAX_CASE_OUTPUT_BYTES = 256 * 1024
+MAX_RUN_OUTPUT_BYTES = 16 * 1024 * 1024
 _maintenance_lock = threading.Lock()
 _last_maintenance = 0.0
 
@@ -48,6 +52,17 @@ class Case(Strict):
     index: int = Field(ge=1, le=1000000)
     input_sha: str = Field(pattern=HASH)
     answer_sha: str = Field(pattern=HASH)
+
+
+class CaseResult(Strict):
+    index: int = Field(ge=1, le=1000000)
+    final_status: Literal["accepted", "wrong_answer", "time_limit_exceeded", "memory_limit_exceeded", "runtime_error", "output_limit_exceeded", "system_error"]
+    runtime_ms: int | None = Field(default=None, ge=0)
+    memory_kb: int | None = Field(default=None, ge=0)
+    judge_message: str = Field(default="", max_length=2048)
+    output_base64: str | None = Field(default=None, max_length=4 * ((MAX_CASE_OUTPUT_BYTES + 2) // 3))
+    output_total_bytes: int | None = Field(default=None, ge=0)
+    output_truncated: bool = False
 
 
 class Resource(Strict):
@@ -71,6 +86,7 @@ class Snapshot(Strict):
     source: Source
     time_limit_ms: int = Field(ge=100, le=10000)
     memory_limit_mb: int = Field(ge=16, le=1024)
+    collect_all_results: bool = False
     testcases: list[Case] = Field(min_length=1, max_length=1000)
     resources: list[Resource] = Field(min_length=1, max_length=100)
 
@@ -94,6 +110,7 @@ def public_run(row):
         "id": row.run_id, "status": row.status,
         "progress_current": row.progress_current, "progress_total": row.testcase_count,
         "node_name": row.node_name, "agent_version": row.agent_version,
+        "attempts": row.attempts,
         "result": row.result, "runtime_revision": row.payload["runtime_revision"],
     }
 
@@ -102,10 +119,12 @@ def capabilities():
     with SessionLocal() as db:
         nodes = db.scalars(select(JudgeNodeRow).where(JudgeNodeRow.schedulable.is_(True), JudgeNodeRow.allow_editor.is_(True))).all()
         versions = sorted({n.agent_version for n in nodes})
-        revision = hashlib.sha256(json.dumps(["editor-dispatch-v1", settings.release_version, versions], separators=(",", ":")).encode()).hexdigest()[:16]
+        revision = hashlib.sha256(json.dumps([FULL_VERIFICATION, settings.release_version, versions], separators=(",", ":")).encode()).hexdigest()[:16]
         return {
             "backend": "zoj", "runtime_revision": "zoj-judge-" + revision,
             "languages": ["cpp17", "python313", "c99", "java8"],
+            "full_suite_protocol": FULL_VERIFICATION,
+            "full_suite_online_nodes": sum(FULL_VERIFICATION in (n.execution_capabilities or []) and aware(n.last_heartbeat_at) >= now_utc() - timedelta(seconds=settings.judge_node_active_window_seconds) for n in nodes),
             "standard_io_only": True, "contest_submissions_first": True,
             "online_nodes": sum(aware(n.last_heartbeat_at) >= now_utc() - timedelta(seconds=settings.judge_node_active_window_seconds) for n in nodes),
         }
@@ -208,6 +227,7 @@ def create(email, source, fingerprint):
                       payload={"language": snapshot.source.language, "source_code": code,
                                "source_name": snapshot.source.name, "context_hash": snapshot.context_hash,
                                "time_limit_ms": snapshot.time_limit_ms, "memory_limit_mb": snapshot.memory_limit_mb,
+                               "collect_all_results": snapshot.collect_all_results,
                                "bundle_key": bundle_key, "base_bundle_key": bundle_key, "excluded_orders": [],
                                "testcases": case_refs,
                                "dataset_storage_keys": list(written),
@@ -235,7 +255,7 @@ def resume(email, parent_id, operation_id):
         account = owner(db, email, lock=True)
         parent = db.scalar(select(Run).where(Run.run_id == parent_id, Run.owner_id == account.account_id).with_for_update())
         failed = (parent.result or {}).get("failed_testcase_order") if parent else None
-        if not parent or parent.status in ACTIVE or not failed or parent.testcase_count < 2:
+        if not parent or parent.payload.get("collect_all_results") or parent.status in ACTIVE or not failed or parent.testcase_count < 2:
             raise AppError(409, "editor_judge_resume_invalid", "실패가 확인된 테스트의 나머지 자료만 재검증할 수 있습니다.")
         operation = hashlib.sha256((account.account_id + "\n" + operation_id).encode()).hexdigest()
         fingerprint = hashlib.sha256((parent_id + "\n" + str(failed)).encode()).hexdigest()
@@ -325,7 +345,7 @@ def maintenance(session_factory=None):
                     keys.update(r["storage_key"] for r in row.payload.get("resources", []))
                     keys.update(c[k] for c in row.payload.get("testcases", []) for k in ("input_storage_key", "output_storage_key"))
                 for key in keys:
-                    if "/variants/" in key or not shared:
+                    if "/variants/" in key or "/outputs/" in key or not shared:
                         object_storage.delete(key)
                 db.delete(row)
                 db.commit()
@@ -348,6 +368,8 @@ def claim_jobs(node_id, node_secret, max_count, session_factory=None):
             row.status = "waiting" if row.attempts < 3 else "system_error"
             row.assigned_node_id = row.lease_token = row.leased_at = None
             row.progress_current = 0
+            if row.payload.get("collect_all_results"):
+                row.result = None
             if row.status == "system_error":
                 row.result = {"final_status": "system_error", "judge_message": "채점기 연결이 반복해서 중단되었습니다."}
                 row.completed_at = now_utc()
@@ -357,7 +379,10 @@ def claim_jobs(node_id, node_secret, max_count, session_factory=None):
         if max_count <= 0:
             db.commit()
             return []
-        rows = db.scalars(select(Run).where(Run.status == "waiting").order_by(Run.created_at, Run.run_id).limit(min(max_count, settings.judge_claim_max_batch_size)).with_for_update(skip_locked=True)).all()
+        query = select(Run).where(Run.status == "waiting")
+        if FULL_VERIFICATION not in (node.execution_capabilities or []):
+            query = query.where(Run.payload["collect_all_results"].as_boolean().is_not(True))
+        rows = db.scalars(query.order_by(Run.created_at, Run.run_id).limit(min(max_count, settings.judge_claim_max_batch_size)).with_for_update(skip_locked=True)).all()
         jobs = []
         for row in rows:
             row.status, row.assigned_node_id, row.lease_token, row.leased_at = "preparing", node_id, str(uuid4()), now_utc()
@@ -367,6 +392,7 @@ def claim_jobs(node_id, node_secret, max_count, session_factory=None):
             jobs.append({
                 "judge_job_id": row.run_id, "lease_token": row.lease_token,
                 "submission": {"submission_id": row.run_id, "submission_kind": "editor_verification", "language": payload["language"], "source_code": payload["source_code"]},
+                "collect_all_results": bool(payload.get("collect_all_results")),
                 "problem": {"problem_id": row.project_id, "time_limit_ms": payload["time_limit_ms"], "memory_limit_mb": payload["memory_limit_mb"], "language_resource_limits": {}},
                 # The bundle is an optimization. Keep real per-object fallback
                 # references so a download failure cannot become a no-test AC.
@@ -379,7 +405,73 @@ def claim_jobs(node_id, node_secret, max_count, session_factory=None):
         return jobs
 
 
-def update(run_id, node_secret, lease_token, *, result=None, status=None, current=None, total=None, session_factory=None):
+def output_key(row, index, sha):
+    return f"editor-judge/{row.owner_id}/outputs/{row.run_id}/{index}-{sha}.out"
+
+
+def merge_case_results(row, values, terminal=None):
+    expected = {case["display_order"] for case in row.payload["testcases"]}
+    previous = {case["index"]: case for case in (row.result or {}).get("testcase_results", [])}
+    merged = dict(previous)
+    writes = {}
+    incoming = set()
+    for item in values:
+        value = CaseResult.model_validate(item).model_dump()
+        index = value["index"]
+        if index not in expected or index in incoming:
+            raise ValueError("lease mismatch: invalid testcase result")
+        incoming.add(index)
+        encoded = value.pop("output_base64")
+        value["output_available"] = encoded is not None
+        if encoded is not None:
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except ValueError as error:
+                raise ValueError("lease mismatch: invalid output encoding") from error
+            size = len(content)
+            original_size = value["output_total_bytes"]
+            if size > MAX_CASE_OUTPUT_BYTES or original_size is None or original_size < size or value["output_truncated"] != (size < original_size):
+                raise ValueError("lease mismatch: invalid output size")
+            sha = hashlib.sha256(content).hexdigest()
+            value.update(output_size=size, output_sha256=sha)
+            key = output_key(row, index, sha)
+            if key not in row.storage_keys:
+                writes[key] = content
+        if index in previous and previous[index] != value:
+            raise ValueError("lease mismatch: testcase result changed")
+        merged[index] = value
+    if sum(case.get("output_size", 0) for case in merged.values()) > MAX_RUN_OUTPUT_BYTES:
+        raise ValueError("lease mismatch: output budget exceeded")
+    complete = set(merged) == expected
+    if terminal is not None:
+        if not complete and terminal["final_status"] not in {"compile_error", "system_error"}:
+            raise ValueError("lease mismatch: incomplete full-suite result")
+        if complete:
+            first = next((case for _, case in sorted(merged.items()) if case["final_status"] != "accepted"), None)
+            if terminal["final_status"] != (first["final_status"] if first else "accepted") or terminal.get("failed_testcase_order") != (first["index"] if first else None):
+                raise ValueError("lease mismatch: aggregate differs from testcase results")
+    for key, content in writes.items():
+        if object_storage.size_bytes(key) is None:
+            object_storage.write_bytes(key, content, "application/octet-stream")
+    row.storage_keys = list(dict.fromkeys([*row.storage_keys, *writes]))
+    return [value for _, value in sorted(merged.items())], complete
+
+
+def testcase_output(email, run_id, index):
+    with SessionLocal() as db:
+        account = owner(db, email)
+        row = db.scalar(select(Run).where(Run.run_id == run_id, Run.owner_id == account.account_id))
+        case = next((case for case in (row.result or {}).get("testcase_results", []) if case["index"] == index), None) if row else None
+        if not case or not case.get("output_available"):
+            raise AppError(404, "editor_output_missing", "저장된 실제 출력이 없습니다.")
+        content = object_storage.read_bytes(output_key(row, index, case["output_sha256"]))
+        if len(content) != case["output_size"] or hashlib.sha256(content).hexdigest() != case["output_sha256"]:
+            raise AppError(502, "editor_output_invalid", "저장된 출력의 무결성을 확인하지 못했습니다.")
+        return {"base64": base64.b64encode(content).decode("ascii"), "sha256": case["output_sha256"],
+                "size": len(content), "total_bytes": case["output_total_bytes"], "truncated": case["output_truncated"]}
+
+
+def update(run_id, node_secret, lease_token, *, result=None, status=None, current=None, total=None, testcase_result=None, testcase_results=None, session_factory=None):
     with (session_factory or SessionLocal)() as db:
         row = db.scalar(select(Run).where(Run.run_id == run_id).with_for_update())
         if not row:
@@ -390,7 +482,9 @@ def update(run_id, node_secret, lease_token, *, result=None, status=None, curren
         if not row.lease_token or not hmac.compare_digest(row.lease_token.encode(), lease_token.encode()):
             raise ValueError("lease mismatch")
         if result is not None and row.status not in ACTIVE:
-            if row.result == result:
+            retry = {k: v for k, v in (row.result or {}).items() if k not in {"testcase_results", "full_suite_complete"}}
+            incoming = {k: v for k, v in result.items() if k != "testcase_results"}
+            if retry == incoming and (not row.payload.get("collect_all_results") or (merge_case_results(row, result.get("testcase_results") or [], result)[0] == row.result.get("testcase_results"))):
                 return {"accepted": True, "editor_run": public_run(row)}
             raise ValueError("lease mismatch")
         if row.status not in RUNNING or not row.leased_at or aware(row.leased_at) <= now_utc() - timedelta(seconds=settings.judge_lease_timeout_seconds):
@@ -403,7 +497,14 @@ def update(run_id, node_secret, lease_token, *, result=None, status=None, curren
             if failed is not None and failed not in {c["display_order"] for c in row.payload["testcases"]}:
                 raise ValueError("lease mismatch")
             row.status = result["final_status"]
-            row.result = result
+            if row.payload.get("collect_all_results"):
+                cases, complete = merge_case_results(row, result.get("testcase_results") or [], result)
+                row.result = {**result, "testcase_results": cases, "full_suite_complete": complete}
+                row.progress_current = len(cases)
+            else:
+                if result.get("testcase_results") is not None:
+                    raise ValueError("lease mismatch: unrequested testcase results")
+                row.result = result
             row.completed_at = now_utc()
             if row.status == "accepted":
                 row.progress_current = row.testcase_count
@@ -412,6 +513,14 @@ def update(run_id, node_secret, lease_token, *, result=None, status=None, curren
                 raise ValueError("lease mismatch")
             row.status = status
             row.progress_current = max(row.progress_current, min(max(current or 0, 0), row.testcase_count))
+            if testcase_result is not None or testcase_results is not None:
+                if not row.payload.get("collect_all_results"):
+                    raise ValueError("lease mismatch: unrequested testcase result")
+                if testcase_result is not None and testcase_results is not None:
+                    raise ValueError("lease mismatch: ambiguous testcase result format")
+                cases, _ = merge_case_results(row, [testcase_result] if testcase_result is not None else testcase_results)
+                row.result = {"testcase_results": cases, "full_suite_complete": False}
+                row.progress_current = len(cases)
         db.commit()
         if result is not None and row.payload["bundle_key"] != row.payload["base_bundle_key"]:
             # Only a derived subset is disposable here. The immutable dataset

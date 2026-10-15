@@ -68,6 +68,12 @@ def remaining(run_id: str, request: Request, operation_id: str = Query(pattern=r
     return ok(request, judging.resume(email, run_id, operation_id))
 
 
+@router.get("/runs/{run_id}/testcases/{index}/output")
+def testcase_output(run_id: str, index: int, request: Request):
+    email, _ = authenticated(request, empty=True)
+    return ok(request, judging.testcase_output(email, run_id, index))
+
+
 @router.delete("/runs/{run_id}")
 def cancel(run_id: str, request: Request):
     email, _ = authenticated(request, empty=True)

@@ -132,6 +132,113 @@ def report(run_id, lease, **changes):
     return client.post(f"/api/internal/judge/jobs/{run_id}/result", json=values)
 
 
+def full_run():
+    parent = submit(snapshot(change=lambda manifest, files: manifest.update(collect_all_results=True))).json()['data']['id']
+    node_id = node()
+    assert claim(node_id) == []  # Old agents must not silently stop at a failure.
+    registered = client.post('/api/internal/judge/nodes/register', json={
+        'node_name': 'editor-test-node', 'node_secret': SECRET, 'total_slots': 2, 'agent_version': '0.2.23',
+        'execution_capabilities': [judging.FULL_VERIFICATION], 'execution_revision': judging.FULL_VERIFICATION})
+    assert registered.status_code == 200, registered.text
+    job = claim(node_id)[0]
+    assert job['collect_all_results'] and job['submission']['submission_kind'] == 'editor_verification'
+    return parent, job
+
+
+def case_result(index, status='accepted', output=b'answer\n'):
+    return {'index': index, 'final_status': status, 'runtime_ms': index, 'memory_kb': index * 10,
+            'judge_message': '', 'output_base64': base64.b64encode(output).decode(),
+            'output_total_bytes': len(output), 'output_truncated': False}
+
+
+def progress_case(parent, job, case, count=1):
+    return client.post(f'/api/internal/judge/jobs/{parent}/progress', json={
+        'node_secret': SECRET, 'lease_token': job['lease_token'], 'status': 'judging',
+        'progress_current': count, 'progress_total': 2, 'testcase_result': case})
+
+
+def test_full_suite_reports_live_results_and_downloadable_binary_output_with_owner_acl(database):
+    parent, job = full_run()
+    bad = case_result(2, 'wrong_answer', b'\x00\xff\r\n')
+    good = case_result(7, output=b'')
+    response = progress_case(parent, job, bad)
+    assert response.status_code == 200, response.text
+    path = f'/api/editor/judge/runs/{parent}'
+    live = client.get(path, headers=headers('GET', path)).json()['data']
+    assert live['status'] == 'judging' and live['progress_current'] == 1
+    saved = live['result']['testcase_results'][0]
+    assert saved['final_status'] == 'wrong_answer' and 'output_base64' not in saved
+    with database() as db:
+        row = db.get(Run, parent)
+        assert saved['output_sha256'] == hashlib.sha256(b'\x00\xff\r\n').hexdigest()
+        assert all('output_base64' not in case for case in row.result['testcase_results'])
+        assert object_storage.read_bytes(judging.output_key(row, 2, saved['output_sha256'])) == b'\x00\xff\r\n'
+    assert progress_case(parent, job, bad).status_code == 200
+    assert progress_case(parent, job, good, 2).status_code == 200
+    values = {'final_status': 'wrong_answer', 'failed_testcase_order': 2, 'testcase_results': [bad, good]}
+    final = report(parent, job['lease_token'], **values)
+    assert final.status_code == 200, final.text
+    assert report(parent, job['lease_token'], **values).status_code == 200
+    result = final.json()['data']['editor_run']['result']
+    assert result['full_suite_complete']
+    assert [case['final_status'] for case in result['testcase_results']] == ['wrong_answer', 'accepted']
+    output_path = path + '/testcases/2/output'
+    data = client.get(output_path, headers=headers('GET', output_path)).json()['data']
+    assert base64.b64decode(data['base64']) == b'\x00\xff\r\n' and data['size'] == 4 and not data['truncated']
+    assert client.get(output_path, headers=headers('GET', output_path, email='other@example.com')).status_code == 404
+    assert client.get(output_path).status_code == 401
+    remaining = path + '/remaining?operation_id=' + uuid4().hex
+    assert client.post(remaining, headers=headers('POST', remaining)).status_code == 409
+
+
+def test_full_suite_rejects_missing_duplicate_foreign_or_contradictory_results(database):
+    parent, job = full_run()
+    for cases in [[case_result(2)], [case_result(2), case_result(2)], [case_result(2), case_result(99)]]:
+        assert report(parent, job['lease_token'], testcase_results=cases).status_code == 409
+    assert report(parent, job['lease_token'], final_status='wrong_answer', failed_testcase_order=2,
+                  testcase_results=[case_result(2), case_result(7)]).status_code == 409
+    with database() as db:
+        assert db.get(Run, parent).status in judging.RUNNING
+    assert report(parent, job['lease_token'], testcase_results=[case_result(2), case_result(7)]).status_code == 200
+
+
+def test_compile_error_keeps_unexecuted_tests_unknown_and_retries_do_not_replace_outputs(database):
+    parent, job = full_run()
+    assert report(parent, job['lease_token'], final_status='compile_error', compile_message='compile failed', testcase_results=[]).status_code == 200
+    path = f'/api/editor/judge/runs/{parent}'
+    result = client.get(path, headers=headers('GET', path)).json()['data']
+    assert result['progress_current'] == 0
+    assert result['result']['testcase_results'] == [] and not result['result']['full_suite_complete']
+
+
+def test_output_validation_prevents_silent_truncation_changed_evidence_and_budget_amplification(database, monkeypatch):
+    parent, job = full_run()
+    bad = case_result(2, output=b'1234')
+    bad['output_total_bytes'] = 8
+    assert progress_case(parent, job, bad).status_code == 409
+    bad['output_truncated'] = True
+    assert progress_case(parent, job, bad).status_code == 200
+    assert progress_case(parent, job, case_result(2, output=b'changed')).status_code == 409
+    monkeypatch.setattr(judging, 'MAX_RUN_OUTPUT_BYTES', 5)
+    assert progress_case(parent, job, case_result(7, output=b'1234')).status_code == 409
+    with database() as db:
+        result = db.get(Run, parent).result['testcase_results']
+        assert len(result) == 1 and result[0]['output_size'] == 4 and result[0]['output_truncated']
+
+
+def test_batched_case_progress_persists_each_output_without_completing_the_run(database):
+    parent, job = full_run()
+    cases = [case_result(2, 'wrong_answer'), case_result(7)]
+    response = client.post(f'/api/internal/judge/jobs/{parent}/progress', json={
+        'node_secret': SECRET, 'lease_token': job['lease_token'], 'status': 'judging',
+        'progress_current': 2, 'progress_total': 2, 'testcase_results': cases})
+    assert response.status_code == 200, response.text
+    run = response.json()['data']['editor_run']
+    assert run['status'] == 'judging' and run['progress_current'] == 2
+    assert len(run['result']['testcase_results']) == 2 and not run['result']['full_suite_complete']
+    assert all(case['output_available'] for case in run['result']['testcase_results'])
+
+
 def test_signed_snapshot_retry_acl_and_no_contest_submission(database):
     body = snapshot()
     r = submit(body)
