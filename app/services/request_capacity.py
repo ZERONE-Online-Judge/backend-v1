@@ -27,6 +27,10 @@ class RequestCapacityMiddleware:
             "stream": settings.api_max_session_streams}[lane]
         # No await between checking and incrementing: each process has one loop.
         authorization = dict(scope.get("headers", [])).get(b"authorization")
+        if authorization:
+            scheme, separator, token = authorization.partition(b" ")
+            if separator and scheme.lower() == b"bearer":
+                authorization = token
         identity = (lane, hashlib.sha256(authorization).digest()) if authorization else None
         account_full = identity is not None and self.accounts.get(identity, 0) >= settings.api_max_account_requests
         if self.active[lane] >= limit or account_full:

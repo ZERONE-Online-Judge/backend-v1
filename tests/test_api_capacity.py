@@ -174,6 +174,8 @@ def test_one_token_cannot_take_all_capacity_and_cancellation_releases_it(monkeyp
         slow = asyncio.create_task(call(b"Bearer a", "/api/slow"))
         await entered.wait()
         assert await call(b"Bearer a", "/api/fast") == 429
+        assert await call(b"bearer a", "/api/fast") == 429
+        assert await call(b"BEARER a", "/api/fast") == 429
         assert await call(b"Bearer b", "/api/fast") == 200
         slow.cancel()
         await asyncio.gather(slow, return_exceptions=True)
