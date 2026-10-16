@@ -1,7 +1,12 @@
+from app.services.request_sessions import request_database
 import asyncio
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, EmailStr, Field
+from starlette.concurrency import run_in_threadpool
+from app.services.submission_status import PENDING, wait_for_submission, read_status_snapshot
+from app.database import status_session
+from app.services.scoreboard_response import scoreboard_response
 
 from app.models import ContestResourceAccess, ContestStatus, SubmissionStatus, now_utc
 from app.services.access_logging import write_access_log
@@ -44,31 +49,7 @@ def _problem_solve_statuses(contest_id: str, participant: dict | None) -> dict[s
         return {}
     if participant.get("is_preview"):
         return preview_solve_statuses(participant)
-    team_id = participant["team"].participant_team_id
-    statuses: dict[str, str] = {}
-    pending = {SubmissionStatus.WAITING, SubmissionStatus.PREPARING, SubmissionStatus.JUDGING}
-    wrong = {
-        SubmissionStatus.WRONG_ANSWER,
-        SubmissionStatus.COMPILE_ERROR,
-        SubmissionStatus.RUNTIME_ERROR,
-        SubmissionStatus.TIME_LIMIT_EXCEEDED,
-        SubmissionStatus.MEMORY_LIMIT_EXCEEDED,
-        SubmissionStatus.OUTPUT_LIMIT_EXCEEDED,
-        SubmissionStatus.SYSTEM_ERROR,
-    }
-    for submission in store.submissions.values():
-        if submission.contest_id != contest_id or submission.participant_team_id != team_id:
-            continue
-        current = statuses.get(submission.problem_id)
-        if current == "accepted":
-            continue
-        if submission.status == SubmissionStatus.ACCEPTED:
-            statuses[submission.problem_id] = "accepted"
-        elif submission.status in wrong:
-            statuses[submission.problem_id] = "wrong"
-        elif submission.status in pending and current is None:
-            statuses[submission.problem_id] = "unsolved"
-    return statuses
+    return store.participant_solve_statuses(contest_id, participant["team"].participant_team_id)
 
 
 def _problem_payload(problem, solve_statuses: dict[str, str], include_editorial: bool = False) -> dict:
@@ -172,7 +153,7 @@ def _allow_visible_resource(access: ContestResourceAccess, participant: dict | N
 
 def _allow_problem_view(request: Request, contest_id: str, division_id: str | None = None) -> tuple[dict | None, object]:
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
+    contest = store.get_contest(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if participant and participant.get("is_preview"):
@@ -192,7 +173,7 @@ def _allow_problem_view(request: Request, contest_id: str, division_id: str | No
 
 def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str | None = None) -> tuple[dict | None, object]:
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
+    contest = store.get_contest(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if participant and participant.get("is_preview"):
@@ -212,7 +193,7 @@ def _allow_scoreboard_view(request: Request, contest_id: str, division_id: str |
 
 def _allow_submission_list_view(request: Request, contest_id: str) -> tuple[dict | None, object]:
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
+    contest = store.get_contest(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if participant and participant.get("is_preview"):
@@ -239,8 +220,9 @@ def _participant_submission_payload(
     item["team_name"] = team_name
     item["member_name"] = member_name
     item["queue_position"] = queue_position if show_progress else None
-    if show_progress and item["queue_position"] is None:
-        item["queue_position"] = store.pending_queue_ranks().get(submission.submission_id)
+    if show_progress and submission.status == "waiting" and item["queue_position"] is None:
+        item["queue_position"] = store.pending_queue_ranks(submission.contest_id,
+            submission_ids=[submission.submission_id]).get(submission.submission_id)
     source_code = item.get("source_code") or ""
     item["source_code_length"] = source_code_length if source_code_length is not None else len(source_code.encode("utf-8"))
     progress_current = item.get("progress_current")
@@ -311,7 +293,7 @@ def _submission_progress_visible(contest) -> bool:
 
 
 @router.post("/contests/{contest_id}/participant-login/otp/request")
-async def request_otp(contest_id: str, payload: OtpRequest, request: Request):
+def request_otp(contest_id: str, payload: OtpRequest, request: Request):
     contest = store.get_public_contest(contest_id, allow_private=True)
     if not contest:
         raise not_found()
@@ -334,7 +316,7 @@ async def request_otp(contest_id: str, payload: OtpRequest, request: Request):
 
 
 @router.post("/contests/{contest_id}/participant-login/otp/verify")
-async def verify_otp(contest_id: str, payload: OtpVerifyRequest, request: Request):
+def verify_otp(contest_id: str, payload: OtpVerifyRequest, request: Request):
     try:
         verified = store.verify_otp(
             contest_id,
@@ -394,7 +376,8 @@ async def verify_otp(contest_id: str, payload: OtpVerifyRequest, request: Reques
 
 
 @router.get("/contests/{contest_id}/participant-session/me")
-async def participant_me(contest_id: str, request: Request):
+@request_database
+def participant_me(contest_id: str, request: Request):
     token = bearer_token(request)
     session = store.get_participant_by_access_token(contest_id, token) if token else None
     if not session:
@@ -425,13 +408,14 @@ async def participant_me(contest_id: str, request: Request):
 
 
 @router.get("/contests/{contest_id}/workspace")
-async def workspace(contest_id: str, request: Request, team_member_email: str | None = None):
+@request_database
+def workspace(contest_id: str, request: Request, team_member_email: str | None = None):
     participant, contest = _allow_problem_view(request, contest_id)
     divisions = store.contest_divisions(contest_id)
     division = participant["division"] if participant else (divisions[0] if divisions else None)
     if not division:
         raise not_found("Contest division is not configured.")
-    problems = _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division.division_id])
+    problems = _sort_problems(store.contest_problems(contest_id, division.division_id))
     solve_statuses = _problem_solve_statuses(contest_id, participant)
     contest_payload = contest_payload_for_view(contest, participant)
     return ok(
@@ -448,12 +432,13 @@ async def workspace(contest_id: str, request: Request, team_member_email: str | 
 
 
 @router.get("/contests/{contest_id}/divisions/{division_id}/workspace")
-async def division_workspace(contest_id: str, division_id: str, request: Request):
+@request_database
+def division_workspace(contest_id: str, division_id: str, request: Request):
     participant, contest = _allow_problem_view(request, contest_id, division_id)
     division = store.get_division(contest_id, division_id)
     if not division:
         raise not_found()
-    problems = _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])
+    problems = _sort_problems(store.contest_problems(contest_id, division_id))
     solve_statuses = _problem_solve_statuses(contest_id, participant)
     contest_payload = contest_payload_for_view(contest, participant)
     return ok(
@@ -469,32 +454,35 @@ async def division_workspace(contest_id: str, division_id: str, request: Request
 
 
 @router.get("/contests/{contest_id}/problems")
-async def problems(contest_id: str, request: Request):
+@request_database
+def problems(contest_id: str, request: Request):
     participant, _ = _allow_problem_view(request, contest_id)
     divisions = store.contest_divisions(contest_id)
     division_id = participant["division"].division_id if participant else (divisions[0].division_id if divisions else None)
     solve_statuses = _problem_solve_statuses(contest_id, participant)
     return page(
         request,
-        [_problem_payload(p, solve_statuses) for p in _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])],
+        [_problem_payload(p, solve_statuses) for p in _sort_problems(store.contest_problems(contest_id, division_id))],
     )
 
 
 @router.get("/contests/{contest_id}/divisions/{division_id}/problems")
-async def division_problems(contest_id: str, division_id: str, request: Request):
+@request_database
+def division_problems(contest_id: str, division_id: str, request: Request):
     participant, _ = _allow_problem_view(request, contest_id, division_id)
     if not store.get_division(contest_id, division_id):
         raise not_found()
     solve_statuses = _problem_solve_statuses(contest_id, participant)
     return page(
         request,
-        [_problem_payload(p, solve_statuses) for p in _sort_problems([p for p in store.problems.values() if p.contest_id == contest_id and p.division_id == division_id])],
+        [_problem_payload(p, solve_statuses) for p in _sort_problems(store.contest_problems(contest_id, division_id))],
     )
 
 
 @router.get("/contests/{contest_id}/problems/{problem_id}")
-async def problem_detail(contest_id: str, problem_id: str, request: Request):
-    problem = store.problems.get(problem_id)
+@request_database
+def problem_detail(contest_id: str, problem_id: str, request: Request):
+    problem = store.get_problem(problem_id)
     if not problem or problem.contest_id != contest_id:
         raise not_found()
     participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
@@ -509,8 +497,9 @@ async def problem_detail(contest_id: str, problem_id: str, request: Request):
 
 
 @router.get("/contests/{contest_id}/problems/{problem_id}/assets")
-async def problem_assets(contest_id: str, problem_id: str, request: Request):
-    problem = store.problems.get(problem_id)
+@request_database
+def problem_assets(contest_id: str, problem_id: str, request: Request):
+    problem = store.get_problem(problem_id)
     if not problem or problem.contest_id != contest_id:
         raise not_found()
     participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
@@ -538,9 +527,9 @@ async def problem_assets(contest_id: str, problem_id: str, request: Request):
 
 
 @router.post("/contests/{contest_id}/problems/{problem_id}/submissions")
-async def create_submission(contest_id: str, problem_id: str, payload: SubmissionCreateRequest, request: Request):
+def create_submission(contest_id: str, problem_id: str, payload: SubmissionCreateRequest, request: Request):
     participant = require_participant(request, contest_id)
-    contest = store.contests.get(contest_id)
+    contest = store.get_contest(contest_id)
     if not contest:
         raise not_found()
     if not participant.get("is_preview") and (contest.status != ContestStatus.RUNNING or now_utc() >= contest.end_at):
@@ -561,8 +550,8 @@ async def create_submission(contest_id: str, problem_id: str, payload: Submissio
 
 
 @router.post("/contests/{contest_id}/problems/{problem_id}/mock-submissions")
-async def create_mock_submission(contest_id: str, problem_id: str, payload: SubmissionCreateRequest, request: Request):
-    problem = store.problems.get(problem_id)
+def create_mock_submission(contest_id: str, problem_id: str, payload: SubmissionCreateRequest, request: Request):
+    problem = store.get_problem(problem_id)
     if not problem or problem.contest_id != contest_id:
         raise not_found()
     participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
@@ -594,44 +583,36 @@ async def wait_mock_submission_status(
     wait_seconds: float = 2.0,
     poll_interval_seconds: float = 0.25,
 ):
-    submission = store.get_submission(submission_id, include_source=False)
-    if not submission or submission.contest_id != contest_id or not _is_mock_submission(submission):
-        raise not_found()
-    problem = store.problems.get(submission.problem_id)
-    if not problem:
-        raise not_found()
-    participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
-    if participant and participant.get("is_preview"):
-        raise permission_denied("미리보기에서는 참가자 제출 기능을 사용해 주세요.")
-    if not _is_ended(contest) or not contest.mock_judging_enabled:
-        raise not_found()
-    if contest.problem_access_after_end == ContestResourceAccess.PARTICIPANTS and not participant:
-        raise authentication_required("Participant access token is required.")
-    wait_budget = max(0.0, min(wait_seconds, 10.0))
-    poll = max(0.1, min(poll_interval_seconds, 1.0))
-    loops = max(1, int(wait_budget / poll))
-    for _ in range(loops):
-        updated = store.get_submission(submission_id, include_source=False)
-        if not updated:
+    @request_database(session_factory=status_session)
+    def snapshot():
+        submission = store.get_submission(submission_id, include_source=False)
+        if not submission or submission.contest_id != contest_id or not _is_mock_submission(submission):
             raise not_found()
-        if updated.status not in {"waiting", "preparing", "judging"}:
-            full = store.get_submission(submission_id)
-            if not full:
-                raise not_found()
-            show_progress = contest.participant_progress_visible or contest.mock_judging_progress_visible
-            return ok(request, _mock_submission_payload(full, show_progress=show_progress))
-        await asyncio.sleep(poll)
-    latest = store.get_submission(submission_id)
-    if not latest:
-        raise not_found()
-    show_progress = contest.participant_progress_visible or contest.mock_judging_progress_visible
-    return ok(request, _mock_submission_payload(latest, show_progress=show_progress))
+        problem = store.get_problem(submission.problem_id)
+        if not problem:
+            raise not_found()
+        participant, contest = _allow_problem_view(request, contest_id, problem.division_id)
+        if participant and participant.get("is_preview"):
+            raise permission_denied("미리보기에서는 참가자 제출 기능을 사용해 주세요.")
+        if not _is_ended(contest) or not contest.mock_judging_enabled:
+            raise not_found()
+        if contest.problem_access_after_end == ContestResourceAccess.PARTICIPANTS and not participant:
+            raise authentication_required("Participant access token is required.")
+        return submission, _mock_submission_payload(submission,
+            show_progress=contest.participant_progress_visible or contest.mock_judging_progress_visible)
+
+    submission, payload = await read_status_snapshot(snapshot)
+    if submission.status in PENDING:
+        await wait_for_submission(submission_id, min(max(wait_seconds, 0), 10))
+        submission, payload = await read_status_snapshot(snapshot)
+    return ok(request, payload)
 
 
 @router.get("/contests/{contest_id}/notices")
-async def contest_notices(contest_id: str, request: Request):
+@request_database
+def contest_notices(contest_id: str, request: Request):
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
+    contest = store.get_contest(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     ended = _is_ended(contest)
@@ -655,9 +636,10 @@ async def contest_notices(contest_id: str, request: Request):
 
 
 @router.get("/contests/{contest_id}/boards")
-async def contest_board(contest_id: str, request: Request):
+@request_database
+def contest_board(contest_id: str, request: Request):
     participant = _optional_participant(request, contest_id)
-    contest = store.contests.get(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
+    contest = store.get_contest(contest_id) if participant and participant.get("is_preview") else store.get_public_contest(contest_id, allow_private=bool(participant))
     if not contest:
         raise not_found()
     if participant and participant.get("is_preview"):
@@ -668,7 +650,7 @@ async def contest_board(contest_id: str, request: Request):
 
 
 @router.post("/contests/{contest_id}/boards")
-async def create_question(contest_id: str, payload: QuestionCreateRequest, request: Request):
+def create_question(contest_id: str, payload: QuestionCreateRequest, request: Request):
     participant = require_participant(request, contest_id)
     if participant.get("is_preview"):
         if payload.visibility not in {"public", "private"}:
@@ -738,7 +720,7 @@ async def create_question(contest_id: str, payload: QuestionCreateRequest, reque
 
 
 @router.post("/contests/{contest_id}/boards/{question_id}/answers")
-async def create_question_answer(
+def create_question_answer(
     contest_id: str,
     question_id: str,
     payload: QuestionAnswerCreateRequest,
@@ -781,7 +763,8 @@ async def create_question_answer(
 
 
 @router.get("/contests/{contest_id}/submissions")
-async def submissions(
+@request_database
+def submissions(
     contest_id: str,
     request: Request,
     limit: int = 100,
@@ -791,7 +774,6 @@ async def submissions(
     problem_id: str | None = None,
 ):
     participant, contest = _allow_submission_list_view(request, contest_id)
-    queue_ranks = store.pending_queue_ranks(contest_id=contest_id)
     show_progress = _submission_progress_visible(contest)
     if participant and participant.get("is_preview"):
         if division_id and division_id != participant["division"].division_id:
@@ -812,7 +794,7 @@ async def submissions(
         items = _participant_submission_payloads(
             submissions,
             include_source=False,
-            queue_ranks=queue_ranks,
+            queue_ranks=store.pending_queue_ranks(contest_id, submission_ids=[s.submission_id for s in submissions if s.status == "waiting"]),
             source_lengths=source_lengths,
             show_progress=show_progress,
         )
@@ -832,11 +814,12 @@ async def submissions(
         limit=limit,
         cursor=cursor,
     )
-    source_lengths = store.submission_source_lengths([submission.submission_id for submission in submissions])
+    source_lengths = ({s.submission_id: len(s.source_code.encode()) for s in submissions}
+        if include_source else store.submission_source_lengths([s.submission_id for s in submissions]))
     items = _participant_submission_payloads(
         submissions,
         include_source=include_source,
-        queue_ranks=queue_ranks,
+        queue_ranks=store.pending_queue_ranks(contest_id, submission_ids=[s.submission_id for s in submissions if s.status == "waiting"]),
         source_lengths=source_lengths,
         show_progress=show_progress,
     )
@@ -851,9 +834,10 @@ async def submissions(
 
 
 @router.get("/contests/{contest_id}/submissions/{submission_id}")
-async def submission_detail(contest_id: str, submission_id: str, request: Request):
+@request_database
+def submission_detail(contest_id: str, submission_id: str, request: Request):
     participant = _require_contest_participant(request, contest_id)
-    contest = store.contests.get(contest_id)
+    contest = store.get_contest(contest_id)
     if not contest:
         raise not_found()
     submission = store.get_submission(submission_id)
@@ -870,64 +854,59 @@ async def wait_submission_status(
     wait_seconds: float = 2.0,
     poll_interval_seconds: float = 0.25,
 ):
-    participant = _require_contest_participant(request, contest_id)
-    contest = store.contests.get(contest_id)
-    if not contest:
-        raise not_found()
-    submission = store.get_submission(submission_id, include_source=False)
-    if not submission or submission.contest_id != contest_id or not owns_submission(participant, submission):
-        raise not_found()
-    wait_budget = max(0.0, min(wait_seconds, 10.0))
-    poll = max(0.1, min(poll_interval_seconds, 1.0))
-    loops = max(1, int(wait_budget / poll))
-    for _ in range(loops):
-        updated = store.get_submission(submission_id, include_source=False)
-        if not updated:
+    # Authenticate/authorize each HTTP request in a worker thread. Waiting itself
+    # shares indexed status batches, rather than one SELECT per tab per tick.
+    @request_database(session_factory=status_session)
+    def snapshot():
+        participant = _require_contest_participant(request, contest_id)
+        contest = store.get_contest(contest_id)
+        submission = store.get_submission(submission_id)
+        if not contest or not submission or submission.contest_id != contest_id or not owns_submission(participant, submission):
             raise not_found()
-        if updated.status not in {"waiting", "preparing", "judging"}:
-            full = store.get_submission(submission_id)
-            if not full:
-                raise not_found()
-            return ok(request, _participant_submission_payload(full, include_source=True, show_progress=_submission_progress_visible(contest)))
-        await asyncio.sleep(poll)
-    latest = store.get_submission(submission_id)
-    if not latest:
-        raise not_found()
-    return ok(request, _participant_submission_payload(latest, include_source=True, show_progress=_submission_progress_visible(contest)))
+        return submission, _participant_submission_payload(submission, include_source=True,
+            show_progress=_submission_progress_visible(contest))
+
+    submission, payload = await read_status_snapshot(snapshot)
+    if submission.status in PENDING:
+        await wait_for_submission(submission_id, min(max(wait_seconds, 0), 10))
+        submission, payload = await read_status_snapshot(snapshot)
+    return ok(request, payload)
 
 
 @router.get("/contests/{contest_id}/scoreboard")
+@request_database
 def scoreboard(contest_id: str, request: Request):
     participant, _ = _allow_scoreboard_view(request, contest_id)
     divisions = store.contest_divisions(contest_id)
     division = participant["division"] if participant else (divisions[0] if divisions else None)
     if not division:
         raise not_found("Contest division is not configured.")
-    board = store.scoreboard_rows(contest_id, division.division_id, public_view=True)
-    if not board:
+    board = store.scoreboard_rows(contest_id, division.division_id, public_view=True, serialized=True, response_division=division)
+    if not board or board == "null":
         raise not_found()
-    return ok(request, {"division": division.model_dump(mode="json"), **board})
+    return scoreboard_response(request, board)
 
 
 @router.get("/contests/{contest_id}/scoreboard:wait")
 async def wait_scoreboard(contest_id: str, request: Request, wait_seconds: float = 2.0):
     await asyncio.sleep(max(0, min(wait_seconds, 10.0)))
-    return await asyncio.to_thread(scoreboard, contest_id, request)
+    return await run_in_threadpool(scoreboard, contest_id, request)
 
 
 @router.get("/contests/{contest_id}/divisions/{division_id}/scoreboard")
+@request_database
 def division_scoreboard(contest_id: str, division_id: str, request: Request):
     _allow_scoreboard_view(request, contest_id, division_id)
     division = store.get_division(contest_id, division_id)
     if not division:
         raise not_found()
-    board = store.scoreboard_rows(contest_id, division_id, public_view=True)
-    if not board:
+    board = store.scoreboard_rows(contest_id, division_id, public_view=True, serialized=True, response_division=division)
+    if not board or board == "null":
         raise not_found()
-    return ok(request, {"division": division.model_dump(mode="json"), **board})
+    return scoreboard_response(request, board)
 
 
 @router.get("/contests/{contest_id}/divisions/{division_id}/scoreboard:wait")
 async def wait_division_scoreboard(contest_id: str, division_id: str, request: Request, wait_seconds: int = 5):
     await asyncio.sleep(max(0, min(wait_seconds, 10)))
-    return await asyncio.to_thread(division_scoreboard, contest_id, division_id, request)
+    return await run_in_threadpool(division_scoreboard, contest_id, division_id, request)

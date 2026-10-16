@@ -1,5 +1,6 @@
 import json
 import re
+from functools import lru_cache
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, inspect, text
@@ -9,6 +10,14 @@ from app.settings import settings
 
 
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+if settings.database_url.startswith("postgresql"):
+    options = []
+    if settings.database_statement_timeout_ms:
+        options.append(f"-c statement_timeout={settings.database_statement_timeout_ms}")
+    if settings.database_lock_timeout_ms:
+        options.append(f"-c lock_timeout={settings.database_lock_timeout_ms}")
+    if options:
+        connect_args["options"] = " ".join(options)
 pool_options = {} if settings.database_url.startswith("sqlite") else {
     "pool_size": settings.database_pool_size,
     "max_overflow": settings.database_max_overflow,
@@ -18,6 +27,18 @@ pool_options = {} if settings.database_url.startswith("sqlite") else {
 }
 engine = create_engine(settings.database_url, connect_args=connect_args, future=True, **pool_options)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
+
+
+@lru_cache(maxsize=1)
+def _status_session_factory():
+    status_engine = create_engine(settings.database_url, connect_args=connect_args,
+        pool_size=1, max_overflow=0, pool_timeout=0.5, pool_pre_ping=True, pool_recycle=1800)
+    return sessionmaker(bind=status_engine, autoflush=False, expire_on_commit=False)
+
+
+def status_session():
+    # Preserve single-connection in-memory SQLite installations/tests.
+    return SessionLocal() if settings.database_url.startswith("sqlite") else _status_session_factory()()
 
 
 class Base(DeclarativeBase):

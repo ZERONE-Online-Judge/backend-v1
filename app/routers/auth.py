@@ -156,40 +156,40 @@ class GeneralLogoutRequest(BaseModel):
 
 
 @router.post("/auth/staff/login")
-async def staff_login(payload: StaffLoginRequest, request: Request):
+def staff_login(payload: StaffLoginRequest, request: Request):
     raise AppError(410, "staff_login_removed", "Staff login has been unified into general email OTP login.")
 
 
 @router.post("/auth/staff/otp/request")
-async def staff_otp_request(payload: StaffOtpRequest, request: Request):
+def staff_otp_request(payload: StaffOtpRequest, request: Request):
     raise AppError(410, "staff_login_removed", "Staff login has been unified into general email OTP login.")
 
 
 @router.post("/auth/staff/otp/verify")
-async def staff_otp_verify(payload: StaffOtpVerifyRequest, request: Request):
+def staff_otp_verify(payload: StaffOtpVerifyRequest, request: Request):
     raise AppError(410, "staff_login_removed", "Staff login has been unified into general email OTP login.")
 
 
 @router.get("/auth/staff/me")
-async def staff_me(request: Request):
+def staff_me(request: Request):
     account = require_staff(request)
     return ok(request, account.model_dump(mode="json"))
 
 
 @router.post("/auth/staff/logout")
-async def staff_logout(payload: StaffLogoutRequest, request: Request):
+def staff_logout(payload: StaffLogoutRequest, request: Request):
     revoked = store.revoke_staff_session(bearer_token(request), payload.refresh_token)
     return ok(request, {"revoked": revoked})
 
 
 @router.api_route("/auth/staff/logout", methods=["GET", "DELETE"])
-async def staff_logout_compat(request: Request):
+def staff_logout_compat(request: Request):
     revoked = store.revoke_staff_session(bearer_token(request), None)
     return ok(request, {"revoked": revoked})
 
 
 @router.post("/auth/staff/refresh")
-async def staff_refresh(payload: StaffRefreshRequest, request: Request):
+def staff_refresh(payload: StaffRefreshRequest, request: Request):
     refreshed = store.refresh_staff_session(payload.refresh_token)
     if not refreshed:
         raise AppError(401, "invalid_credentials", "Invalid refresh token.")
@@ -197,11 +197,11 @@ async def staff_refresh(payload: StaffRefreshRequest, request: Request):
 
 
 @router.post("/auth/general/otp/request")
-async def general_otp_request(payload: GeneralOtpRequest, request: Request):
+def general_otp_request(payload: GeneralOtpRequest, request: Request):
     from app.services.auth_rate_limit import consume
     if not settings.allow_empty_otp:
-        await run_in_threadpool(consume,'otp-mail-ip',request.client.host,1000,3600)
-        await run_in_threadpool(consume,'otp-mail-email',str(payload.email),10,3600)
+        consume('otp-mail-ip',request.client.host,1000,3600)
+        consume('otp-mail-email',str(payload.email),10,3600)
     if is_presentation_email(str(payload.email)):
         raise AppError(401, "presentation_login_required", "프레젠테이션 전용 로그인으로 접속해 주세요.")
     retry_after = store.general_otp_retry_after_seconds(str(payload.email))
@@ -222,10 +222,10 @@ async def general_otp_request(payload: GeneralOtpRequest, request: Request):
 
 
 @router.post("/auth/general/otp/verify")
-async def general_otp_verify(payload: GeneralOtpVerifyRequest, request: Request, response: Response):
+def general_otp_verify(payload: GeneralOtpVerifyRequest, request: Request, response: Response):
     from app.services.auth_rate_limit import check_otp
     if not (settings.allow_empty_otp and payload.otp_code==''):
-        await run_in_threadpool(check_otp,str(payload.email),request.client.host)
+        check_otp(str(payload.email),request.client.host)
     if is_presentation_email(str(payload.email)):
         raise AppError(401, "presentation_login_required", "프레젠테이션 전용 로그인으로 접속해 주세요.")
     try:
@@ -272,17 +272,17 @@ async def general_otp_verify(payload: GeneralOtpVerifyRequest, request: Request,
 
 
 @router.post("/auth/general/login-method")
-async def general_login_method(payload: GeneralLoginMethodRequest, request: Request):
+def general_login_method(payload: GeneralLoginMethodRequest, request: Request):
     return ok(request, {"method": "otp"})
 
 
 @router.post("/auth/general/password/login")
-async def general_password_login(payload: GeneralPasswordLoginRequest, request: Request, response: Response):
+def general_password_login(payload: GeneralPasswordLoginRequest, request: Request, response: Response):
     from app.services import password_auth
     if is_presentation_email(str(payload.email)):
         raise AppError(401, "presentation_login_required", "프레젠테이션 전용 로그인으로 접속해 주세요.")
     try:
-        session = await run_in_threadpool(password_auth.login, str(payload.email), payload.password, payload.force_new_session, request.client.host)
+        session = password_auth.login(str(payload.email), payload.password, payload.force_new_session, request.client.host)
     except SessionConflictError as exc:
         raise AppError(409,"session_conflict","이미 다른 브라우저 또는 기기에서 로그인 중입니다.",exc.details)
     if not session:
@@ -304,24 +304,24 @@ def password_email(request):
 
 
 @router.get("/auth/general/password")
-async def password_status(request: Request):
+def password_status(request: Request):
     from app.services import password_auth
-    email = await run_in_threadpool(password_email,request)
-    return ok(request,{"has_password":await run_in_threadpool(password_auth.has_password,email)})
+    email = password_email(request)
+    return ok(request,{"has_password":password_auth.has_password(email)})
 
 
 @router.post("/auth/general/password/request")
-async def password_request(request: Request):
+def password_request(request: Request):
     from app.services import password_auth
-    email = await run_in_threadpool(password_email,request)
-    return ok(request,await run_in_threadpool(password_auth.request_change,email,"set",request.client.host))
+    email = password_email(request)
+    return ok(request,password_auth.request_change(email,"set",request.client.host))
 
 
 @router.post("/auth/general/password/confirm")
-async def password_confirm(payload: PasswordConfirm, request: Request, response: Response):
+def password_confirm(payload: PasswordConfirm, request: Request, response: Response):
     from app.services import password_auth
-    email = await run_in_threadpool(password_email,request)
-    result = await run_in_threadpool(password_auth.confirm_change,email,"set",payload.otp_code,payload.new_password,request.client.host)
+    email = password_email(request)
+    result = password_auth.confirm_change(email,"set",payload.otp_code,payload.new_password,request.client.host)
     from app.services.shared_login import clear_cookie
     clear_cookie(response)
     write_access_log(request,event_type="password_changed",account_scope="general",email=email)
@@ -329,21 +329,21 @@ async def password_confirm(payload: PasswordConfirm, request: Request, response:
 
 
 @router.post("/auth/general/password/reset/request")
-async def password_reset_request(payload: PasswordResetRequest, request: Request):
+def password_reset_request(payload: PasswordResetRequest, request: Request):
     from app.services import password_auth
-    return ok(request,await run_in_threadpool(password_auth.request_change,str(payload.email),"reset",request.client.host))
+    return ok(request,password_auth.request_change(str(payload.email),"reset",request.client.host))
 
 
 @router.post('/auth/general/login-options')
-async def general_login_options(payload: PasswordResetRequest, request: Request):
+def general_login_options(payload: PasswordResetRequest, request: Request):
     from app.services.password_auth import login_options
-    return ok(request, await run_in_threadpool(login_options,str(payload.email),request.client.host))
+    return ok(request, login_options(str(payload.email),request.client.host))
 
 
 @router.post("/auth/general/password/reset/confirm")
-async def password_reset_confirm(payload: PasswordResetConfirm, request: Request, response: Response):
+def password_reset_confirm(payload: PasswordResetConfirm, request: Request, response: Response):
     from app.services import password_auth
-    result = await run_in_threadpool(password_auth.confirm_change,str(payload.email),"reset",payload.otp_code,payload.new_password,request.client.host)
+    result = password_auth.confirm_change(str(payload.email),"reset",payload.otp_code,payload.new_password,request.client.host)
     from app.services.shared_login import clear_cookie
     clear_cookie(response)
     write_access_log(request,event_type="password_reset",account_scope="general",email=str(payload.email))
@@ -351,17 +351,17 @@ async def password_reset_confirm(payload: PasswordResetConfirm, request: Request
 
 
 @router.post("/auth/general/password/otp/request")
-async def general_password_otp_request(payload: GeneralPasswordOtpRequest, request: Request):
+def general_password_otp_request(payload: GeneralPasswordOtpRequest, request: Request):
     raise AppError(410, "password_login_removed", "Password login has been removed. Use email OTP login.")
 
 
 @router.post("/auth/general/password/otp/verify")
-async def general_password_otp_verify(payload: GeneralPasswordOtpVerifyRequest, request: Request):
+def general_password_otp_verify(payload: GeneralPasswordOtpVerifyRequest, request: Request):
     raise AppError(410, "password_login_removed", "Password login has been removed. Use email OTP login.")
 
 
 @router.get("/auth/general/me")
-async def general_me(request: Request):
+def general_me(request: Request):
     token = bearer_token(request)
     session = store.get_general_by_access_token(token) if token else None
     if not session:
@@ -370,7 +370,7 @@ async def general_me(request: Request):
 
 
 @router.post("/auth/general/refresh")
-async def general_refresh(request: Request,response: Response,payload: GeneralRefreshRequest | None = None):
+def general_refresh(request: Request,response: Response,payload: GeneralRefreshRequest | None = None):
     from app.services.shared_login import COOKIE,set_cookie
     token=request.cookies.get(COOKIE) or (payload.refresh_token if payload else None)
     refreshed = store.refresh_general_session(token) if token else None
@@ -391,7 +391,7 @@ async def general_refresh(request: Request,response: Response,payload: GeneralRe
 
 
 @router.post("/auth/general/logout")
-async def general_logout(payload: GeneralLogoutRequest, request: Request,response:Response):
+def general_logout(payload: GeneralLogoutRequest, request: Request,response:Response):
     token = bearer_token(request)
     session = store.get_general_by_access_token(token) if token else None
     from app.services.shared_login import COOKIE,clear_cookie
@@ -412,13 +412,13 @@ async def general_logout(payload: GeneralLogoutRequest, request: Request,respons
 
 
 @router.post('/auth/general/sso')
-async def restore_shared_login(request:Request,response:Response,payload:GeneralLogoutRequest | None = None):
+def restore_shared_login(request:Request,response:Response,payload:GeneralLogoutRequest | None = None):
     from app.services.shared_login import COOKIE,set_cookie
     origin=request.headers.get('origin')
     if settings.app_env=='production' and origin and origin.rstrip('/')!=settings.public_base_url.rstrip('/'):
         raise AppError(403,'origin_denied','허용되지 않은 로그인 요청입니다.')
     token=request.cookies.get(COOKIE) or (payload.refresh_token if payload else None)
-    result=await run_in_threadpool(store.refresh_general_session,token) if token else None
+    result=store.refresh_general_session(token) if token else None
     if not result:
         raise AppError(401,'authentication_required','ZOJ 로그인 세션이 없습니다.')
     if not request.cookies.get(COOKIE):
@@ -428,7 +428,7 @@ async def restore_shared_login(request:Request,response:Response,payload:General
 
 @router.api_route("/auth/general/logout", methods=["GET", "DELETE"])
 @router.api_route("/auth/logout", methods=["GET", "POST", "DELETE"])
-async def general_logout_compat(request: Request, response: Response):
+def general_logout_compat(request: Request, response: Response):
     token = bearer_token(request)
     session = store.get_general_by_access_token(token) if token else None
     from app.services.shared_login import COOKIE, clear_cookie
@@ -449,7 +449,7 @@ async def general_logout_compat(request: Request, response: Response):
 
 
 @router.post("/auth/general/contests/{contest_id}/participant-session")
-async def general_participant_session(contest_id: str, request: Request):
+def general_participant_session(contest_id: str, request: Request):
     token = bearer_token(request)
     session = store.get_general_by_access_token(token) if token else None
     if not session:
@@ -491,7 +491,7 @@ class ParticipantPreviewSessionRequest(BaseModel):
 
 
 @router.get("/auth/general/contests/{contest_id}/participant-preview")
-async def participant_preview_options(contest_id: str, request: Request):
+def participant_preview_options(contest_id: str, request: Request):
     from app.services.participant_preview import get_preview_participant, preview_account
     require_staff(request)
     token = bearer_token(request)
@@ -505,7 +505,7 @@ async def participant_preview_options(contest_id: str, request: Request):
 
 
 @router.post("/auth/general/contests/{contest_id}/participant-preview-session")
-async def participant_preview_session(contest_id: str, payload: ParticipantPreviewSessionRequest, request: Request):
+def participant_preview_session(contest_id: str, payload: ParticipantPreviewSessionRequest, request: Request):
     from app.services.participant_preview import select_preview_division
     require_staff(request)
     token = bearer_token(request)

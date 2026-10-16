@@ -9,11 +9,12 @@ import secrets
 from zoneinfo import ZoneInfo
 from fastapi.encoders import jsonable_encoder
 
-from sqlalchemy import case as sql_case, delete, func, or_, select, update
+from sqlalchemy import LargeBinary, cast, case as sql_case, delete, func, inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, load_only, object_session, selectinload
+from sqlalchemy.orm import Session, joinedload, load_only, object_session, selectinload
 
 from app.database import SessionLocal, create_schema
+from app.services.request_sessions import current_session
 from app.services.contest_visibility import contest_is_public, contest_hidden_by_status, normalize_private_resources
 from app.services.errors import AppError, permission_denied
 from app.settings import settings
@@ -156,12 +157,13 @@ def _valid_session_token(token: str, expected_type: str) -> bool:
     return decode_session_token(token, expected_type) is not None
 
 
-def _contest(row: ContestRow) -> Contest:
+def _contest(row: ContestRow, *, release_locked: bool | None = None) -> Contest:
     db = object_session(row)
-    release_locked = bool(db and db.scalar(select(ScoreboardReleaseRow.division_id).where(
-        ScoreboardReleaseRow.contest_id == row.contest_id,
-        ScoreboardReleaseRow.mode != "not_started",
-    ).limit(1)))
+    if release_locked is None:
+        release_locked = bool(db and db.scalar(select(ScoreboardReleaseRow.division_id).where(
+            ScoreboardReleaseRow.contest_id == row.contest_id,
+            ScoreboardReleaseRow.mode != "not_started",
+        ).limit(1)))
     return Contest(
         contest_id=row.contest_id,
         title=row.title,
@@ -661,7 +663,61 @@ class DbStore:
         self.ensure_bootstrap_service_master()
 
     def _session(self) -> Session:
-        return SessionLocal()
+        return current_session(SessionLocal)
+
+    def get_contest(self, contest_id: str) -> Contest | None:
+        """Refresh only this contest; unrelated contests are never scanned."""
+        with self._session() as db:
+            found = db.execute(select(ContestRow, select(ScoreboardReleaseRow.division_id).where(
+                ScoreboardReleaseRow.contest_id == contest_id,
+                ScoreboardReleaseRow.mode != "not_started").exists())
+                .where(ContestRow.contest_id == contest_id)).first()
+            if not found:
+                return None
+            row, locked = found
+            status = _schedule_status(row.status, row.start_at, row.end_at, now_utc())
+            if status != row.status:
+                row.status = status
+                db.commit()
+            db.info.setdefault("request_contest_policies", {})[contest_id] = row
+            return _contest(row, release_locked=locked)
+
+    def get_problem(self, problem_id: str) -> Problem | None:
+        with self._session() as db:
+            row = db.get(ProblemRow, problem_id)
+            return _problem(row) if row else None
+
+    def contest_problems(self, contest_id: str, division_id: str) -> list[Problem]:
+        with self._session() as db:
+            rows = db.scalars(select(ProblemRow).where(ProblemRow.contest_id == contest_id,
+                ProblemRow.division_id == division_id).order_by(ProblemRow.display_order)).all()
+            return [_problem(row) for row in rows]
+
+    def participant_solve_statuses(self, contest_id: str, team_id: str) -> dict[str, str]:
+        with self._session() as db:
+            pairs = db.execute(select(SubmissionRow.problem_id, SubmissionRow.status).where(
+                SubmissionRow.contest_id == contest_id, SubmissionRow.participant_team_id == team_id,
+                SubmissionRow.submission_kind == "participant").distinct()).all()
+        statuses = {}
+        for pid, status in pairs:
+            if status == "accepted":
+                statuses[pid] = "accepted"
+            elif status not in {"waiting", "preparing", "judging"} and statuses.get(pid) != "accepted":
+                statuses[pid] = "wrong"
+        return statuses
+
+    @staticmethod
+    def _touch_session(db: Session, session) -> None:
+        """Write activity at most once per interval; never cache authorization."""
+        cutoff = now_utc() - timedelta(seconds=settings.session_touch_interval_seconds)
+        if session.last_seen_at is not None and _aware(session.last_seen_at) > cutoff:
+            return
+        model = type(session)
+        pk = inspect(model).primary_key[0]
+        db.execute(update(model).where(pk == getattr(session, pk.key), model.revoked_at.is_(None),
+            or_(model.last_seen_at.is_(None), model.last_seen_at <= cutoff))
+            .values(last_seen_at=now_utc()).execution_options(synchronize_session=False))
+        db.commit()
 
     @property
     def contests(self) -> dict[str, Contest]:
@@ -1215,20 +1271,31 @@ class DbStore:
         if not submission_ids:
             return {}
         with self._session() as db:
+            byte_length = (func.octet_length(SubmissionRow.source_code)
+                if db.bind.dialect.name == "postgresql"
+                else func.length(cast(SubmissionRow.source_code, LargeBinary)))
             rows = db.execute(
-                select(SubmissionRow.submission_id, SubmissionRow.source_code)
+                select(SubmissionRow.submission_id, byte_length)
                 .where(SubmissionRow.submission_id.in_(submission_ids))
             ).all()
             return {
-                str(submission_id): len((source_code or "").encode("utf-8"))
-                for submission_id, source_code in rows
+                str(submission_id): int(size or 0)
+                for submission_id, size in rows
             }
 
-    def pending_queue_ranks(self, contest_id: str | None = None) -> dict[str, int]:
+    def pending_queue_ranks(self, contest_id: str | None = None, *, submission_ids: list[str] | None = None) -> dict[str, int]:
+        if submission_ids == []:
+            return {}
         filters = [JudgeJobRow.status == "pending", ~rejudging.is_job()]
         if contest_id:
             filters.append(JudgeJobRow.contest_id == contest_id)
         with self._session() as db:
+            if submission_ids is not None:
+                ranked = select(JudgeJobRow.submission_id,
+                    (func.row_number().over(order_by=[JudgeJobRow.queue_position, JudgeJobRow.judge_job_id])-1).label("rank")
+                ).where(*filters).subquery()
+                return dict(db.execute(select(ranked.c.submission_id, ranked.c.rank)
+                    .where(ranked.c.submission_id.in_(submission_ids))).all())
             rows = db.scalars(
                 select(JudgeJobRow)
                 .where(*filters)
@@ -2008,9 +2075,8 @@ class DbStore:
             )
             if not session or _aware(session.access_expires_at) <= now_utc():
                 return None
-            session.last_seen_at = now_utc()
             profile = self._general_profile(db, session.email, issue_operator_session=True)
-            db.commit()
+            self._touch_session(db, session)
             if profile and profile.get("operator_session"):
                 profile["operator_session"]["access_token"] = access_token
                 profile["operator_session"]["refresh_token"] = ""
@@ -2042,8 +2108,7 @@ class DbStore:
                 .where(ParticipantTeamRow.participant_team_id == member.participant_team_id)
             )
             division = db.get(ContestDivisionRow, team.division_id) if team else None
-            session.last_seen_at = now_utc()
-            db.commit()
+            self._touch_session(db, session)
             if not team or not division:
                 return None
             team_model = _team(team)
@@ -2072,8 +2137,7 @@ class DbStore:
             account = db.scalar(select(StaffAccountRow).where(StaffAccountRow.email == session.email))
             if not account:
                 return None
-            session.last_seen_at = now_utc()
-            db.commit()
+            self._touch_session(db, session)
             return _staff(account)
 
     def refresh_general_session(self, refresh_token: str) -> dict | None:
@@ -2195,9 +2259,8 @@ class DbStore:
             )
             if not session or _aware(session.access_expires_at) <= now_utc():
                 return None
-            session.last_seen_at = now_utc()
             account = db.get(StaffAccountRow, session.staff_account_id)
-            db.commit()
+            self._touch_session(db, session)
             return _staff(account) if account else None
 
     def get_participant_by_access_token(self, contest_id: str, access_token: str) -> dict | None:
@@ -2205,28 +2268,27 @@ class DbStore:
             from app.services.participant_preview import get_preview_participant
             return get_preview_participant(contest_id, access_token)
         with self._session() as db:
-            session = db.scalar(
-                select(TeamSessionRow).where(
+            found = db.execute(
+                select(TeamSessionRow, ParticipantTeamRow, TeamMemberRow, ContestDivisionRow)
+                .join(ParticipantTeamRow, ParticipantTeamRow.participant_team_id == TeamSessionRow.participant_team_id)
+                .join(TeamMemberRow, TeamMemberRow.team_member_id == TeamSessionRow.team_member_id)
+                .join(ContestDivisionRow, ContestDivisionRow.division_id == TeamSessionRow.division_id)
+                .options(joinedload(ParticipantTeamRow.members))
+                .where(
                     TeamSessionRow.contest_id == contest_id,
                     TeamSessionRow.access_token_hash == token_hash(access_token),
                     TeamSessionRow.revoked_at.is_(None),
                 )
-            )
-            if not session or _aware(session.expires_at) <= now_utc():
+            ).unique().one_or_none()
+            if not found:
                 return None
-            session.last_seen_at = now_utc()
-            team = db.scalar(
-                select(ParticipantTeamRow)
-                .options(selectinload(ParticipantTeamRow.members))
-                .where(ParticipantTeamRow.participant_team_id == session.participant_team_id)
-            )
-            member = db.get(TeamMemberRow, session.team_member_id)
-            division = db.get(ContestDivisionRow, session.division_id)
-            db.commit()
-            if not team or not member or not division:
+            session, team, member, division = found
+            if _aware(session.expires_at) <= now_utc():
                 return None
             if member.session_revoked_at and _aware(session.issued_at) <= _aware(member.session_revoked_at):
                 return None
+            self._touch_session(db, session)
+            db.info.setdefault("request_divisions", {})[division.division_id] = division
             team_model = _team(team)
             member_model = next(item for item in team_model.members if item.team_member_id == member.team_member_id)
             return {
@@ -2296,17 +2358,14 @@ class DbStore:
             return [contest for contest in contests if contest_is_public(contest) or contest.contest_id in (visible_private_ids or set())]
 
     def get_public_contest(self, contest_id: str, *, allow_private: bool = False) -> Contest | None:
-        self.refresh_contest_statuses()
-        with self._session() as db:
-            row = db.get(ContestRow, contest_id)
-            if not row or row.status in {
+        contest = self.get_contest(contest_id)
+        if not contest or contest.status.value in {
                 ContestStatus.DRAFT.value,
                 ContestStatus.SCHEDULE_TBD.value,
                 ContestStatus.SCHEDULED.value,
             }:
-                return None
-            contest = _contest(row)
-            return contest if allow_private or contest_is_public(contest) else None
+            return None
+        return contest if allow_private or contest_is_public(contest) else None
 
     def contest_participation_counts(self, contest_id: str) -> dict[str, int]:
         """Return aggregate registration counts without loading participant data."""
@@ -4493,10 +4552,16 @@ class DbStore:
                 rows.append(self._public_scoreboard_row(original))
         return {"frozen": release.mode != "all", "rows": rows, "release": self._release_summary(release)}
 
-    def scoreboard_rows(self, contest_id: str, division_id: str | None = None, public_view: bool = False, *, _cutoff_at: datetime | None = None) -> dict | None:
+    def scoreboard_rows(self, contest_id: str, division_id: str | None = None, public_view: bool = False, *, _cutoff_at: datetime | None = None, serialized: bool = False, response_division=None) -> dict | str | None:
         compute = lambda: self._scoreboard_rows_uncached(contest_id, division_id, public_view, _cutoff_at=_cutoff_at)
-        if not settings.redis_url or _cutoff_at is not None:
-            return compute()
+        if response_division is not None:
+            raw_compute = compute
+            def compute():
+                board = raw_compute()
+                return {"data": {"division": response_division.model_dump(mode="json"), **board}} if board else None
+        if _cutoff_at is not None:
+            value = compute()
+            return json.dumps(jsonable_encoder(value), separators=(",", ":")) if serialized else value
         # Read the current visibility/freeze policy before every cache lookup.
         # A time boundary or settings change must never reuse a live public board.
         with self._session() as db:
@@ -4510,14 +4575,17 @@ class DbStore:
             cutoff = None
             if public_view and (immediate_hold or not (ended and strategy == "immediate")):
                 cutoff = self._scoreboard_cutoff(contest, now_utc(), resolver=immediate_hold or (ended and strategy == "resolver"))
-            identity = [contest_id, division_id, public_view, ended, cutoff,
-                        _contest(contest).model_dump(mode="json"),
+            identity = [contest_id, division_id, public_view, ended, cutoff, settings.feature_public_scoreboard_penalty,
+                        [contest.status, contest.start_at, contest.end_at, contest.freeze_at,
+                         contest.scoreboard_freeze_mode, contest.scoreboard_frozen_at,
+                         contest.scoreboard_release_mode],
                         [release.mode, release.strategy, release.revision] if release else None]
-        return cached_result("scoreboard", identity, settings.scoreboard_cache_ttl_seconds, compute)
+        return cached_result(f"scoreboard:{contest_id}", identity, settings.scoreboard_cache_ttl_seconds,
+            compute, serialized=serialized, snapshot=serialized and not ended, compressed=response_division is not None)
 
     def _scoreboard_rows_uncached(self, contest_id: str, division_id: str | None = None, public_view: bool = False, *, _cutoff_at: datetime | None = None) -> dict | None:
         with self._session() as db:
-            contest = db.get(ContestRow, contest_id)
+            contest = db.info.get("request_contest_policies", {}).get(contest_id) or db.get(ContestRow, contest_id)
             if not contest:
                 return None
 
@@ -4550,19 +4618,21 @@ class DbStore:
             if cutoff_at:
                 submission_filters.append(SubmissionRow.submitted_at <= cutoff_at)
 
-            teams = db.scalars(select(ParticipantTeamRow).where(*team_filters).order_by(ParticipantTeamRow.team_name)).all()
+            teams = db.execute(select(ParticipantTeamRow.participant_team_id, ParticipantTeamRow.team_name,
+                ParticipantTeamRow.division_id).where(*team_filters).order_by(ParticipantTeamRow.team_name)).all()
             excluded_team_ids = {team.participant_team_id for team in teams if team.team_name.startswith(OPERATOR_TEST_TEAM_PREFIX)}
             teams = [team for team in teams if team.participant_team_id not in excluded_team_ids]
-            problems = db.scalars(select(ProblemRow).where(*problem_filters).order_by(ProblemRow.display_order)).all()
+            problems = db.execute(select(ProblemRow.problem_id, ProblemRow.problem_code)
+                .where(*problem_filters).order_by(ProblemRow.display_order)).all()
             divisions = {
                 row.division_id: _division(row)
                 for row in db.scalars(select(ContestDivisionRow).where(ContestDivisionRow.contest_id == contest_id)).all()
             }
             problem_by_id = {problem.problem_id: problem for problem in problems}
-            submissions = db.scalars(select(SubmissionRow).options(load_only(
+            submissions = db.execute(select(
                 SubmissionRow.submission_id, SubmissionRow.participant_team_id,
                 SubmissionRow.problem_id, SubmissionRow.status, SubmissionRow.submitted_at,
-            )).where(*submission_filters).order_by(SubmissionRow.submitted_at, SubmissionRow.submission_id)).all()
+            ).where(*submission_filters).order_by(SubmissionRow.submitted_at, SubmissionRow.submission_id)).all()
             if excluded_team_ids:
                 submissions = [submission for submission in submissions if submission.participant_team_id not in excluded_team_ids]
 

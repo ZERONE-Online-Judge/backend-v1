@@ -1,3 +1,4 @@
+from app.services.request_sessions import request_database
 from datetime import timedelta
 
 from fastapi import APIRouter, Request, Response
@@ -49,7 +50,8 @@ def _service_master_emails() -> list[str]:
 
 
 @router.get("/public/home")
-async def home(request: Request):
+@request_database
+def home(request: Request):
     contests = store.visible_public_contests()
     emergency = next((notice for notice in store.service_notices.values() if notice.emergency), None)
     return ok(
@@ -66,7 +68,8 @@ async def home(request: Request):
 
 
 @router.get("/public/contests")
-async def contests(request: Request, response: Response):
+@request_database
+def contests(request: Request, response: Response):
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Vary"] = "Authorization"
     allowed_ids = visible_private_contest_ids(bearer_token(request))
@@ -74,7 +77,8 @@ async def contests(request: Request, response: Response):
 
 
 @router.get("/public/contests/{contest_id}")
-async def contest_detail(contest_id: str, request: Request, response: Response):
+@request_database
+def contest_detail(contest_id: str, request: Request, response: Response):
     allowed_ids = visible_private_contest_ids(bearer_token(request))
     contest = store.get_public_contest(contest_id, allow_private=contest_id in allowed_ids)
     if not contest:
@@ -92,14 +96,16 @@ async def contest_detail(contest_id: str, request: Request, response: Response):
 
 
 @router.get("/public/service-notices")
-async def service_notices(request: Request):
+@request_database
+def service_notices(request: Request):
     notices = [notice.model_dump(mode="json") for notice in store.service_notices.values()]
     notices.sort(key=lambda item: item.get("published_at", ""), reverse=True)
     return page(request, notices)
 
 
 @router.get("/public/service-notices/{notice_id}")
-async def service_notice_detail(notice_id: str, request: Request):
+@request_database
+def service_notice_detail(notice_id: str, request: Request):
     notice = store.service_notices.get(notice_id)
     if not notice:
         raise not_found()
@@ -107,7 +113,7 @@ async def service_notice_detail(notice_id: str, request: Request):
 
 
 @router.post("/public/contact-inquiries")
-async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: Request):
+def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: Request):
     inquiry = store.create_contact_inquiry(
         payload.title.strip(),
         payload.sender_name.strip(),
@@ -164,6 +170,7 @@ async def create_contact_inquiry(payload: ContactInquiryCreateRequest, request: 
 
 
 @router.get("/public/judge-status")
+@request_database
 def judge_status(request: Request):
     nodes = list(store.judge_nodes.values())
     active_since = now_utc() - timedelta(seconds=max(5, settings.judge_node_active_window_seconds))
@@ -179,7 +186,8 @@ def judge_status(request: Request):
 
 
 @router.get("/public/rules")
-async def rules(request: Request):
+@request_database
+def rules(request: Request):
     return ok(
         request,
         {

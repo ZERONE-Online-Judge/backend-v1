@@ -1,5 +1,7 @@
 import json
 import re
+from contextlib import asynccontextmanager
+import anyio.to_thread
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
@@ -11,6 +13,7 @@ from app import orm_models
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 
 from app.routers import admin, analytics, auth, internal_judge, operator, participant, public, presentation, seo, seo_documents, storage
@@ -20,9 +23,22 @@ from app.services.audit_context import OPERATOR_PATH, VERIFICATION_PATH, operato
 from app.services.authz import bearer_token
 from app.services.store import store
 from app.settings import settings
+from app.services.request_capacity import RequestCapacityMiddleware, busy_payload
+from sqlalchemy.exc import DBAPIError, TimeoutError as DatabasePoolTimeout
 
 
-app = FastAPI(title="Zerone Online Judge API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app):
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    previous = limiter.total_tokens
+    limiter.total_tokens = settings.api_threadpool_tokens
+    try:
+        yield
+    finally:
+        limiter.total_tokens = previous
+
+
+app = FastAPI(title="Zerone Online Judge API", version="0.1.0", lifespan=lifespan)
 
 AUDITED_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
 AUDIT_BODY_MAX_BYTES = 256 * 1024
@@ -47,20 +63,28 @@ ID_SEGMENT_PATTERN = re.compile(
 
 cors_origins = [origin.strip() for origin in settings.cors_allow_origins.split(",") if origin.strip()]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_origin_regex=settings.cors_allow_origin_regex,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+
+
+@app.exception_handler(DatabasePoolTimeout)
+async def database_busy_handler(request: Request, exc: DatabasePoolTimeout):
+    return JSONResponse(status_code=503, content=busy_payload(request.state.request_id),
+        headers={"Retry-After": "1", "Cache-Control": "no-store"})
+
+
+@app.exception_handler(DBAPIError)
+async def database_statement_error(request: Request, exc: DBAPIError):
+    if getattr(exc.orig, "sqlstate", None) not in {"57014", "55P03"}:
+        raise exc
+    return JSONResponse(status_code=503, content=busy_payload(request.state.request_id),
+        headers={"Retry-After": "1", "Cache-Control": "no-store"})
 
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
+        headers={"Retry-After": "1", "Cache-Control": "no-store"} if exc.code == "api_busy" else None,
         content={
             "error": {
                 "code": exc.code,
@@ -331,15 +355,15 @@ async def operational_audit_middleware(request: Request, call_next):
     if request.method.upper() in AUDITED_METHODS and scope:
         request, payload_details = await _audit_request_payload(request)
         payload_details["entities"] = _audit_path_entities(path)
-        before = _audit_existing_values(path, payload_details.get("body"))
+        before = await run_in_threadpool(_audit_existing_values, path, payload_details.get("body"))
         payload_details["schema_version"] = 2
         # Keep the actor's identity at the time of the request, including when
         # the action changes their email and revokes the token being used.
         try:
             token = bearer_token(request)
-            account = store.get_staff_by_access_token(token) if token else None
+            account = await run_in_threadpool(store.get_staff_by_access_token, token) if token else None
             if not account and token:
-                account = store.get_staff_by_general_access_token(token)
+                account = await run_in_threadpool(store.get_staff_by_general_access_token, token)
         except Exception:
             pass
 
@@ -347,7 +371,7 @@ async def operational_audit_middleware(request: Request, call_next):
     if response.status_code < 400 and getattr(request.state, "operator_access", None):
         from app.services.access_logging import record_operator_access
         contest_id, operator_account = request.state.operator_access
-        record_operator_access(request, contest_id, operator_account, bearer_token(request) or "")
+        await run_in_threadpool(record_operator_access, request, contest_id, operator_account, bearer_token(request) or "")
     if request.method.upper() not in AUDITED_METHODS or not scope:
         return response
 
@@ -360,12 +384,12 @@ async def operational_audit_middleware(request: Request, call_next):
         elif request.method.upper() == "DELETE":
             change_kind = "deleted"
         elif OPERATOR_PATH.fullmatch(path):
-            after = _audit_existing_values(path, payload_details.get("body"), after=True)
+            after = await run_in_threadpool(_audit_existing_values, path, payload_details.get("body"), after=True)
             if after is not None:
                 changes = _audit_changes(after, before) if before is not None else []
                 change_kind = "updated" if before is not None else "created"
         elif before is not None and request.method.upper() in {"PATCH", "PUT"}:
-            after = _audit_existing_values(path)
+            after = await run_in_threadpool(_audit_existing_values, path)
             if after is not None:
                 changes = _audit_changes(after, before)
                 change_kind = "updated"
@@ -380,14 +404,16 @@ async def operational_audit_middleware(request: Request, call_next):
         if response.status_code < 400 and getattr(request.state, "audit_rejudge", None):
             extra["rejudge"] = request.state.audit_rejudge
         if response.status_code < 400 and VERIFICATION_PATH.fullmatch(path):
-            with SessionLocal() as db:
-                extra = verification_snapshot(db, path, getattr(request.state, "audit_result", None))
+            def read_verification_audit():
+                with SessionLocal() as db:
+                    return verification_snapshot(db, path, getattr(request.state, "audit_result", None))
+            extra = await run_in_threadpool(read_verification_audit)
         details: dict[str, Any] = {
             **payload_details,
             "changes": changes,
             "change_kind": change_kind,
             "target": _audit_mapping({key: target_values[key] for key in ("title", "name", "team_name", "problem_code", "original_filename", "display_order", "display_name", "email", "roles") if key in target_values}) if target_values else {},
-            "contest_title": _audit_contest_title(contest_id),
+            "contest_title": await run_in_threadpool(_audit_contest_title, contest_id),
             **_audit_mapping(extra),
         }
         if request.url.query:
@@ -395,7 +421,7 @@ async def operational_audit_middleware(request: Request, call_next):
         actor_role = None
         if account:
             actor_role = "service_master" if account.is_service_master else "operator"
-        store.append_operational_audit_log(
+        await run_in_threadpool(store.append_operational_audit_log,
             scope=scope,
             action=_audit_action(request.method, path),
             method=request.method.upper(),
@@ -448,3 +474,15 @@ app.include_router(internal_judge.router, prefix="/api")
 app.include_router(storage.router, prefix="/api")
 
 app.include_router(presentation.router, prefix="/api")
+
+
+# Admission precedes audit/auth work; CORS also applies to overload responses.
+app.add_middleware(RequestCapacityMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_origin_regex=settings.cors_allow_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

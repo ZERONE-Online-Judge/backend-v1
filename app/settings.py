@@ -21,11 +21,21 @@ class Settings(BaseSettings):
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     cors_allow_origin_regex: str | None = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     database_url: str = "sqlite:////private/tmp/zerone_online_judge_demo_v5.db"
-    database_pool_size: int = 5
-    database_max_overflow: int = 5
+    database_pool_size: int = 6
+    database_max_overflow: int = 0
     database_pool_timeout_seconds: float = 5.0
+    database_statement_timeout_ms: int = Field(default=0, ge=0, le=600_000)
+    database_lock_timeout_ms: int = Field(default=0, ge=0, le=600_000)
     redis_url: str | None = None
     scoreboard_cache_ttl_seconds: int = 2
+    result_cache_max_entry_bytes: int = Field(default=16 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
+    session_touch_interval_seconds: int = Field(default=30, ge=0, le=300)
+    api_max_inflight_requests: int = Field(default=64, ge=1)
+    api_max_wait_requests: int = Field(default=128, ge=1)
+    api_max_session_streams: int = Field(default=2048, ge=1)
+    api_max_account_requests: int = Field(default=8, ge=1)
+    api_server_timing: bool = False
+    api_threadpool_tokens: int = Field(default=12, ge=1)
     access_stats_cache_ttl_seconds: int = 5
     access_log_retention_days: int = 365
     audit_log_retention_days: int = 365
