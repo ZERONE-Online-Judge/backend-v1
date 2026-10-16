@@ -18,6 +18,13 @@ const rate = Number(__ENV.RATE || 0);
 const pace = Number(__ENV.PACE || 0);
 const profile = __ENV.PROFILE || 'mixed';
 const base = __ENV.BASE_URL || 'http://127.0.0.1:18081';
+const paddingBytes = Number(__ENV.SOURCE_PADDING_BYTES || 0);
+if (!Number.isInteger(paddingBytes) || paddingBytes < 0 || paddingBytes > 500000) {
+  throw new Error('SOURCE_PADDING_BYTES must be an integer from 0 to 500000');
+}
+const padding = __ENV.SOURCE_PADDING_FILE ? open(__ENV.SOURCE_PADDING_FILE) : ' '.repeat(paddingBytes);
+if (padding.length !== paddingBytes) throw new Error('Source padding file size does not match SOURCE_PADDING_BYTES');
+const sourcePadding = paddingBytes ? '\n/*' + padding + '*/\n' : '';
 const etags = {};
 let reportedUnexpected = false;
 export const options = {
@@ -65,7 +72,7 @@ export default function () {
   if (kind === 'status') params.responseType = 'text';
   const response = kind === 'submit'
     ? http.post(base+paths[kind], JSON.stringify({language:'cpp17',
-      source_code:'// capacity '+(__ENV.OUTPUT || 'unknown').split('/').pop()+' '+__VU+' '+turn+'\n#include <cstdio>\nint main(){puts("3");}'}), params)
+      source_code:'// capacity '+(__ENV.OUTPUT || 'unknown').split('/').pop()+' '+__VU+' '+turn+'\n#include <cstdio>\nint main(){puts("3");}'+sourcePadding}), params)
     : http.get(base+paths[kind], params);
   const status = String(response.status);
   (counts[kind+status] || counts[kind+'error']).add(1);

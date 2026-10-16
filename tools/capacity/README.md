@@ -15,10 +15,12 @@ environment files, database passwords, or request authorization headers.
 
 - A separate PostgreSQL database and Redis instance; no service workers or judge
   agents may connect to that database.
-- An API container named `zoj-capacity-api` using `APP_ENV=capacity`, the candidate
-  app source and a 4 GiB memory limit. Use the existing locked application image
-  for dependencies. Run four Uvicorn workers with six SQL connections plus one
-  separate result-auth connection per worker, without SQL pool overflow.
+- An API container named `zoj-capacity-api` using `APP_ENV=capacity` and the
+  candidate app source. Use the existing locked application image for dependencies.
+  Record workers, SQL pool sizes, thread limits, admission limits and memory in
+  each run. The current 14-vCPU profile uses fourteen workers, three normal SQL
+  connections plus one result-auth connection per process, six worker threads,
+  32 normal in-flight requests per process and an 8 GiB container limit.
 - A proxy listening only on loopback, forwarding to that API. The default
   benchmark URL is `http://127.0.0.1:18081`. The harness verifies the API's
   environment before load. Do not point `BASE_URL` at the public service.
@@ -40,6 +42,8 @@ supports:
 | `WRITES=true` | Replace 5% of requests with source submissions |
 | `CONDITIONAL=false` | Disable ETag requests for a comparison |
 | `PACE` | Optional think time for continuous-user runs |
+| `SOURCE_PADDING_BYTES` | Add 0..500,000 ASCII padding bytes to each submitted source |
+| `SOURCE_PADDING_FILE` | Optional synthetic ASCII padding file of that exact size |
 
 Arrival-rate tests spread requests across all accounts and three contests.
 Continuous-user tests keep the requested virtual users issuing requests without
@@ -78,11 +82,18 @@ worker counts, SQL pools, the schema or scoreboard size.
 
 Use `--label candidate` or `--label baseline` to keep independent summaries and
 source submission receipts. The manifest records the target's health version.
-The load container is capped at one CPU so an unlimited client loop cannot
-monopolize the production host. Dropped arrivals still count as unexecuted work.
+The standard phase runner caps the load container at one CPU; the 14-vCPU
+configuration sweep used two CPUs. Record this limit with each result so client
+saturation is not mistaken for server capacity. Dropped arrivals count as
+unexecuted work.
 `streams.py --users 1000 --seconds 135 --output /capacity/streams.json` holds
 session-event connections during a separate k6 run. It requires `httpx` from the
 application image, verifies the target environment, and reports counts only.
+It interleaves accounts across the three contests in the same order as k6.
+Use `--ready-file /capacity/streams.ready.json` to confirm all connections are
+open before starting a steady-load comparison. Cold connection bursts and their
+429 responses must be reported separately; requesting 1,000 streams does not
+prove that all 1,000 were established.
 
 After collecting summaries, remove only the test containers, test database and
 private credentials created for the run. Verify public health and deployment

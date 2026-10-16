@@ -9,11 +9,17 @@ compose() {
   docker compose -f "$COMPOSE_FILE" "$@"
 }
 
+check_capacity() {
+  postgres_limit=$(compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SHOW max_connections"')
+  compose config --format json | python3 "$DEPLOY_DIR/capacity_budget.py" --max-connections "$postgres_limit"
+}
+
 usage() {
   cat <<'EOF'
 Usage:
   ./bluegreen.sh status
   ./bluegreen.sh active
+  ./bluegreen.sh check-capacity
   ./bluegreen.sh migrate
   ./bluegreen.sh start blue|green
   ./bluegreen.sh switch blue|green
@@ -74,15 +80,15 @@ apply_nginx() {
   sh "$DEPLOY_DIR/init-judge-tls.sh"
   # Validate the current files and synchronize mounts before switching. A Git
   # checkout can replace a file inode; binding the directory keeps reloads fresh.
-  compose run --rm --no-deps nginx nginx -t
+  compose run --rm --no-deps nginx nginx -c /etc/nginx/zoj/nginx.conf -t
   compose run --rm --no-deps judge-gateway nginx -t
   compose up -d --no-deps nginx
   if ! compose exec -T nginx sh -c "grep -q 'server api-$expected_color:8000;' /etc/nginx/conf.d/api-upstream.conf"; then
     echo "nginx container does not see api-$expected_color upstream config" >&2
     return 1
   fi
-  compose exec -T nginx nginx -t
-  compose exec -T nginx nginx -s reload
+  compose exec -T nginx nginx -c /etc/nginx/zoj/nginx.conf -t
+  compose exec -T nginx nginx -c /etc/nginx/zoj/nginx.conf -s reload
   compose up -d --no-deps judge-gateway
   compose exec -T judge-gateway nginx -t
   compose exec -T judge-gateway nginx -s reload
@@ -97,11 +103,15 @@ case "$cmd" in
   active)
     active_color
     ;;
+  check-capacity)
+    check_capacity
+    ;;
   migrate)
     compose run --rm migrate
     ;;
   start)
     color=$(normalize_color "${2:-}")
+    check_capacity
     compose up -d --build "api-$color"
     healthcheck "$color"
     ;;
@@ -118,6 +128,7 @@ case "$cmd" in
     ;;
   deploy)
     color=$(normalize_color "${2:-}")
+    check_capacity
     compose run --rm migrate
     compose up -d --build "api-$color"
     healthcheck "$color"

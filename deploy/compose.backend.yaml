@@ -4,9 +4,9 @@ x-app-logging: &app-logging
     max-size: "10m"
     max-file: "3"
 
-# Explicit service settings also replace legacy env_file overflow defaults.
+# Explicit role settings also replace legacy env_file pool defaults.
 x-database-pool: &database-pool
-  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-6}
+  DATABASE_POOL_SIZE: ${WORKER_DATABASE_POOL_SIZE:-${DATABASE_POOL_SIZE:-2}}
   DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-0}
   DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-5}
 
@@ -15,8 +15,8 @@ x-api-service: &api-service
     context: ..
   env_file:
     - ./env/backend.env
-  command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "${API_WORKERS:-4}"]
-  mem_limit: ${API_MEMORY_LIMIT:-4g}
+  command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "${API_WORKERS:-14}"]
+  mem_limit: ${API_MEMORY_LIMIT:-8g}
   logging: *app-logging
   volumes:
     - ${FRONTEND_DIST_PATH:-../../frontend/dist}:/frontend:ro
@@ -52,10 +52,11 @@ services:
   nginx:
     logging: *app-logging
     image: nginx:stable
+    command: ["nginx", "-c", "/etc/nginx/zoj/nginx.conf", "-g", "daemon off;"]
     ports:
       - "6001:80"
     volumes:
-      - ./nginx-global.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-global:/etc/nginx/zoj:ro
       - ${FRONTEND_DIST_PATH:-../../frontend/dist}:/usr/share/nginx/html:ro
       - ${TEST_FRONTEND_DIST_PATH:-../../test-frontend/dist}:/usr/share/nginx/html-test:ro
       - ./nginx:/etc/nginx/conf.d:ro
@@ -69,6 +70,9 @@ services:
     <<: *api-service
     environment:
       <<: *database-pool
+      DATABASE_POOL_SIZE: ${API_DATABASE_POOL_SIZE:-3}
+      API_THREADPOOL_TOKENS: ${API_THREADPOOL_TOKENS:-6}
+      API_MAX_INFLIGHT_REQUESTS: ${API_MAX_INFLIGHT_REQUESTS:-32}
       RELEASE_COLOR: blue
       RELEASE_VERSION: ${RELEASE_VERSION:-local}
       DATABASE_STATEMENT_TIMEOUT_MS: ${API_DATABASE_STATEMENT_TIMEOUT_MS:-10000}
@@ -78,6 +82,9 @@ services:
     <<: *api-service
     environment:
       <<: *database-pool
+      DATABASE_POOL_SIZE: ${API_DATABASE_POOL_SIZE:-3}
+      API_THREADPOOL_TOKENS: ${API_THREADPOOL_TOKENS:-6}
+      API_MAX_INFLIGHT_REQUESTS: ${API_MAX_INFLIGHT_REQUESTS:-32}
       RELEASE_COLOR: green
       RELEASE_VERSION: ${RELEASE_VERSION:-local}
       DATABASE_STATEMENT_TIMEOUT_MS: ${API_DATABASE_STATEMENT_TIMEOUT_MS:-10000}
@@ -89,7 +96,9 @@ services:
     command: ["alembic", "upgrade", "head"]
     env_file:
       - ./env/backend.env
-    environment: *database-pool
+    environment:
+      <<: *database-pool
+      DATABASE_POOL_SIZE: ${MIGRATION_DATABASE_POOL_SIZE:-2}
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,6 +106,7 @@ services:
 
   postgres:
     image: postgres:16
+    command: ["postgres", "-c", "max_connections=160"]
     env_file:
       - ./env/db.env
     volumes:

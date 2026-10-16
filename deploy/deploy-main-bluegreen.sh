@@ -106,6 +106,9 @@ target="$(inactive_color "$active")"
 
 log "active=$active, target=$target, release=$release_version"
 
+log "check database connection budget before changing services"
+"$BLUEGREEN" check-capacity
+
 log "ensure shared result cache"
 compose up -d redis
 

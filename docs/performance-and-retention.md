@@ -5,20 +5,24 @@ Redis stores derived results only; a cache failure falls back to database reads.
 
 ## Request handling
 
-- The production Compose API runs four Uvicorn workers by default. Set
+- The production Compose API runs fourteen Uvicorn workers by default. Set
   `API_WORKERS` in the deployment shell/Compose environment to change this.
-- Each process has six PostgreSQL connections without overflow and a five-second
+- Each process has three PostgreSQL connections without overflow and a five-second
   pool wait. Result-wait authentication has one additional connection per API
-  process. The default four-worker API therefore uses at most 28 connections.
-  Budget both API colors, background workers and migrations against PostgreSQL's
-  `max_connections`; existing environment overrides also count. Increasing
-  workers alone can exhaust database capacity and reduce throughput.
+  process. The default fourteen-worker API therefore uses at most 56 connections.
+  Both API colors, four background pools of two, and a two-connection migration
+  pool total 122 connections. PostgreSQL is configured for 160. Deployment checks
+  the rendered configuration against the running database and retains at least
+  ten spare connections before starting services. Set `API_DATABASE_POOL_SIZE`,
+  `WORKER_DATABASE_POOL_SIZE` and `MIGRATION_DATABASE_POOL_SIZE` for role-specific
+  overrides. Increasing workers alone can exhaust database capacity and reduce
+  throughput. See [the 14-vCPU measurements](performance-14vcpu.md).
 - Synchronous participant/public/auth handlers and audit database work execute
-  outside the event loop. Each process admits at most 12 normal worker threads.
+  outside the event loop. Each process admits at most six normal worker threads.
   A synchronous read request reuses one request-scoped SQLAlchemy session; it is
   closed when that handler finishes and is never shared between requests.
 - Admission runs before authentication and audit work. Per process, short API
-  work is limited to 64 in-flight requests, result waits to 128 and session streams
+  work is limited to 32 in-flight requests, result waits to 128 and session streams
   to 2,048. One bearer token can occupy at most eight requests in each lane.
   Excess work returns 503 (global) or 429 (token) with `Retry-After: 1`, rather
   than building an unlimited database queue. Limits are configurable through
@@ -27,7 +31,7 @@ Redis stores derived results only; a cache failure falls back to database reads.
   concurrency limits, not exact cluster-wide requests-per-second quotas. No
   per-IP quota is used, so a school's shared external address does not penalize
   all its participants. Edge DDoS protection remains a separate concern.
-- Compose limits API containers to 4 GiB and API SQL statements to ten seconds,
+- Compose limits API containers to 8 GiB and API SQL statements to ten seconds,
   with a 1.5-second database lock wait. These statement settings are API-only;
   migrations retain their own database policy. Pool/query saturation returns a
   retryable 503. A 503 on a submission does not prove the write was uncommitted:
@@ -64,15 +68,19 @@ Redis stores derived results only; a cache failure falls back to database reads.
 - Nginx allows 8,192 connections per worker, enables JSON gzip and uses a 65,536
   descriptor limit. Participant source uploads are capped at 4 MiB at the proxy;
   operator problem archive uploads keep their existing larger limit.
-- The web proxy adds a shared 200-request/second budget with a burst of 100,
+- The web proxy adds a shared 400-request/second budget with a burst of 100,
   without delaying excess requests in another queue. Overload returns JSON 429,
   `Retry-After: 1` and `X-Request-ID` before occupying an API thread or SQL pool.
-  This is a measured default for the six-vCPU web VM, not a maximum account count.
+  This is a measured default for the 14-vCPU, approximately 40-GB web VM, not a
+  maximum account count. API workers, SQL pools and request limits are tuned
+  together; VM resource changes do not update these settings automatically.
   It is shared across API paths and addresses; health probes and private judge
   traffic do not consume this budget. Operator archive routes retain their own
   existing configuration. Align the overload CORS allowlist in
-  `nginx-global.conf` with application CORS settings when adding a web origin.
+  `nginx-global/nginx.conf` with application CORS settings when adding a web origin.
   Nginx and the private gateway also rotate Docker logs at 10 MiB, three files.
+  The main web configuration is directory-mounted at `/etc/nginx/zoj`; atomic
+  Git file replacements are visible to subsequent validated Nginx reloads.
   The rate budget is per proxy instance; recalculate it before adding replicas.
   See [Nginx request limiting](https://nginx.org/en/docs/http/ngx_http_limit_req_module.html)
   for shared-zone and burst behavior.

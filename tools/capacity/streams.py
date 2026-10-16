@@ -10,12 +10,16 @@ import httpx
 
 
 async def main(args):
-    actors = json.loads(Path(args.actors).read_text())[:args.users]
+    groups = {}
+    for actor in json.loads(Path(args.actors).read_text()):
+        groups.setdefault(actor['contest_id'], []).append(actor)
+    actors = [actor for batch in zip(*groups.values()) for actor in batch][:args.users]
     assert len(actors) == args.users
     counts = Counter()
     started = time.monotonic()
     deadline = started + args.seconds
     active = peak = 0
+    connected_at = None
     limits = httpx.Limits(max_connections=args.users + 5,
         max_keepalive_connections=args.users + 5)
     async with httpx.AsyncClient(base_url=args.url, limits=limits,
@@ -24,7 +28,7 @@ async def main(args):
         assert health['data']['env'] == 'capacity', 'Never load the public API'
 
         async def hold(index, actor):
-            nonlocal active, peak
+            nonlocal active, peak, connected_at
             await asyncio.sleep(index / args.users * 5)
             try:
                 async with client.stream('GET', '/api/auth/session-events',
@@ -34,6 +38,11 @@ async def main(args):
                         return
                     active += 1
                     peak = max(peak, active)
+                    if active == args.users and connected_at is None:
+                        connected_at = round(time.monotonic()-started, 2)
+                        if args.ready_file:
+                            Path(args.ready_file).write_text(json.dumps({'users':args.users,
+                                'connected_after_seconds':connected_at,'at':time.time()}))
                     try:
                         iterator = response.aiter_bytes()
                         while time.monotonic() < deadline:
@@ -53,7 +62,8 @@ async def main(args):
         await asyncio.gather(*(hold(i, actor) for i, actor in enumerate(actors)))
     Path(args.output).write_text(json.dumps({'users':args.users,
         'elapsed_seconds':round(time.monotonic()-started, 2),
-        'peak_open_streams':peak, 'counts':dict(counts)}, indent=2))
+        'peak_open_streams':peak, 'counts':dict(counts),
+        'all_connected_after_seconds':connected_at}, indent=2))
 
 
 if __name__ == '__main__':
@@ -63,4 +73,5 @@ if __name__ == '__main__':
     parser.add_argument('--users', type=int, default=1000)
     parser.add_argument('--seconds', type=int, default=60)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--ready-file')
     asyncio.run(main(parser.parse_args()))

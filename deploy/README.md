@@ -98,7 +98,11 @@ docker compose -f backend_v1/deploy/compose.backend.yaml --profile backup up -d 
 
 Nginx proxies `/api` to `api_backend`, which is defined by `deploy/nginx/api-upstream.conf`.
 The active pool is either `api-blue:8000` or `api-green:8000`.
-Traffic switches by rewriting the upstream file and running `nginx -s reload`; the Nginx container is not recreated during blue-green deploy.
+Traffic switches by rewriting the upstream file and reloading Nginx. Compose
+recreates the proxy only when its container configuration changes. Both Nginx
+configuration directories are mounted so Git file replacements are visible on
+subsequent reloads. The web proxy uses `/etc/nginx/zoj/nginx.conf`; the private
+judge gateway retains the image's default main configuration.
 
 Check current state:
 
@@ -143,12 +147,18 @@ cd backend_v1/deploy
 
 The deploy command runs in this order:
 
-1. Run Alembic migrations.
-2. Start/build the target API pool.
-3. Check the target pool with `/api/health`.
-4. Rewrite `nginx/api-upstream.conf`.
-5. Validate Nginx config with `nginx -t`.
-6. Reload Nginx with `nginx -s reload`.
+1. Verify the connection budget for both API colors, workers and migrations.
+2. Run Alembic migrations.
+3. Start/build the target API pool.
+4. Check the target pool with `/api/health`.
+5. Rewrite `nginx/api-upstream.conf`.
+6. Validate and reload the web proxy with `nginx -c /etc/nginx/zoj/nginx.conf`.
+7. Validate and reload the private judge gateway using its default config.
+
+The budget check reads the server's `max_connections` and the resolved Compose
+settings. It retains ten spare database connections and stops deployment if the
+configured pools could exhaust the database during a blue-green overlap. Python
+3 is required on the deployment host. Environment values are not printed.
 
 Database migrations must be backward-compatible with the currently active API.
 Use expand-and-contract migrations:
