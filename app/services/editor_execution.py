@@ -17,7 +17,7 @@ from app.services.node_credentials import valid_node_credential
 from app.services.storage import object_storage
 from app.settings import settings
 
-ACTIVE = {"waiting", "running"}
+ACTIVE = {"uploading", "waiting", "running"}
 _gc_lock = threading.Lock()
 _last_gc = 0.0
 
@@ -73,18 +73,32 @@ def create(email, content, fingerprint):
                 return public(previous)
             if previous.fingerprint != fingerprint:
                 raise AppError(409, "editor_execution_changed", "같은 실행 요청의 자료가 변경되었습니다.")
-            return public(previous)
+            if previous.status != "uploading":
+                return public(previous)
         personal = db.scalar(select(func.count()).select_from(Task).where(Task.owner_id == account.account_id, Task.status.in_(ACTIVE)))
         global_count = db.scalar(select(func.count()).select_from(Task).where(Task.status.in_(ACTIVE)))
-        if personal >= 20 or global_count >= 200:
+        if not previous and (personal >= 20 or global_count >= 200):
             raise AppError(429, "editor_execution_busy", "실행 작업이 많습니다. 완료 후 다시 요청하세요.")
         task_id = operation[:32]
         key = "editor-execution/" + account.account_id + "/" + task_id + "/input.zip"
-        object_storage.write_bytes(key, content)
-        row = Task(task_id=task_id, operation_key=operation, owner_id=account.account_id, fingerprint=fingerprint,
+        row = previous
+        if not row:
+            row = Task(task_id=task_id, operation_key=operation, owner_id=account.account_id, fingerprint=fingerprint, status="uploading",
                    input_key=key, payload={"config": payload["config"], "runtime": payload["runtime"], "job_kind": payload["job_kind"], "input_sha256": fingerprint})
-        db.add(row)
+            db.add(row)
         db.commit()
+
+    # A durable, non-runnable reservation protects cancellation and quota
+    # checks while object storage operates without an account lock or DB pool.
+    try:
+        object_storage.write_bytes(key, content)
+    except Exception as error:
+        raise AppError(503, "editor_execution_storage_busy", "실행 자료 저장을 완료하지 못했습니다. 같은 요청으로 다시 시도하세요.") from error
+    with SessionLocal() as db:
+        row = db.scalar(select(Task).where(Task.task_id == task_id).with_for_update())
+        if row.status == "uploading":
+            row.status = "waiting"
+            db.commit()
         return public(row)
 
 

@@ -6,6 +6,7 @@ import io
 import json
 import time
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 import zipfile
 from datetime import timedelta
@@ -14,7 +15,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
@@ -25,6 +26,7 @@ from app.orm_models import ContestRow, ContestDivisionRow, ProblemRow
 from app.routers import editor_judging as routes
 from app.services import editor_judging as judging, editor_bridge
 from app.services.storage import object_storage
+from app.services.errors import AppError
 from app.services.store import store
 from app.settings import settings
 
@@ -55,6 +57,125 @@ def database(tmp_path, monkeypatch):
     yield sessions
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+@pytest.fixture
+def short_lock_timeout(database):
+    engine = database.kw['bind']
+    if engine.dialect.name != 'postgresql':
+        pytest.skip('The upload lock regression requires real PostgreSQL locks')
+    def configure(connection, _):
+        with connection.cursor() as cursor:
+            cursor.execute("SET lock_timeout = '200ms'")
+        connection.commit()
+    engine.dispose()
+    event.listen(engine, 'connect', configure)
+    yield database
+    event.remove(engine, 'connect', configure)
+
+
+def create_direct(body):
+    return judging.create(EMAIL, io.BytesIO(body), hashlib.sha256(body).hexdigest())
+
+
+def test_twelve_solutions_register_while_one_upload_is_slow(short_lock_timeout, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    write = object_storage.write_bytes
+    def slow_first(key, *args, **kwargs):
+        with lock:
+            first = not entered.is_set()
+            if first:
+                entered.set()
+        if first:
+            assert release.wait(10), 'Test did not release the paused upload'
+        return write(key, *args, **kwargs)
+    monkeypatch.setattr(object_storage, 'write_bytes', slow_first)
+    node_id = node()
+    project = uuid4().hex
+    def body():
+        return snapshot(change=lambda manifest, files: manifest.update(project_id=project))
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        first = pool.submit(create_direct, body())
+        try:
+            assert entered.wait(5)
+            assert judging.claim_jobs(node_id, SECRET, 1) == []
+            others = [pool.submit(create_direct, body()) for _ in range(11)]
+            results = [future.result(timeout=5) for future in others]
+            assert all(row['status'] == 'waiting' for row in results)
+            with short_lock_timeout() as db:
+                assert db.scalar(select(func.count()).select_from(Run).where(Run.status == 'uploading')) == 1
+        finally:
+            release.set()
+        results.append(first.result(timeout=5))
+    assert len({row['id'] for row in results}) == 12
+    assert all(row['status'] == 'waiting' for row in results)
+    with short_lock_timeout() as db:
+        rows = db.scalars(select(Run)).all()
+        assert len({row.dataset_key for row in rows}) == 1
+        assert all(object_storage.size_bytes(key) is not None for row in rows for key in row.storage_keys)
+
+
+def test_storage_failure_resumes_same_reservation_and_keeps_shared_objects(database, monkeypatch):
+    body = snapshot()
+    write = object_storage.write_bytes
+    calls = []
+    def fail_after_bundle(key, *args, **kwargs):
+        calls.append(key)
+        if len(calls) == 2:
+            raise OSError('temporary storage outage')
+        return write(key, *args, **kwargs)
+    monkeypatch.setattr(object_storage, 'write_bytes', fail_after_bundle)
+    with pytest.raises(AppError) as failure:
+        create_direct(body)
+    assert failure.value.status_code == 503
+    with database() as db:
+        row = db.scalar(select(Run))
+        assert row.status == 'uploading'
+        run_id, bundle = row.run_id, row.payload['bundle_key']
+    assert object_storage.size_bytes(bundle) is not None
+    monkeypatch.setattr(object_storage, 'write_bytes', write)
+    result = create_direct(body)
+    assert result['id'] == run_id and result['status'] == 'waiting'
+    assert create_direct(body)['id'] == run_id
+    with database() as db:
+        assert db.scalar(select(func.count()).select_from(Run)) == 1
+        row = db.get(Run, run_id)
+        assert all(object_storage.size_bytes(key) is not None for key in row.storage_keys)
+
+
+def test_upload_reservations_count_towards_personal_quota(database, monkeypatch):
+    with database() as db:
+        account = db.scalar(select(IdentityAccountRow).where(IdentityAccountRow.email == EMAIL))
+        for _ in range(32):
+            db.add(Run(operation_key=uuid4().hex, owner_id=account.account_id, project_id='a' * 32,
+                       fingerprint='b' * 64, payload={}, storage_keys=[], testcase_count=1, status='uploading'))
+        db.commit()
+    monkeypatch.setattr(object_storage, 'write_bytes', lambda *args, **kwargs: pytest.fail('Quota must precede storage'))
+    with pytest.raises(AppError) as failure:
+        create_direct(snapshot())
+    assert failure.value.status_code == 429
+
+
+def test_cancel_during_upload_never_requeues_it(database, monkeypatch):
+    write = object_storage.write_bytes
+    def cancel_then_write(key, *args, **kwargs):
+        with database() as db:
+            run_id = db.scalar(select(Run.run_id))
+        judging.get_run(EMAIL, run_id, cancel=True)
+        return write(key, *args, **kwargs)
+    monkeypatch.setattr(object_storage, 'write_bytes', cancel_then_write)
+    assert create_direct(snapshot())['status'] == 'cancelled'
+
+
+def test_cancel_operation_prevents_late_or_lost_upload(database):
+    operation = uuid4().hex
+    path = '/api/editor/judge/run-operations/' + operation
+    cancelled = client.delete(path, headers=headers('DELETE', path)).json()['data']
+    result = create_direct(snapshot(operation=operation))
+    assert result['id'] == cancelled['id'] and result['status'] == 'cancelled'
+    with database() as db:
+        assert db.scalar(select(func.count()).select_from(Run)) == 1
 
 
 def test_concurrent_claims_assign_each_run_once(database):

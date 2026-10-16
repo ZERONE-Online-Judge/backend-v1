@@ -80,6 +80,12 @@ def cancel(run_id: str, request: Request):
     return ok(request, judging.get_run(email, run_id, cancel=True))
 
 
+@router.delete("/run-operations/{operation_id}")
+def cancel_run_operation(request: Request, operation_id: str = Path(pattern=r"^[a-f0-9]{32}$")):
+    email, _ = authenticated(request, empty=True)
+    return ok(request, judging.cancel_operation(email, operation_id))
+
+
 @router.post("/tasks", status_code=202)
 async def create_task(request: Request):
     email, expected = authenticated(request)

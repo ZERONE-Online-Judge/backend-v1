@@ -26,7 +26,7 @@ from app.services.node_credentials import valid_node_credential
 from app.services.storage import object_storage
 from app.settings import settings
 
-ACTIVE = {"waiting", "preparing", "judging"}
+ACTIVE = {"uploading", "waiting", "preparing", "judging"}
 RUNNING = {"preparing", "judging"}
 MAX_ARCHIVE = 128 * 1024**2
 MAX_CONTENT = 256 * 1024**2
@@ -181,16 +181,22 @@ def create(email, source, fingerprint):
         raise AppError(422, "editor_judge_snapshot_invalid", "채점 자료 형식·파일 무결성을 확인하세요.") from error
     revision = capabilities()["runtime_revision"]
     with SessionLocal() as db:
+        # Reserve the quota and dataset references before storage I/O. GC uses
+        # the same owner lock, but uploads must never keep that lock or a DB
+        # connection while writing potentially hundreds of shared objects.
         account = owner(db, email, lock=True)
         operation = hashlib.sha256((account.account_id + "\n" + snapshot.operation_id).encode()).hexdigest()
         existing = db.scalar(select(Run).where(Run.operation_key == operation))
         if existing:
+            if existing.status == "cancelled" and not existing.fingerprint:
+                return public_run(existing)
             if existing.fingerprint != fingerprint:
                 raise AppError(409, "editor_judge_request_changed", "같은 채점 요청의 자료가 변경되었습니다.")
-            return public_run(existing)
-        if db.scalar(select(func.count()).select_from(Run).where(Run.owner_id == account.account_id, Run.status.in_(ACTIVE))) >= 32:
+            if existing.status != "uploading":
+                return public_run(existing)
+        if not existing and db.scalar(select(func.count()).select_from(Run).where(Run.owner_id == account.account_id, Run.status.in_(ACTIVE))) >= 32:
             raise AppError(429, "editor_judge_busy", "내 계정의 채점 작업이 많습니다. 완료 후 다시 요청하세요.")
-        if db.scalar(select(func.count()).select_from(Run).where(Run.status.in_(ACTIVE))) >= 256:
+        if not existing and db.scalar(select(func.count()).select_from(Run).where(Run.status.in_(ACTIVE))) >= 256:
             raise AppError(429, "editor_judge_busy", "채점 대기열이 가득 찼습니다. 잠시 후 다시 요청하세요.")
         dataset_key = hashlib.sha256(json.dumps([
             snapshot.project_id, snapshot.context_hash, snapshot.time_limit_ms, snapshot.memory_limit_mb,
@@ -199,31 +205,16 @@ def create(email, source, fingerprint):
         ], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         prefix = "editor-judge/" + account.account_id + "/" + dataset_key + "/"
         bundle_key = prefix + "testcases.json.gz"
-        written = []
-        try:
-            if object_storage.size_bytes(bundle_key) is None:
-                object_storage.write_bytes(bundle_key, gzip.compress(json.dumps({"testcases": cases}, ensure_ascii=False).encode(), mtime=0), "application/gzip")
-            written.append(bundle_key)
-            case_refs = []
-            for c in sorted(snapshot.testcases, key=lambda c: c.index):
-                for sha in (c.input_sha, c.answer_sha):
-                    key = prefix + sha
-                    if key not in written:
-                        if object_storage.size_bytes(key) is None:
-                            object_storage.write_bytes(key, content[sha])
-                        written.append(key)
-                case_refs.append({"display_order": c.index, "input_storage_key": prefix + c.input_sha,
-                                  "output_storage_key": prefix + c.answer_sha})
-            resources = []
-            for r in snapshot.resources:
-                key = prefix + r.sha256
-                if key not in written:
-                    if object_storage.size_bytes(key) is None:
-                        object_storage.write_bytes(key, content[r.sha256])
-                    written.append(key)
-                resources.append({"original_filename": r.name, "role": r.role, "storage_key": key, "sha256": r.sha256})
+        case_refs = [{"display_order": c.index, "input_storage_key": prefix + c.input_sha,
+                      "output_storage_key": prefix + c.answer_sha} for c in sorted(snapshot.testcases, key=lambda c: c.index)]
+        resources = [{"original_filename": r.name, "role": r.role, "storage_key": prefix + r.sha256,
+                      "sha256": r.sha256} for r in snapshot.resources]
+        hashes = sorted({sha for c in snapshot.testcases for sha in (c.input_sha, c.answer_sha)} | {r.sha256 for r in snapshot.resources})
+        written = [bundle_key, *(prefix + sha for sha in hashes)]
+        row = existing
+        if not row:
             row = Run(operation_key=operation, owner_id=account.account_id, dataset_key=dataset_key, project_id=snapshot.project_id,
-                      fingerprint=fingerprint, testcase_count=len(cases), storage_keys=written,
+                      fingerprint=fingerprint, testcase_count=len(cases), storage_keys=written, status="uploading",
                       payload={"language": snapshot.source.language, "source_code": code,
                                "source_name": snapshot.source.name, "context_hash": snapshot.context_hash,
                                "time_limit_ms": snapshot.time_limit_ms, "memory_limit_mb": snapshot.memory_limit_mb,
@@ -233,20 +224,45 @@ def create(email, source, fingerprint):
                                "dataset_storage_keys": list(written),
                                "resources": resources, "runtime_revision": revision})
             db.add(row)
+        db.commit()
+        run_id = row.run_id
+
+    try:
+        if object_storage.size_bytes(bundle_key) is None:
+            object_storage.write_bytes(bundle_key, gzip.compress(json.dumps({"testcases": cases}, ensure_ascii=False).encode(), mtime=0), "application/gzip")
+        for sha in hashes:
+            if object_storage.size_bytes(prefix + sha) is None:
+                object_storage.write_bytes(prefix + sha, content[sha])
+    except Exception as error:
+        # Keep the reservation so an identical retry can finish the upload.
+        # Deleting shared content here could break a concurrent solution run.
+        # Abandoned reservations and their objects use the normal retention GC.
+        raise AppError(503, "editor_judge_storage_busy", "채점 자료 저장을 완료하지 못했습니다. 같은 요청으로 다시 시도하세요.") from error
+
+    with SessionLocal() as db:
+        row = db.scalar(select(Run).where(Run.run_id == run_id).with_for_update())
+        if row.status == "uploading":
+            row.status = "waiting"
             db.commit()
-            return public_run(row)
-        except IntegrityError:
-            db.rollback()
-            existing = db.scalar(select(Run).where(Run.operation_key == operation))
-            if existing and existing.fingerprint == fingerprint:
-                return public_run(existing)
-            raise AppError(409, "editor_judge_request_changed", "같은 채점 요청의 자료가 변경되었습니다.")
-        except Exception:
-            db.rollback()
-            if not db.scalar(select(Run.run_id).where(Run.owner_id == account.account_id, Run.dataset_key == dataset_key).limit(1)):
-                for key in written:
-                    object_storage.delete(key)
-            raise
+        # A cancellation during upload must never become a runnable job.
+        return public_run(row)
+
+
+def cancel_operation(email, operation_id):
+    """Cancel even when the upload response was lost before returning a run ID."""
+    with SessionLocal() as db:
+        account = owner(db, email, lock=True)
+        operation = hashlib.sha256((account.account_id + "\n" + operation_id).encode()).hexdigest()
+        row = db.scalar(select(Run).where(Run.operation_key == operation).with_for_update())
+        if not row:
+            row = Run(operation_key=operation, owner_id=account.account_id, project_id="0" * 32,
+                      fingerprint="", testcase_count=0, storage_keys=[],
+                      payload={"runtime_revision": "cancelled"}, status="cancelled", completed_at=now_utc())
+            db.add(row)
+        elif row.status in ACTIVE:
+            row.status, row.lease_token, row.completed_at = "cancelled", None, now_utc()
+        db.commit()
+        return public_run(row)
 
 
 def resume(email, parent_id, operation_id):

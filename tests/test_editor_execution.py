@@ -2,11 +2,13 @@ import base64
 import copy
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from uuid import uuid4
 import pytest
 from sqlalchemy import select, func
-from test_editor_judging import database, headers, client, EMAIL, SECRET, node, snapshot, submit, claim
+from test_editor_judging import database, short_lock_timeout, headers, client, EMAIL, SECRET, node, snapshot, submit, claim
 from app.models import now_utc
 from app.orm_models import EditorExecutionTaskRow as Task, JudgeNodeRow, JudgeJobRow, SubmissionRow, ContestRow, ContestDivisionRow, ProblemRow
 from app.services import editor_execution as execution
@@ -14,6 +16,8 @@ from app.services.editor_protocol import FORMAT, PROTOCOL, KINDS, pack, validate
 from app.services.store import store
 from app.routers import admin
 from app.settings import settings
+from app.services.errors import AppError
+from app.services.storage import object_storage
 
 
 @pytest.fixture
@@ -35,6 +39,62 @@ def enqueue(value=None):
     content = pack(value or payload())
     path = '/api/editor/judge/tasks'
     return client.post(path, content=content, headers=headers('POST', path, content))
+
+
+def create_direct(value):
+    content = pack(value)
+    return execution.create(EMAIL, content, hashlib.sha256(content).hexdigest())
+
+
+def test_slow_tool_upload_does_not_block_another_request(execution_db, short_lock_timeout, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    write = object_storage.write_bytes
+    def slow_first(key, *args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        return write(key, *args, **kwargs)
+    monkeypatch.setattr(object_storage, 'write_bytes', slow_first)
+    n = ready_node()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(create_direct, payload())
+        try:
+            assert entered.wait(5)
+            assert execution.claim_jobs(n, SECRET, 1) == []
+            assert pool.submit(create_direct, payload()).result(timeout=5)['status'] == 'waiting'
+        finally:
+            release.set()
+        assert first.result(timeout=5)['status'] == 'waiting'
+
+
+def test_failed_tool_upload_resumes_same_task(execution_db, monkeypatch):
+    value = payload()
+    write = object_storage.write_bytes
+    def unavailable(*args, **kwargs):
+        raise OSError('temporary storage outage')
+    monkeypatch.setattr(object_storage, 'write_bytes', unavailable)
+    with pytest.raises(AppError) as failure:
+        create_direct(value)
+    assert failure.value.status_code == 503
+    with execution_db() as db:
+        task = db.scalar(select(Task))
+        assert task.status == 'uploading'
+        task_id = task.task_id
+    monkeypatch.setattr(object_storage, 'write_bytes', write)
+    result = create_direct(value)
+    assert result['id'] == task_id and result['status'] == 'waiting'
+    with execution_db() as db:
+        assert db.scalar(select(func.count()).select_from(Task)) == 1
+
+
+def test_tool_cancellation_during_upload_cannot_be_undone(execution_db, monkeypatch):
+    value = payload()
+    write = object_storage.write_bytes
+    def cancel_then_write(key, *args, **kwargs):
+        execution.cancel_operation(EMAIL, value['operation_id'])
+        return write(key, *args, **kwargs)
+    monkeypatch.setattr(object_storage, 'write_bytes', cancel_then_write)
+    assert create_direct(value)['status'] == 'cancelled'
 
 
 def ready_node(slots=2):
