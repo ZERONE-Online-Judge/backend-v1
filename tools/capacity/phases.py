@@ -53,6 +53,7 @@ def main(args):
         watcher = threading.Thread(target=guard, daemon=True)
         watcher.start()
         command = ['docker','run','--rm','--name','zoj-capacity-load','--network','host','--user','0',
+            '--cpus','1',
             '--ulimit','nofile=16384:16384','-v',str(folder)+':/capacity']
         for key, value in {**env,'OUTPUT':'/capacity/k6-'+name+'.json'}.items():
             command += ['-e',key+'='+value]

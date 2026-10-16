@@ -39,6 +39,7 @@ x-api-service: &api-service
 
 services:
   judge-gateway:
+    logging: *app-logging
     image: nginx:stable
     ports:
       - "10.10.10.110:6443:443"
@@ -49,6 +50,7 @@ services:
     restart: unless-stopped
 
   nginx:
+    logging: *app-logging
     image: nginx:stable
     ports:
       - "6001:80"

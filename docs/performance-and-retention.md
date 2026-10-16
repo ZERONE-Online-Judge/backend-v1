@@ -64,6 +64,18 @@ Redis stores derived results only; a cache failure falls back to database reads.
 - Nginx allows 8,192 connections per worker, enables JSON gzip and uses a 65,536
   descriptor limit. Participant source uploads are capped at 4 MiB at the proxy;
   operator problem archive uploads keep their existing larger limit.
+- The web proxy adds a shared 200-request/second budget with a burst of 100,
+  without delaying excess requests in another queue. Overload returns JSON 429,
+  `Retry-After: 1` and `X-Request-ID` before occupying an API thread or SQL pool.
+  This is a measured default for the six-vCPU web VM, not a maximum account count.
+  It is shared across API paths and addresses; health probes and private judge
+  traffic do not consume this budget. Operator archive routes retain their own
+  existing configuration. Align the overload CORS allowlist in
+  `nginx-global.conf` with application CORS settings when adding a web origin.
+  Nginx and the private gateway also rotate Docker logs at 10 MiB, three files.
+  The rate budget is per proxy instance; recalculate it before adding replicas.
+  See [Nginx request limiting](https://nginx.org/en/docs/http/ngx_http_limit_req_module.html)
+  for shared-zone and burst behavior.
 - Session streams check watched session IDs in batches of 500 once per second,
   deduplicating tabs that watch the same session. This is independent of Redis and
   works across API workers. SQL errors do not falsely log out a user.

@@ -78,6 +78,8 @@ worker counts, SQL pools, the schema or scoreboard size.
 
 Use `--label candidate` or `--label baseline` to keep independent summaries and
 source submission receipts. The manifest records the target's health version.
+The load container is capped at one CPU so an unlimited client loop cannot
+monopolize the production host. Dropped arrivals still count as unexecuted work.
 `streams.py --users 1000 --seconds 135 --output /capacity/streams.json` holds
 session-event connections during a separate k6 run. It requires `httpx` from the
 application image, verifies the target environment, and reports counts only.
