@@ -16,19 +16,24 @@ def test_reference_preserves_raw_maxima_and_separates_vm_and_submission_limits()
     assert config["host"]["memory_capacity_gb"] == 256
     assert config["host"]["memory_effective_rate_mt_s"] is None
     assert config["vm"]["planned_count"] == 6
-    assert config["vm"]["vcpus_per_agent"] == 10
+    assert config["vm"]["vcpus_per_agent"] == 5
     assert config["vm"]["memory_gib_per_agent"] == 26
-    assert config["agent_configuration"]["max_parallel_testcases_per_agent"] == 8
+    assert config["vm"]["submission_slots_per_agent"] == 1
+    assert config["runtime_verification"]["runtime_probe_nodes"] == 6
+    assert config["agent_configuration"]["max_parallel_testcases_per_agent"] == 4
     raw = json.loads((performance.DATA / "judge_tle_benchmark.json").read_text())
     assert len(raw["cases"]) == 16
-    assert sum(r["testcases"] for c in raw["cases"] for r in c["runs"]) == 240
+    assert reference["benchmark"]["runtime_metric"] == "isolate_cpu_time_ms"
+    assert reference["benchmark"]["clock_policy"]["target_mhz"] == 2200
+    assert sum(r["testcases"] for c in raw["cases"] for r in c["runs"]) == 48
     for case, published in zip(raw["cases"], reference["benchmark"]["cases"]):
         runs = case["runs"]
-        assert len(runs) == 6
+        assert len(runs) == 3
         assert all(r["status"] == "accepted" and r["other_jobs_observed"] == 0 for r in runs)
         assert published["runtimeMs"]["max"] == max(r["runtime_ms"] for r in runs)
         assert case["serialMaxMs"] == max(r["runtime_ms"] for r in runs if r["condition"] == "serial")
-        assert case["loadMaxMs"] == max(r["runtime_ms"] for r in runs if r["condition"] == "mixed12")
+        assert all(r["condition"] == "serial" for r in runs)
+        assert "loadMaxMs" not in case
     config["vm"]["planned_count"] = 100
     assert performance.reference()["environment"]["vm"]["planned_count"] == 6
 
@@ -40,6 +45,8 @@ def test_estimates_use_operation_specific_maximum_and_explicit_margin():
         assert estimate["planning_budget_ms"] == c["runtimeMs"]["max"] * 2
         assert estimate["scaled_observed_max_ms"] == c["runtimeMs"]["max"]
         assert estimate["kind"] == "conservative_budget_not_worst_case_bound"
+        assert estimate["reference_runtime_metric"] == "isolate_cpu_time_ms"
+        assert estimate["reference_clock_policy"]["target_mhz"] == 2200
         assert "verdict" not in estimate
         assert not estimate["extrapolated"]
     legacy = performance.estimate("cpp17", "quadratic", 10000, 1)

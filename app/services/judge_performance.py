@@ -25,6 +25,8 @@ def reference():
             "measured_at": measured["measuredAt"],
             "source": "https://zoj.kr" + measured["snapshotPath"],
             "method": measured["method"],
+            "runtime_metric": measured["runtimeMetric"],
+            "clock_policy": measured["clockPolicy"],
             "profiles": measured["profiles"],
             "cases": [{k: c[k] for k in ("profile", "language", "iterations", "sampleCount", "runtimeMs")} for c in measured["cases"]],
         },
@@ -33,8 +35,8 @@ def reference():
             "modulo는 상수 나머지 누적, dependent는 직전 값에 의존하는 곱셈·나머지, memory는 4194304개 인덱스 배열의 의존 접근, search는 1048576개 배열에서 이진 탐색 한 번입니다. search의 단위는 비교 1회가 아니라 탐색 1회입니다.",
             "보수적 예산은 측정 최댓값×반복 규모 비율×여유 계수(기본 2)입니다. 계수 2는 계획상 선택이며 실측 상한·최악 실행시간 보장이 아닙니다. 작업 종류가 다르면 이 추정도 과소평가할 수 있습니다.",
             "최악의 입력으로 실제 횟수를 계산하세요: 이중 완전 반복 N², 쌍 순회 N(N-1)/2, 문자열 비교는 접두사 길이, 반복 정렬·다중 테스트는 각 작업의 비용 합. Big-O 표기만으로 정확한 횟수는 나오지 않습니다.",
-            "CPU 모델·10 vCPU·2소켓으로 단일 스레드 시간을 나누지 마세요. 실제 언어 보정 후 제한, 케이스별 제한, 최대 입력·자료구조·입출력·무한 루프를 확인하고 run_code로 반복 검증하세요.",
-            "표시 시간은 격리 준비·프로세스 시작을 포함하고 큐 대기·컴파일·checker는 제외합니다. 제출 요약은 테스트별 최댓값입니다. isolate CPU/wall 제한과 측정 구간이 다릅니다. 플레이그라운드 시간을 공식 채점 근거로 대체하지 마세요.",
+            "CPU 모델·vCPU 수·2소켓으로 단일 스레드 시간을 나누지 마세요. 2.2GHz 고정 정책의 현재 실측을 사용하고 과거 터보/경과 시간 기록을 혼합하지 마세요. 실제 언어 보정 후 제한, 케이스별 제한, 최대 입력·자료구조·입출력·무한 루프를 확인하고 run_code로 반복 검증하세요.",
+            "현재 실측은 isolate time 메타데이터의 CPU 시간입니다. 프로그램 초기화·배열 생성·JVM/JIT의 CPU 사용을 포함하고, CPU 배정 대기·sleep·격리 준비·큐 대기·컴파일·checker는 제외합니다. 제출 요약은 테스트별 최댓값입니다. wall 제한은 정지·대기 방지용 별도 제한입니다. 과거 경과 시간과 직접 비율 비교하지 말고 플레이그라운드 시간을 공식 채점 근거로 대체하지 마세요.",
             "실험의 120초·512MiB는 문제 제한과 별개입니다. 작은 작업 환산은 시작 비용 때문에 부정확하고, 캐시 경계를 넘거나 메모리/알고리즘이 바뀌면 선형 환산도 성립하지 않습니다.",
         ],
     })
@@ -85,6 +87,8 @@ def estimate(language, complexity, n, work_per_step, profile="conservative", saf
         "reference_iterations": case["iterations"],
         "reference_runtime_ms": copy.deepcopy(case["runtimeMs"]),
         "reference_source": "https://zoj.kr" + measured["snapshotPath"],
+        "reference_runtime_metric": measured["runtimeMetric"],
+        "reference_clock_policy": copy.deepcopy(measured["clockPolicy"]),
         "extrapolated": iterations > case["iterations"],
         "note": "최악 입력의 반복 횟수와 실행 시간의 최댓값은 별개입니다. 여유 계수는 보장이 아닙니다. n_log_n은 N×ceil(log2 N) 규모 가정이며 알고리즘별 정확한 비교 횟수가 아닙니다. instances는 한 프로세스 내부 입력 묶음 수이며 독립 채점 파일 개수를 합산하지 않습니다. search의 배열 크기를 바꾸면 재측정하세요. 최대 입력을 실제 채점기로 검증한 뒤 결론을 내리세요.",
     }
