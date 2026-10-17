@@ -120,6 +120,11 @@ class ContactInquiryAnswerRequest(BaseModel):
     answer_body: str
 
 
+class ContestDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirm_title: str = Field(min_length=1, max_length=255)
+
+
 @router.get("/admin/dashboard")
 async def dashboard(request: Request):
     require_service_master(request)
@@ -200,6 +205,13 @@ async def admin_contest_divisions(contest_id: str, request: Request):
             for division in store.contest_divisions(contest_id)
         ],
     )
+
+
+@router.delete("/admin/contests/{contest_id}")
+def remove_contest(contest_id: str, payload: ContestDeleteRequest, request: Request):
+    require_service_master(request)
+    from app.services.contest_deletion import delete_contest
+    return ok(request, delete_contest(contest_id, payload.confirm_title))
 
 
 @router.post("/admin/contests/{contest_id}/divisions")

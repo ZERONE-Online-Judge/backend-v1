@@ -3,8 +3,8 @@ import re
 from functools import lru_cache
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker, with_loader_criteria
 
 from app.settings import settings
 
@@ -43,6 +43,16 @@ def status_session():
 
 class Base(DeclarativeBase):
     pass
+
+
+@event.listens_for(Session, "do_orm_execute")
+def exclude_deleted_contests(state):
+    # Apply the tombstone to ORM queries and joins, including account profiles
+    # and public metadata. Only internal history/maintenance queries opt out.
+    if state.is_select and not state.execution_options.get("include_deleted_contests", False):
+        from app.orm_models import ContestRow
+        state.statement = state.statement.options(with_loader_criteria(
+            ContestRow, lambda contest: contest.deleted_at.is_(None), include_aliases=True))
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -125,6 +135,9 @@ def create_schema() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS idx_operational_audit_actor_created ON operational_audit_logs (actor_email, created_at DESC, operational_audit_log_id DESC)"))
     if settings.database_url.startswith("sqlite"):
         inspector = inspect(engine)
+        if "deleted_at" not in {column["name"] for column in inspector.get_columns("contests")}:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE contests ADD COLUMN deleted_at DATETIME"))
         if "owner_staff_account_id" not in {column["name"] for column in inspector.get_columns("contests")}:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE contests ADD COLUMN owner_staff_account_id VARCHAR(36) REFERENCES staff_accounts(staff_account_id)"))

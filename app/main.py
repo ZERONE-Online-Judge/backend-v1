@@ -126,6 +126,8 @@ def _audit_contest_id(path: str) -> str | None:
 
 
 def _audit_action(method: str, path: str) -> str:
+    if method.upper() == "DELETE" and re.fullmatch(r"/api/admin/contests/[^/]+", path):
+        return "대회 삭제"
     if method.upper() == "POST" and re.search(r"/editor-problems/[a-f0-9]{32}/import$", path):
         return "Editor 문제 가져오기"
     if method.upper() == "POST" and re.search(r"/editor-problems/[a-f0-9]{32}/packages$", path):
@@ -137,8 +139,11 @@ def _audit_action(method: str, path: str) -> str:
 def _audit_contest_title(contest_id: str | None) -> str | None:
     if not contest_id:
         return None
-    contest = store.contests.get(contest_id)
-    return contest.title if contest else None
+    from sqlalchemy import select
+    from app.orm_models import ContestRow
+    with store._session() as db:
+        return db.scalar(select(ContestRow.title).where(ContestRow.contest_id == contest_id)
+            .execution_options(include_deleted_contests=True))
 
 
 def _audit_value(value: Any) -> Any:

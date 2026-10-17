@@ -10,7 +10,7 @@ from app.models import (
     TeamMember, TeamMemberRole, now_utc,
 )
 from app.orm_models import (
-    ContestDivisionRow, GeneralSessionRow, JudgeJobRow, ParticipantPreviewQuestionRow,
+    ContestRow, ContestDivisionRow, GeneralSessionRow, JudgeJobRow, ParticipantPreviewQuestionRow,
     ParticipantPreviewSessionRow, ProblemRow, StaffAccountRow, SubmissionRow,
 )
 from app.services.security import decode_session_token, token_hash
@@ -24,6 +24,8 @@ def _aware(value):
 
 
 def _account_session(db, contest_id: str, access_token: str):
+    if not db.get(ContestRow, contest_id):
+        return None
     if not decode_session_token(access_token, "general_access"):
         return None
     session = db.scalar(select(GeneralSessionRow).where(

@@ -665,6 +665,11 @@ class DbStore:
     def _session(self) -> Session:
         return current_session(SessionLocal)
 
+    def is_contest_deleted(self, contest_id: str) -> bool:
+        with self._session() as db:
+            return db.scalar(select(ContestRow.deleted_at).where(ContestRow.contest_id == contest_id)
+                .execution_options(include_deleted_contests=True)) is not None
+
     def get_contest(self, contest_id: str) -> Contest | None:
         """Refresh only this contest; unrelated contests are never scanned."""
         with self._session() as db:
@@ -2095,7 +2100,7 @@ class DbStore:
             if not session or _aware(session.access_expires_at) <= now_utc():
                 return None
             member = db.scalar(
-                select(TeamMemberRow).where(
+                select(TeamMemberRow).join(ContestRow, ContestRow.contest_id == TeamMemberRow.contest_id).where(
                     TeamMemberRow.contest_id == contest_id,
                     func.lower(TeamMemberRow.email) == session.email.lower(),
                 )
@@ -2189,7 +2194,7 @@ class DbStore:
         parent_access_token: str | None = None,
     ) -> tuple[ParticipantTeam, TeamMember, ContestDivision, str] | None:
         with self._session() as db:
-            member = db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, func.lower(TeamMemberRow.email) == email.lower()))
+            member = db.scalar(select(TeamMemberRow).join(ContestRow, ContestRow.contest_id == TeamMemberRow.contest_id).where(TeamMemberRow.contest_id == contest_id, func.lower(TeamMemberRow.email) == email.lower()))
             if not member:
                 return None
             parent_session = None
@@ -2273,6 +2278,7 @@ class DbStore:
                 .join(ParticipantTeamRow, ParticipantTeamRow.participant_team_id == TeamSessionRow.participant_team_id)
                 .join(TeamMemberRow, TeamMemberRow.team_member_id == TeamSessionRow.team_member_id)
                 .join(ContestDivisionRow, ContestDivisionRow.division_id == TeamSessionRow.division_id)
+                .join(ContestRow, ContestRow.contest_id == TeamSessionRow.contest_id)
                 .options(joinedload(ParticipantTeamRow.members))
                 .where(
                     TeamSessionRow.contest_id == contest_id,
@@ -5815,9 +5821,18 @@ class DbStore:
 
     def mark_mail_status(self, mail_queue_id: str, status: str) -> MailQueueItem | None:
         with self._session() as db:
-            row = db.get(MailQueueItemRow, mail_queue_id)
+            row = db.scalar(select(MailQueueItemRow).where(MailQueueItemRow.mail_queue_id == mail_queue_id).with_for_update())
             if not row:
                 return None
+            if row.status == "canceled" and status != "pending":
+                return _mail(row)
+            if status == "sending" and row.contest_id and db.scalar(
+                select(ContestRow.deleted_at).where(ContestRow.contest_id == row.contest_id)
+                .execution_options(include_deleted_contests=True)
+            ) is not None:
+                row.status = "canceled"
+                db.commit()
+                return _mail(row)
             if status == "sending" and row.status != "sending":
                 row.last_attempt_at = now_utc()
             if status == "sent" and row.status != "sent":

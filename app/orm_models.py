@@ -37,6 +37,8 @@ class ContestRow(Base):
     emergency_notice: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     divisions: Mapped[list["ContestDivisionRow"]] = relationship(back_populates="contest")
 
 

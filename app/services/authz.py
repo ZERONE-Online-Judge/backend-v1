@@ -1,7 +1,7 @@
 from fastapi import Request
 
 from app.models import StaffAccount
-from app.services.errors import authentication_required, permission_denied, scope_denied
+from app.services.errors import authentication_required, not_found, permission_denied, scope_denied
 from app.services.store import store
 
 
@@ -44,13 +44,14 @@ def is_contest_master(account: StaffAccount, contest_id: str) -> bool:
 
 def require_contest_staff(request: Request, contest_id: str, *permissions: str) -> StaffAccount:
     account = require_staff(request)
-    if is_contest_master(account, contest_id):
-        request.state.operator_access = (contest_id, account)
-        return account
-    if any(has_contest_permission(account, contest_id, permission) for permission in (permissions or ("contest.view",))):
-        request.state.operator_access = (contest_id, account)
-        return account
-    raise scope_denied()
+    if not is_contest_master(account, contest_id) and not any(
+        has_contest_permission(account, contest_id, permission) for permission in (permissions or ("contest.view",))
+    ):
+        raise scope_denied()
+    if store.is_contest_deleted(contest_id):
+        raise not_found("대회를 찾을 수 없습니다.")
+    request.state.operator_access = (contest_id, account)
+    return account
 
 
 def require_participant(request: Request, contest_id: str) -> dict:

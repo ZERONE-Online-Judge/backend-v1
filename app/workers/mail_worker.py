@@ -95,7 +95,9 @@ async def main() -> None:
                 store.mark_mail_status(item.mail_queue_id, "canceled")
                 print(f"[mail-worker] canceled internal recipient {item.mail_type} to {item.recipient_email}")
                 continue
-            store.mark_mail_status(item.mail_queue_id, "sending")
+            current = store.mark_mail_status(item.mail_queue_id, "sending")
+            if not current or current.status != "sending":
+                continue
             try:
                 send_mail(item.recipient_email, item.subject, item.body_text, item.body_html)
             except Exception as exc:
