@@ -262,6 +262,65 @@ def test_permissions_contest_scope_lock_and_duplicate_codes(context):
     assert upload(c,content,'import',code='C').status_code==409
 
 
+def test_shared_archive_files_keep_distinct_asset_storage_and_references(context):
+    c = context
+    def aliases(manifest, _):
+        for number, original in enumerate(list(manifest['assets'])[:2], 9000):
+            alias = {**original, 'id': f'asset-{number}'}
+            manifest['assets'].append(alias)
+            if original['mime_type'] == 'image/png':
+                manifest['problem']['statement'] += f'\n![alias](asset://{alias["id"]})'
+    content = mutate_zip(export(c), aliases)
+    response = upload(c, content, 'import')
+    assert response.status_code == 200, response.text
+    problem = response.json()['data']
+    assets = store.problem_assets_for_problem(c['cid'], problem['problem_id'])
+    assert len(assets) == 6
+    assert len({a.storage_key for a in assets}) == len(assets)
+    images = [a for a in assets if a.mime_type == 'image/png']
+    assert len(images) == 2
+    for asset in images:
+        assert f'asset://{asset.asset_id}' in problem['statement']
+    for asset in assets:
+        assert hashlib.sha256(object_storage.read_bytes(asset.storage_key)).hexdigest() == asset.sha256
+    # The resulting package remains portable after restoring all aliases.
+    again = upload(c, export({**c, 'pid': problem['problem_id']}), 'import', code='C')
+    assert again.status_code == 200, again.text
+
+
+@pytest.mark.parametrize('constraint, expected_code', [
+    ('ix_problem_assets_storage_key', 'problem_archive_data_conflict'),
+    ('uq_problem_division_code', 'problem_archive_code_conflict'),
+])
+def test_database_conflicts_report_the_actual_type_and_roll_back(context, monkeypatch, constraint, expected_code):
+    from types import SimpleNamespace
+    from sqlalchemy import event
+    from sqlalchemy.exc import IntegrityError
+    c = context
+    content = export(c)
+    sessions = archive_service.SessionLocal
+    written = []
+    write = object_storage.write_stream
+    def track_write(key, *args):
+        written.append(key)
+        return write(key, *args)
+    def fail_commit(db):
+        original = RuntimeError('simulated database constraint conflict')
+        original.diag = SimpleNamespace(constraint_name=constraint)
+        raise IntegrityError('INSERT', {}, original)
+    def session():
+        db = sessions()
+        event.listen(db, 'before_commit', fail_commit)
+        return db
+    monkeypatch.setattr(archive_service, 'SessionLocal', session)
+    monkeypatch.setattr(object_storage, 'write_stream', track_write)
+    result = upload(c, content, 'import')
+    assert result.status_code == 409, result.text
+    assert result.json()['error']['code'] == expected_code
+    assert len([p for p in store.problems.values() if p.contest_id == c['cid']]) == 1
+    assert written and all(object_storage.size_bytes(key) is None for key in written)
+
+
 @pytest.mark.parametrize('kind',['hash','missing','traversal','version','active','reference','unknown','duplicate_json','symlink'])
 def test_invalid_archives_do_not_create_any_problem(context,kind):
     c=context;content=export(c)

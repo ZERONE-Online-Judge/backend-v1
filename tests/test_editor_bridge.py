@@ -11,7 +11,7 @@ from sqlalchemy import select, func
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import SessionLocal
-from app.orm_models import EditorImportRow, OperationalAuditLogRow, StaffAccountRow, ProblemRow
+from app.orm_models import EditorImportRow, OperationalAuditLogRow, StaffAccountRow, ProblemRow, ProblemAssetRow
 from app.settings import settings
 from test_problem_archives import context, export as raw_export, mutate_zip
 
@@ -78,3 +78,26 @@ def test_atomic_receipt_retry_revoked_permission_and_audit(context):
         assert db.scalar(select(func.count()).select_from(OperationalAuditLogRow).where(OperationalAuditLogRow.action=='Editor 문제 가져오기',OperationalAuditLogRow.contest_id==c['cid']))==1
         account=db.scalar(select(StaffAccountRow).where(StaffAccountRow.email==email));account.contest_scopes='{}';account.contest_roles='{}';db.commit()
     assert client.post(path,content=content,headers=headers('POST',path,email,content)).status_code==403
+
+
+def test_verified_editor_resource_aliases_import_once(context):
+    c = context
+    def duplicate_resource(manifest, _):
+        resource = next(a for a in manifest['assets'] if a['category'] == 'package-files/package-resource' and a['original_filename'] == 'testlib.h')
+        resource['original_filename'] = 'polygon-check.cpp'
+        manifest['assets'].append({**resource, 'id': 'asset-9000'})
+    content = mutate_zip(export(c), duplicate_resource)
+    email = email_for(c)
+    path = target(c)
+    first = client.post(path, content=content, headers=headers('POST', path, email, content))
+    assert first.status_code == 200, first.text
+    pid = first.json()['data']['problem_id']
+    retry = client.post(path, content=content, headers=headers('POST', path, email, content))
+    assert retry.status_code == 200, retry.text
+    assert retry.json()['data']['problem_id'] == pid
+    with SessionLocal() as db:
+        assets = list(db.scalars(select(ProblemAssetRow).where(ProblemAssetRow.problem_id == pid, ProblemAssetRow.original_filename == 'polygon-check.cpp')))
+        assert len(assets) == 2
+        assert len({a.storage_key for a in assets}) == 2
+        assert len({a.sha256 for a in assets}) == 1
+        assert db.scalar(select(func.count()).select_from(EditorImportRow).where(EditorImportRow.problem_id == pid)) == 1

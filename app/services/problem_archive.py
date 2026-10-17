@@ -466,9 +466,10 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
             db.flush()
             file_by_path = {file.path: file for file in manifest.files}
             object_keys = {}
-            def upload(path, category, filename, mime):
-                # Roles are properties of object paths, so don't deduplicate across categories.
-                pair = (path, category)
+            def upload(path, category, filename, mime, *, asset_id=None):
+                # Each asset row owns a unique storage key, even when several
+                # manifest entries refer to the same ZIP member and role.
+                pair = (path, category, asset_id)
                 if pair in object_keys:
                     return object_keys[pair]
                 key = f'contests/{contest_id}/problems/{pid}/{category}/{uuid4().hex}-{filename}'
@@ -489,7 +490,7 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
                     raise invalid('첨부 파일의 생성 시각이 올바르지 않습니다.')
                 file = file_by_path[item.file]
                 db.add(ProblemAssetRow(asset_id=asset_ids[item.id], contest_id=contest_id, problem_id=pid,
-                    original_filename=item.original_filename, storage_key=upload(item.file, item.category, item.original_filename, item.mime_type),
+                    original_filename=item.original_filename, storage_key=upload(item.file, item.category, item.original_filename, item.mime_type, asset_id=asset_ids[item.id]),
                     mime_type=item.mime_type, file_size=file.size, sha256=file.sha256, source_language=item.source_language, asset_status=item.asset_status, created_at=created))
             for position, item in enumerate(sorted(manifest.testcase_sets, key=lambda s: s.version), 1):
                 set_id = str(uuid4())
@@ -521,7 +522,11 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
             committed = True
             return Problem(**{field: getattr(problem, field) for field in Problem.model_fields}).model_dump(mode='json')
     except IntegrityError as error:
-        raise AppError(409, 'problem_archive_code_conflict', '같은 문제 번호가 이미 등록되어 있습니다. 다른 번호로 다시 시도해 주세요.') from error
+        constraint = getattr(getattr(error.orig, 'diag', None), 'constraint_name', None)
+        if constraint == 'uq_problem_division_code' or str(error.orig) == 'UNIQUE constraint failed: problems.contest_id, problems.division_id, problems.problem_code':
+            raise AppError(409, 'problem_archive_code_conflict', '같은 문제 번호가 이미 등록되어 있습니다. 다른 번호로 다시 시도해 주세요.') from error
+        log.error('Problem archive database constraint conflict: %s', constraint or 'unknown')
+        raise AppError(409, 'problem_archive_data_conflict', '패키지 정보를 저장하는 중 충돌이 발생해 등록을 취소했습니다. 운영자에게 문의해 주세요.') from error
     finally:
         if not committed:
             for key in written:
