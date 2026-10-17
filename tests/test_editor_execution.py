@@ -35,8 +35,8 @@ def payload(kind='prepare'):
                       'sum.py': {'base64': base64.b64encode(b'print(sum(map(int,input().split())))\n').decode(), 'executable': False}}}
 
 
-def enqueue(value=None):
-    content = pack(value or payload())
+def enqueue(value=None, *, content=None):
+    content = pack(value or payload()) if content is None else content
     path = '/api/editor/judge/tasks'
     return client.post(path, content=content, headers=headers('POST', path, content))
 
@@ -211,8 +211,14 @@ def test_cancellation_and_expiry_stop_old_reports_and_requeue(execution_db):
 
 
 def test_idempotent_submission_rejects_changed_files_and_unsigned_requests(execution_db):
-    value=payload(); first=enqueue(value)
-    assert enqueue(value).json()['data']['id'] == first.json()['data']['id']
+    value=payload()
+    # A transport retry resends the same ZIP; repacking changes ZIP timestamps.
+    content=pack(value)
+    first=enqueue(content=content)
+    assert first.status_code == 202, first.text
+    retry=enqueue(content=content)
+    assert retry.status_code == 202, retry.text
+    assert retry.json()['data']['id'] == first.json()['data']['id']
     value['files']['sum.py']['base64']=base64.b64encode(b'print(42)').decode()
     assert enqueue(value).status_code == 409
     assert client.post('/api/editor/judge/tasks',content=pack(payload())).status_code == 401
