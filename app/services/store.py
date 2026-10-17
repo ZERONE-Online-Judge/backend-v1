@@ -19,6 +19,7 @@ from app.services.contest_visibility import contest_is_public, contest_hidden_by
 from app.services.errors import AppError, permission_denied
 from app.settings import settings
 from app.problem_languages import validate_statement_fields
+from app.judge_languages import LANGUAGES, NEW_LANGUAGES, ICPC_CAPABILITY, require_allowed, validate_languages
 from app.services.package_builder import is_editor_source_asset
 from app.models import (
     AccessLog,
@@ -250,6 +251,7 @@ def _problem(row: ProblemRow) -> Problem:
         time_limit_ms=row.time_limit_ms,
         memory_limit_mb=row.memory_limit_mb,
         language_resource_limits=row.language_resource_limits or {},
+        allowed_languages=row.allowed_languages or list(LANGUAGES),
         display_order=row.display_order,
     )
 
@@ -264,6 +266,7 @@ def _asset(row: ProblemAssetRow) -> ProblemAsset:
         mime_type=row.mime_type,
         file_size=row.file_size,
         sha256=row.sha256,
+        source_language=row.source_language,
         asset_status=row.asset_status,
         created_at=_aware(row.created_at),
     )
@@ -3509,6 +3512,7 @@ class DbStore:
         default_statement_language: str = "ko",
         statement_translations: dict | None = None,
         editorial_translations: dict | None = None,
+        allowed_languages: list[str] | None = None,
     ) -> Problem:
         with self._session() as db:
             division = db.get(ContestDivisionRow, division_id)
@@ -3525,6 +3529,7 @@ class DbStore:
                 time_limit_ms=time_limit_ms,
                 memory_limit_mb=memory_limit_mb,
                 language_resource_limits=language_resource_limits or {},
+                allowed_languages=validate_languages(allowed_languages if allowed_languages is not None else list(LANGUAGES)),
                 display_order=display_order,
             )
             db.add(row)
@@ -3638,6 +3643,7 @@ class DbStore:
                 time_limit_ms=source.time_limit_ms,
                 memory_limit_mb=source.memory_limit_mb,
                 language_resource_limits=source.language_resource_limits or {},
+                allowed_languages=list(source.allowed_languages or LANGUAGES),
                 display_order=next_display_order,
             )
             db.add(target)
@@ -3679,6 +3685,7 @@ class DbStore:
                         mime_type=asset.mime_type,
                         file_size=asset.file_size,
                         sha256=asset.sha256,
+                        source_language=asset.source_language,
                         asset_status=asset.asset_status,
                     )
                 )
@@ -3739,6 +3746,8 @@ class DbStore:
                     values.get("default_statement_language") or row.default_statement_language or "ko",
                     values.get("statement_translations") if values.get("statement_translations") is not None else row.statement_translations or {},
                     values.get("editorial_translations") if values.get("editorial_translations") is not None else row.editorial_translations or {}))
+            if "allowed_languages" in values:
+                values["allowed_languages"] = validate_languages(values["allowed_languages"])
             for key, value in values.items():
                 if value is not None:
                     if key == "division_id":
@@ -4019,6 +4028,7 @@ class DbStore:
             problem = db.get(ProblemRow, problem_id)
             if not problem or problem.contest_id != contest_id:
                 raise ValueError("problem not found")
+            require_allowed(problem, language)
             member = db.scalar(select(TeamMemberRow).where(TeamMemberRow.contest_id == contest_id, TeamMemberRow.email == team_member_email))
             if not member:
                 raise ValueError("team member not registered")
@@ -4156,6 +4166,7 @@ class DbStore:
             problem = db.get(ProblemRow, problem_id)
             if not problem or problem.contest_id != contest_id:
                 raise ValueError("problem not found")
+            require_allowed(problem, language)
             submission = SubmissionRow(
                 contest_id=contest_id,
                 division_id=problem.division_id,
@@ -5294,7 +5305,9 @@ class DbStore:
             ).exists()
             rows = db.scalars(
                 select(JudgeJobRow)
+                .join(SubmissionRow, SubmissionRow.submission_id == JudgeJobRow.submission_id)
                 .where(JudgeJobRow.status == JudgeJobStatus.PENDING.value)
+                .where(SubmissionRow.language.in_(LANGUAGES if ICPC_CAPABILITY in (node.execution_capabilities or []) else [lang for lang in LANGUAGES if lang not in NEW_LANGUAGES]))
                 .order_by(sql_case((is_ai_trial, 2), (rejudging.is_job(), 1), else_=0), JudgeJobRow.queue_position)
                 .limit(safe_max_count)
                 .with_for_update(skip_locked=True)

@@ -1,3 +1,4 @@
+from app.judge_languages import LANGUAGES, require_allowed
 from app.services.request_sessions import request_database
 import asyncio
 
@@ -534,8 +535,12 @@ def create_submission(contest_id: str, problem_id: str, payload: SubmissionCreat
         raise not_found()
     if not participant.get("is_preview") and (contest.status != ContestStatus.RUNNING or now_utc() >= contest.end_at):
         raise invalid_state("Contest is not accepting submissions.")
-    if payload.language not in {"c99", "cpp17", "python313", "java8"}:
+    if payload.language not in set(LANGUAGES):
         raise AppError(422, "validation_error", "Unsupported language.", {"fields": [{"path": "body.language", "code": "invalid_enum"}]})
+    problem = store.get_problem(problem_id)
+    if not problem or problem.contest_id != contest_id:
+        raise not_found()
+    require_allowed(problem, payload.language)
     try:
         submission = (
             create_preview_submission(contest_id, problem_id, participant, payload.language, payload.source_code)
@@ -563,7 +568,7 @@ def create_mock_submission(contest_id: str, problem_id: str, payload: Submission
         raise not_found()
     if contest.problem_access_after_end == ContestResourceAccess.PARTICIPANTS and not participant:
         raise authentication_required("Participant access token is required.")
-    if payload.language not in {"c99", "cpp17", "python313", "java8"}:
+    if payload.language not in set(LANGUAGES):
         raise AppError(422, "validation_error", "Unsupported language.", {"fields": [{"path": "body.language", "code": "invalid_enum"}]})
     if not payload.source_code.strip():
         raise AppError(422, "validation_error", "Source code is required.")

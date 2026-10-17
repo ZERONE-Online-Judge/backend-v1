@@ -25,6 +25,7 @@ from app.services.errors import AppError
 from app.services.node_credentials import valid_node_credential
 from app.services.storage import object_storage
 from app.settings import settings
+from app.judge_languages import LANGUAGES, NEW_LANGUAGES, ICPC_CAPABILITY
 
 ACTIVE = {"uploading", "waiting", "preparing", "judging"}
 RUNNING = {"preparing", "judging"}
@@ -44,7 +45,7 @@ class Strict(BaseModel):
 
 class Source(Strict):
     name: str = Field(min_length=1, max_length=150)
-    language: Literal["cpp17", "python313", "c99", "java8"]
+    language: Literal["cpp17", "python313", "c99", "java8", "pypy3", "kotlin"]
     sha256: str = Field(pattern=HASH)
 
 
@@ -122,7 +123,7 @@ def capabilities():
         revision = hashlib.sha256(json.dumps([FULL_VERIFICATION, settings.release_version, versions], separators=(",", ":")).encode()).hexdigest()[:16]
         return {
             "backend": "zoj", "runtime_revision": "zoj-judge-" + revision,
-            "languages": ["cpp17", "python313", "c99", "java8"],
+            "languages": list(LANGUAGES),
             "full_suite_protocol": FULL_VERIFICATION,
             "full_suite_online_nodes": sum(FULL_VERIFICATION in (n.execution_capabilities or []) and aware(n.last_heartbeat_at) >= now_utc() - timedelta(seconds=settings.judge_node_active_window_seconds) for n in nodes),
             "standard_io_only": True, "contest_submissions_first": True,
@@ -396,6 +397,8 @@ def claim_jobs(node_id, node_secret, max_count, session_factory=None):
             db.commit()
             return []
         query = select(Run).where(Run.status == "waiting")
+        if ICPC_CAPABILITY not in (node.execution_capabilities or []):
+            query = query.where(Run.payload["language"].as_string().not_in(NEW_LANGUAGES))
         if FULL_VERIFICATION not in (node.execution_capabilities or []):
             query = query.where(Run.payload["collect_all_results"].as_boolean().is_not(True))
         rows = db.scalars(query.order_by(Run.created_at, Run.run_id).limit(min(max_count, settings.judge_claim_max_batch_size)).with_for_update(skip_locked=True)).all()

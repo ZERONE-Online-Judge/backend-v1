@@ -234,7 +234,7 @@ def inherit(state, parent):
             "python313": "py",
             "cpp17": "cpp",
             "c99": "c",
-            "java8": "java",
+            "java8": "java", "pypy3": "py", "kotlin": "kt",
         }.get(item["language"], "txt")
         path = f"previous/{parent.analysis_id}/{key}.{extension}"
         try:

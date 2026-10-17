@@ -84,7 +84,7 @@ def create(email, content, fingerprint):
         row = previous
         if not row:
             row = Task(task_id=task_id, operation_key=operation, owner_id=account.account_id, fingerprint=fingerprint, status="uploading",
-                   input_key=key, payload={"config": payload["config"], "runtime": payload["runtime"], "job_kind": payload["job_kind"], "input_sha256": fingerprint})
+                   input_key=key, payload={"config": payload["config"], "runtime": payload["runtime"], "job_kind": payload["job_kind"], "input_sha256": fingerprint, "requires_icpc": any(token in json.dumps(payload["config"]) for token in ("pypy", "kotlin", "kotlinc", "icpc-jdk"))})
             db.add(row)
         db.commit()
 
@@ -156,7 +156,11 @@ def claim_jobs(node_id, node_secret, max_count, session_factory=None):
         if not node.allow_editor or PROTOCOL not in (node.execution_capabilities or []) or not node.execution_revision or capacity <= 0:
             db.commit()
             return []
-        rows = db.scalars(select(Task).where(Task.status == "waiting").order_by(Task.created_at, Task.task_id).limit(capacity).with_for_update(skip_locked=True)).all()
+        query = select(Task).where(Task.status == "waiting")
+        if "editor-icpc-languages-v1" not in (node.execution_capabilities or []):
+            # New compiler and interpreter paths require an updated runtime image.
+            query = query.where(Task.payload["requires_icpc"].as_boolean().is_not(True))
+        rows = db.scalars(query.order_by(Task.created_at, Task.task_id).limit(capacity).with_for_update(skip_locked=True)).all()
         result = []
         for row in rows:
             row.status, row.assigned_node_id, row.lease_token, row.leased_at = "running", node_id, str(uuid4()), now_utc()

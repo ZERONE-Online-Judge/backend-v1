@@ -120,6 +120,7 @@ class ProblemRow(Base):
     editorial_translations: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     time_limit_ms: Mapped[int] = mapped_column(Integer)
     memory_limit_mb: Mapped[int] = mapped_column(Integer)
+    allowed_languages: Mapped[list] = mapped_column(JSON, default=lambda: ["cpp17", "python313", "java8", "c99", "pypy3", "kotlin"])
     language_resource_limits: Mapped[dict] = mapped_column(JSON, default=dict)
     display_order: Mapped[int] = mapped_column(Integer)
 
@@ -135,6 +136,7 @@ class ProblemAssetRow(Base):
     mime_type: Mapped[str] = mapped_column(String(120))
     file_size: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
+    source_language: Mapped[str | None] = mapped_column(String(32), nullable=True)
     asset_status: Mapped[str] = mapped_column(String(32), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 

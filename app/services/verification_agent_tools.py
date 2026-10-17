@@ -233,7 +233,7 @@ def artifact(state, files, artifact_id, language):
                     (".cpp", "cpp17"),
                     (".cc", "cpp17"),
                     (".py", "python313"),
-                    (".java", "java8"),
+                    (".java", "java8"), (".kt", "kotlin"),
                     (".c", "c99"),
                 )
                 if name.endswith(suffix)

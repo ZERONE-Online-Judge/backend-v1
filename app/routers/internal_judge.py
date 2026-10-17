@@ -27,7 +27,7 @@ class RegisterNodeRequest(NodeCredentialRequest):
     @field_validator("execution_capabilities")
     @classmethod
     def supported_capabilities(cls, value):
-        if any(item not in {"editor-execute-v1", editor_judging.FULL_VERIFICATION} for item in value):
+        if any(item not in {"editor-execute-v1", editor_judging.FULL_VERIFICATION, "judge-icpc-languages-v1", "editor-icpc-languages-v1"} for item in value):
             raise ValueError("Unsupported execution capability")
         return sorted(set(value))
 

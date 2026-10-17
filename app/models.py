@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, EmailStr, Field
 from app.problem_languages import ProblemStatements
+from app.judge_languages import ProgrammingLanguages
 
 
 def now_utc() -> datetime:
@@ -155,7 +156,7 @@ class ContestDivision(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 
-class Problem(ProblemStatements):
+class Problem(ProblemStatements, ProgrammingLanguages):
     problem_id: str = Field(default_factory=new_id)
     contest_id: str
     division_id: str
@@ -183,6 +184,7 @@ class ProblemAsset(BaseModel):
     mime_type: str
     file_size: int
     sha256: str
+    source_language: str | None = None
     asset_status: str = "active"
     created_at: datetime = Field(default_factory=now_utc)
 

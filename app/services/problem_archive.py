@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, field_validator
 from app.problem_languages import ProblemStatements, validate_statement_fields
+from app.judge_languages import LANGUAGES, ProgrammingLanguages
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -51,20 +52,20 @@ class ResourceLimit(ArchiveModel):
     memory_limit_mb: StrictInt | None = Field(default=None, ge=16, le=1024)
 
 
-class ArchiveProblem(ProblemStatements, ArchiveModel):
+class ArchiveProblem(ProblemStatements, ProgrammingLanguages, ArchiveModel):
     problem_code: str = Field(min_length=1, max_length=16)
     title: str = Field(min_length=1, max_length=255)
     statement: str = Field(max_length=4 * 1024 * 1024)
     editorial: str = Field(default='', max_length=4 * 1024 * 1024)
     time_limit_ms: StrictInt = Field(ge=100, le=10000)
     memory_limit_mb: StrictInt = Field(ge=16, le=1024)
-    language_resource_limits: dict[str, ResourceLimit] = Field(default_factory=dict, max_length=4)
+    language_resource_limits: dict[str, ResourceLimit] = Field(default_factory=dict, max_length=6)
     display_order: StrictInt = Field(ge=1, le=1_000_000)
 
     @field_validator('language_resource_limits')
     @classmethod
     def known_languages(cls, value):
-        if set(value) - {'c99', 'cpp17', 'python313', 'java8'}:
+        if set(value) - set(LANGUAGES):
             raise ValueError('Unknown language')
         return value
 
@@ -81,6 +82,7 @@ class ArchiveAsset(ArchiveModel):
     original_filename: str = Field(min_length=1, max_length=255)
     mime_type: str = Field(min_length=1, max_length=120)
     category: str = Field(max_length=80)
+    source_language: Literal['c99', 'cpp17', 'python313', 'java8', 'pypy3', 'kotlin'] | None = None
     asset_status: str = Field(default='active', min_length=1, max_length=32)
     created_at: str = Field(max_length=40)
 
@@ -354,7 +356,7 @@ def export_archive(contest_id: str, problem_id: str):
                     name = f'assets/{index:05d}/{re.sub(r"[^a-zA-Z0-9._-]", "_", asset.original_filename)[:120] or "file"}'
                     data['assets'].append({'id': ids[asset.asset_id], 'file': add_file(asset.storage_key, name, asset.sha256),
                         'original_filename': asset.original_filename, 'mime_type': asset.mime_type, 'category': _category(asset.storage_key),
-                        'asset_status': asset.asset_status, 'created_at': asset.created_at.isoformat()})
+                        'source_language': asset.source_language, 'asset_status': asset.asset_status, 'created_at': asset.created_at.isoformat()})
                 for item in sets:
                     cases = db.scalars(select(TestcaseRow).where(TestcaseRow.testcase_set_id == item.testcase_set_id).order_by(TestcaseRow.display_order)).all()
                     exported = {'version': item.version, 'is_active': item.is_active, 'testcases': []}
@@ -451,7 +453,7 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
                 file = file_by_path[item.file]
                 db.add(ProblemAssetRow(asset_id=asset_ids[item.id], contest_id=contest_id, problem_id=pid,
                     original_filename=item.original_filename, storage_key=upload(item.file, item.category, item.original_filename, item.mime_type),
-                    mime_type=item.mime_type, file_size=file.size, sha256=file.sha256, asset_status=item.asset_status, created_at=created))
+                    mime_type=item.mime_type, file_size=file.size, sha256=file.sha256, source_language=item.source_language, asset_status=item.asset_status, created_at=created))
             for item in manifest.testcase_sets:
                 set_id = str(uuid4())
                 db.add(TestcaseSetRow(testcase_set_id=set_id, problem_id=pid, version=item.version, is_active=item.is_active))

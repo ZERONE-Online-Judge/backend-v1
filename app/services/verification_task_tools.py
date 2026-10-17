@@ -47,7 +47,7 @@ def handle(row, context, state, files, name, args):
                 "cpp17": "cpp",
                 "c99": "c",
                 "python313": "py",
-                "java8": "java",
+                "java8": "java", "pypy3": "py", "kotlin": "kt",
             }.get(submission.language, "txt")
             extra[prefix + "source"] = {
                 "category": "reference",

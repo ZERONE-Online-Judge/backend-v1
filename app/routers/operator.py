@@ -46,7 +46,8 @@ async def operator_mail_logs(contest_id: str, request: Request, filters: dict = 
     return page(request, logs, next_cursor=next_cursor, limit=filters["limit"], total_count=total, current_cursor=filters["cursor"])
 
 OPERATOR_TEST_TEAM_PREFIX = "__operator_test__"
-SUPPORTED_JUDGE_LANGUAGES = {"c99", "cpp17", "python313", "java8"}
+from app.judge_languages import LANGUAGES, ProgrammingLanguages, validate_languages
+SUPPORTED_JUDGE_LANGUAGES = set(LANGUAGES)
 
 
 class ProblemLanguageResourceLimitPayload(BaseModel):
@@ -193,7 +194,7 @@ class DivisionUpdateRequest(BaseModel):
     display_order: int | None = None
 
 
-class ProblemCreateRequest(ProblemStatements):
+class ProblemCreateRequest(ProblemStatements, ProgrammingLanguages):
     division_id: str
     problem_code: str
     title: str
@@ -233,6 +234,13 @@ class ProblemUpdateRequest(BaseModel):
     editorial: str | None = None
     time_limit_ms: int | None = None
     memory_limit_mb: int | None = None
+    allowed_languages: list[str] | None = None
+
+    @field_validator("allowed_languages", mode="before")
+    @classmethod
+    def languages(cls, value):
+        return validate_languages(value)
+
     language_resource_limits: dict[str, ProblemLanguageResourceLimitPayload] | None = None
     display_order: int | None = None
 
@@ -1244,7 +1252,7 @@ async def create_operator_test_submission(contest_id: str, problem_id: str, payl
     account = require_contest_staff(request, contest_id, "contest.problem.test")
     if payload.verification_asset_id:
         require_contest_staff(request, contest_id, "contest.problem.resource.view")
-    if payload.language not in {"c99", "cpp17", "python313", "java8"}:
+    if payload.language not in set(LANGUAGES):
         raise AppError(422, "validation_error", "Unsupported language.", {"fields": [{"path": "body.language", "code": "invalid_enum"}]})
     if not payload.source_code.strip():
         raise AppError(422, "validation_error", "Source code is required.")
@@ -1459,6 +1467,7 @@ async def create_problem(contest_id: str, payload: ProblemCreateRequest, request
             time_limit_ms=payload.time_limit_ms,
             memory_limit_mb=payload.memory_limit_mb,
             language_resource_limits=_clean_language_resource_limits(payload.language_resource_limits),
+            allowed_languages=payload.allowed_languages,
             display_order=payload.display_order,
             default_statement_language=payload.default_statement_language,
             statement_translations={k: v.model_dump() for k, v in payload.statement_translations.items()},
@@ -1800,7 +1809,7 @@ class RejudgingCreateRequest(BaseModel):
     submission_id: str | None = Field(default=None, min_length=1, max_length=36)
     problem_id: str | None = Field(default=None, min_length=1, max_length=36)
     team_id: str | None = Field(default=None, min_length=1, max_length=36)
-    language: Literal['c99', 'cpp17', 'python313', 'java8'] | None = None
+    language: Literal['c99', 'cpp17', 'python313', 'java8', 'pypy3', 'kotlin'] | None = None
     reason: str = Field(min_length=1, max_length=1000)
 
     @field_validator('reason')

@@ -1,7 +1,13 @@
+FROM eclipse-temurin:21.0.4_7-jdk-jammy AS icpc-jdk
 FROM python:3.13-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends g++ gcc openjdk-17-jdk-headless coreutils && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /seed /workspace && chmod 755 /seed /workspace /tmp /var/tmp \
     && find /usr /bin /sbin -xdev -type f -perm /6000 -exec chmod a-s {} +
+COPY --from=icpc-jdk /opt/java/openjdk /usr/local/lib/icpc-jdk
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip bzip2 libffi8 libncursesw6 libtinfo6 && rm -rf /var/lib/apt/lists/*
+COPY install-icpc-runtimes.sh /tmp/install-icpc-runtimes.sh
+RUN sh /tmp/install-icpc-runtimes.sh && rm /tmp/install-icpc-runtimes.sh
+
 COPY sandbox.py /opt/zoj-sandbox.py
 RUN chmod 444 /opt/zoj-sandbox.py
 WORKDIR /workspace

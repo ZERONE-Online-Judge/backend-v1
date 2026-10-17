@@ -353,3 +353,16 @@ def test_cancellation_before_a_late_create_prevents_execution(execution_db):
     task=enqueue(value).json()['data']
     assert task['status']=='cancelled'
     n=ready_node();assert claim(n)==[]
+
+
+@pytest.mark.parametrize('command', [['pypy3','sum.py'],['kotlinc','Main.kt'],['/usr/local/lib/icpc-jdk/bin/java','-jar','program.jar']])
+def test_new_language_tools_wait_for_updated_runtime(execution_db,command):
+    value=payload();value['config']['command']=command
+    task=enqueue(value).json()['data']
+    n=ready_node()
+    assert execution.claim_jobs(n,SECRET,1)==[]
+    with execution_db() as db:
+        row=db.get(JudgeNodeRow,n)
+        row.execution_capabilities=[PROTOCOL,'editor-icpc-languages-v1']
+        db.commit()
+    assert execution.claim_jobs(n,SECRET,1)[0]['judge_job_id']==task['id']

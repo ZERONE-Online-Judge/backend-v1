@@ -340,8 +340,16 @@ def create_schema() -> None:
             if "password_hash" in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE staff_accounts DROP COLUMN password_hash"))
+        if "problem_assets" in inspector.get_table_names():
+            columns = {column["name"] for column in inspector.get_columns("problem_assets")}
+            if "source_language" not in columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE problem_assets ADD COLUMN source_language VARCHAR(32)"))
         if "problems" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("problems")}
+            if "allowed_languages" not in columns:
+                with engine.begin() as connection:
+                    connection.execute(text("""ALTER TABLE problems ADD COLUMN allowed_languages JSON DEFAULT '["cpp17","python313","java8","c99","pypy3","kotlin"]' NOT NULL"""))
             if "language_resource_limits" not in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE problems ADD COLUMN language_resource_limits JSON DEFAULT '{}' NOT NULL"))
