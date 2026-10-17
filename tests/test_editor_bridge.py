@@ -13,10 +13,20 @@ from app.main import app
 from app.database import SessionLocal
 from app.orm_models import EditorImportRow, OperationalAuditLogRow, StaffAccountRow, ProblemRow
 from app.settings import settings
-from test_problem_archives import context, export
+from test_problem_archives import context, export as raw_export, mutate_zip
 
 client=TestClient(app)
 KEY='editor-bridge-test-secret-at-least-32-characters'
+
+def export(c):
+    def verified(manifest, files):
+        body=json.dumps({'format':'zoj-editor-source-v1','verified':True}).encode()
+        path='assets/editor-project.json'
+        files[path]=body
+        manifest['files'].append({'path':path,'size':len(body),'sha256':hashlib.sha256(body).hexdigest()})
+        manifest['assets'].append({'id':'asset-9999','file':path,'original_filename':'editor-project.json',
+            'mime_type':'application/json','category':'package-files/package-resource','asset_status':'active','created_at':'2026-10-18T00:00:00+00:00'})
+    return mutate_zip(raw_export(c),verified)
 
 @pytest.fixture(autouse=True)
 def config(monkeypatch):

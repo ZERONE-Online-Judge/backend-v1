@@ -37,13 +37,15 @@ SECRET = 'postgres-test-approved-agent-secret-32'
 def postgres(monkeypatch):
     engine = create_engine(URL)
     Base.metadata.drop_all(engine)
-    # Reproduce a pre-upgrade deployment, then run the real migration.
-    Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables if table.name not in {'rejudgings', 'rejudging_items', 'notifications'}])
+    # Build the historical schema rather than mixing current ORM tables with
+    # an old version stamp (newer Editor/auth tables would already exist).
     with engine.begin() as db:
-        db.execute(text('DROP INDEX IF EXISTS ix_team_members_email_lower'))
+        db.execute(text('DROP TABLE IF EXISTS alembic_version'))
     monkeypatch.setattr(settings, 'database_url', URL)
     cfg = Config('alembic.ini')
-    command.stamp(cfg, '0039_restore_verification_runs')
+    command.upgrade(cfg, '0039_restore_verification_runs')
+    with engine.begin() as db:
+        db.execute(text('DROP INDEX IF EXISTS ix_team_members_email_lower'))
     command.upgrade(cfg, 'head')
     assert {'rejudgings', 'rejudging_items', 'notifications'} <= set(inspect(engine).get_table_names())
     assert 'ix_team_members_email_lower' in {index['name'] for index in inspect(engine).get_indexes('team_members')}
@@ -146,6 +148,27 @@ def test_postgres_stale_item_rolls_back_entire_batch(postgres):
         assert [row.status for row in db.scalars(select(SubmissionRow).order_by(SubmissionRow.submission_id))] == ['wrong_answer']*3 + ['runtime_error']
         assert db.scalar(select(RejudgingRow)).status == 'pending'
         assert db.scalar(select(func.count()).select_from(RejudgingItemRow).where(RejudgingItemRow.active_submission_id.is_not(None))) == 4
+
+
+def test_claim_skips_a_package_update_lock_and_uses_one_complete_version(postgres):
+    with postgres() as db:
+        db.add(JudgeJobRow(judge_job_id='package-job',submission_id='0',contest_id='contest',
+            division_id='division',status='pending',queue_position=1))
+        db.commit()
+    node = store.provision_node('package-node', SECRET, 1)
+    with ThreadPoolExecutor(max_workers=1) as pool, postgres() as db:
+        problem = db.scalar(select(ProblemRow).where(ProblemRow.problem_id=='problem').with_for_update())
+        assert pool.submit(store.claim_jobs,node.judge_node_id,SECRET,1).result(timeout=3)==[]
+        problem.time_limit_ms=2000
+        db.get(CaseSet,'set').is_active=False
+        db.add(CaseSet(testcase_set_id='new-package-set',problem_id='problem',version=2,is_active=True))
+        db.flush()
+        db.add(Case(testcase_set_id='new-package-set',display_order=1,input_storage_key='new-in',output_storage_key='new-out',
+            input_sha256='c'*64,output_sha256='d'*64))
+        db.commit()
+    jobs=store.claim_jobs(node.judge_node_id,SECRET,1)
+    assert len(jobs)==1 and jobs[0]['problem']['time_limit_ms']==2000
+    assert jobs[0]['testcases'][0]['input_sha256']=='c'*64
 
 
 def test_postgres_metadata_changes_wait_for_atomic_apply(postgres, monkeypatch):

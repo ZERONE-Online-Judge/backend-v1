@@ -11,6 +11,7 @@ from app.services.errors import AppError
 from app.services.problem_archive import CHUNK, import_archive
 from app.services.responses import ok
 from app.routers.problem_archives import _receive
+from app.services import package_updates
 
 router = APIRouter(prefix="/editor", tags=["editor integration"])
 
@@ -55,3 +56,38 @@ async def receive_problem(contest_id: str, request: Request,
         source.seek(0)
         return import_archive(source, contest_id, division_id, problem_code, editor_context=context)
     return ok(request, await _receive(request, handle))
+
+
+@router.post("/contests/{contest_id}/problems/{problem_id}/package-updates:preview")
+async def preview_update(contest_id: str, problem_id: str, request: Request):
+    email, content_hash = identity(request)
+    with SessionLocal() as db:
+        staff(db, email, contest_id)
+    def handle(source):
+        if package_updates.archive_sha(source) != content_hash:
+            raise AppError(401, "editor_content_mismatch", "패키지 서명이 다릅니다.")
+        return package_updates.preview(source, contest_id, problem_id)
+    return ok(request, await _receive(request, handle))
+
+
+@router.post("/contests/{contest_id}/problems/{problem_id}/package-updates")
+async def apply_update(contest_id: str, problem_id: str, request: Request,
+        target_hash: str = Query(pattern=r"^[a-f0-9]{64}$"),
+        reason: str = Query(min_length=1, max_length=1000), confirm_running: bool = False,
+        editor_problem_id: str | None = Query(default=None, pattern=r"^[a-f0-9]{32}$"),
+        editor_revision: int | None = Query(default=None, ge=0)):
+    email, content_hash = identity(request)
+    with SessionLocal() as db:
+        staff(db, email, contest_id)
+    if not reason.strip():
+        raise AppError(422, "package_update_reason_required", "업데이트 이유를 입력하세요.")
+    operation = package_updates.digest([email, contest_id, problem_id, target_hash, content_hash])
+    context = {"email": email, "operation_key": operation, "request_id": request.state.request_id,
+               "request_digest": package_updates.digest([target_hash, content_hash, reason, confirm_running]),
+               "source": {"problem_id": editor_problem_id, "revision": editor_revision, "sha256": content_hash}}
+    def handle(source):
+        return package_updates.apply(source, contest_id, problem_id, target_hash, content_hash,
+                                     reason.strip(), confirm_running, context)
+    result = await _receive(request, handle)
+    return ok(request, {"problem": result, "backup_url": f"/api/operator/contests/{contest_id}/problems/{problem_id}/package-backups/{operation}",
+                        "official_results_unchanged": True})

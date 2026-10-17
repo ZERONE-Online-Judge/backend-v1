@@ -12,8 +12,8 @@ from app.services import editor_library as transport
 from app.services.errors import AppError
 from app.services.store import store
 from app.settings import settings
-from test_problem_archives import client, context, export
-from test_editor_bridge import email_for
+from test_problem_archives import client, context
+from test_editor_bridge import email_for, export
 
 PID, JOB = 'a' * 32, 'b' * 32
 

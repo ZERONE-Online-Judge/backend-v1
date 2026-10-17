@@ -126,6 +126,10 @@ def _audit_contest_id(path: str) -> str | None:
 
 
 def _audit_action(method: str, path: str) -> str:
+    if method.upper() == "POST" and re.search(r"/editor-problems/[a-f0-9]{32}/updates:preview$", path):
+        return "Editor 패키지 업데이트 검토"
+    if method.upper() == "POST" and re.search(r"/editor-problems/[a-f0-9]{32}/updates$", path):
+        return "Editor 패키지 업데이트"
     if method.upper() == "DELETE" and re.fullmatch(r"/api/admin/contests/[^/]+", path):
         return "대회 삭제"
     if method.upper() == "POST" and re.search(r"/editor-problems/[a-f0-9]{32}/import$", path):
@@ -377,7 +381,7 @@ async def operational_audit_middleware(request: Request, call_next):
         from app.services.access_logging import record_operator_access
         contest_id, operator_account = request.state.operator_access
         await run_in_threadpool(record_operator_access, request, contest_id, operator_account, bearer_token(request) or "")
-    if request.method.upper() not in AUDITED_METHODS or not scope:
+    if request.method.upper() not in AUDITED_METHODS or not scope or (response.status_code < 400 and getattr(request.state, "package_update_audited", False)):
         return response
 
     try:

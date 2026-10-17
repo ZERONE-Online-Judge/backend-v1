@@ -10,7 +10,7 @@ import struct
 import zlib
 import tempfile
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Literal
 from urllib.parse import unquote
 from uuid import uuid4
@@ -302,10 +302,10 @@ def inspect_archive(source):
         return summary(manifest)
 
 
-def export_archive(contest_id: str, problem_id: str):
+def export_archive(contest_id: str, problem_id: str, *, session=None):
     target = tempfile.TemporaryFile('w+b')
     try:
-        with SessionLocal() as db:
+        with (SessionLocal() if session is None else nullcontext(session)) as db:
             problem = db.scalar(select(ProblemRow).where(ProblemRow.contest_id == contest_id, ProblemRow.problem_id == problem_id))
             if not problem:
                 raise not_found()
@@ -385,7 +385,7 @@ def export_archive(contest_id: str, problem_id: str):
         raise
 
 
-def import_archive(source, contest_id: str, division_id: str, problem_code: str, display_order: int | None = None, *, editor_context: dict | None = None):
+def import_archive(source, contest_id: str, division_id: str, problem_code: str, display_order: int | None = None, *, editor_context: dict | None = None, update_context: dict | None = None):
     code = problem_code.strip()
     if not code or len(code) > 16 or any(ord(c) < 32 for c in code):
         raise invalid('문제 번호는 1~16자로 입력해 주세요.')
@@ -393,16 +393,20 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
     committed = False
     try:
         with read_archive(source) as (archive, manifest), SessionLocal() as db:
+            if editor_context or any(a.original_filename == 'editor-project.json' and a.category == 'package-files/package-resource' for a in manifest.assets):
+                from app.services.package_updates import require_verified
+                require_verified(manifest, archive)
             contest = db.scalar(select(ContestRow).where(ContestRow.contest_id == contest_id).with_for_update())
             division = db.scalar(select(ContestDivisionRow).where(ContestDivisionRow.division_id == division_id, ContestDivisionRow.contest_id == contest_id).with_for_update())
-            if not contest or not division:
+            if not contest or contest.deleted_at is not None or not division:
                 raise not_found('참가 유형을 찾을 수 없습니다.')
             from app.services.store import _aware
             def ensure_unlocked():
                 now = now_utc()
                 if contest.status == 'running' or (contest.status not in {'draft', 'schedule_tbd', 'ended', 'finalized', 'archived'} and _aware(contest.start_at) <= now < _aware(contest.end_at)):
                     raise AppError(409, 'contest_locked', '대회 진행 중에는 문제를 가져올 수 없습니다.')
-            ensure_unlocked()
+            if not update_context:
+                ensure_unlocked()
             if editor_context:
                 from app.services.editor_bridge import staff
                 from app.services.contest_roles import title_for_roles
@@ -416,16 +420,49 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
                     if not existing or existing.contest_id != contest_id:
                         raise not_found()
                     return Problem(**{field: getattr(existing, field) for field in Problem.model_fields}).model_dump(mode='json')
-            if db.scalar(select(ProblemRow.problem_id).where(ProblemRow.contest_id == contest_id, ProblemRow.division_id == division_id, ProblemRow.problem_code == code)):
+            if update_context and not editor_context:
+                raise AppError(403, 'package_update_untrusted', '인증된 Editor 패키지로 업데이트하세요.')
+            if update_context:
+                from app.services import package_updates
+                problem = package_updates.target(db, contest_id, update_context['problem_id'], lock=True)
+                package_updates.check_update(db, contest, problem, update_context)
+                if not any(s.is_active and s.testcases for s in manifest.testcase_sets):
+                    raise AppError(409, 'package_update_no_tests', '활성 테스트가 있는 패키지를 선택하세요.')
+                pid = problem.problem_id
+                backup, _ = export_archive(contest_id, pid, session=db)
+                backup_key = f'contests/{contest_id}/problems/{pid}/package-backups/{editor_context["operation_key"]}.zoj.zip'
+                written.append(backup_key)
+                try:
+                    backup.seek(0, 2)
+                    size = backup.tell()
+                    backup.seek(0)
+                    object_storage.write_stream(backup_key, backup, size, 'application/zip')
+                except Exception as error:
+                    raise AppError(503, 'package_backup_failed', '이전 패키지 백업에 실패해 업데이트를 취소했습니다.') from error
+                finally:
+                    backup.close()
+                previous_sets = list(db.scalars(select(TestcaseSetRow).where(TestcaseSetRow.problem_id == pid).with_for_update()))
+                version_base = max((s.version for s in previous_sets), default=0)
+                for item in previous_sets:
+                    item.is_active = False
+                for asset in db.scalars(select(ProblemAssetRow).where(ProblemAssetRow.problem_id == pid).with_for_update()):
+                    db.delete(asset)
+            elif db.scalar(select(ProblemRow.problem_id).where(ProblemRow.contest_id == contest_id, ProblemRow.division_id == division_id, ProblemRow.problem_code == code)):
                 raise AppError(409, 'problem_archive_code_conflict', '이 참가 유형에 같은 문제 번호가 있습니다. 다른 번호를 입력해 주세요.')
-            pid = str(uuid4())
+            else:
+                pid = str(uuid4())
             asset_ids = {item.id: str(uuid4()) for item in manifest.assets}
             payload = manifest.problem.model_dump()
             payload.update(problem_id=pid, contest_id=contest_id, division_id=division_id, problem_code=code,
                            display_order=display_order or ((db.scalar(select(func.max(ProblemRow.display_order)).where(ProblemRow.contest_id == contest_id, ProblemRow.division_id == division_id)) or 0) + 1))
             rewrite_problem_documents(payload, asset_ids)
-            problem = ProblemRow(**payload)
-            db.add(problem)
+            if update_context:
+                # ZOJ owns routing and language-specific contest policy.
+                for field in package_updates.FIELDS:
+                    setattr(problem, field, payload[field])
+            else:
+                problem = ProblemRow(**payload)
+                db.add(problem)
             db.flush()
             file_by_path = {file.path: file for file in manifest.files}
             object_keys = {}
@@ -454,9 +491,9 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
                 db.add(ProblemAssetRow(asset_id=asset_ids[item.id], contest_id=contest_id, problem_id=pid,
                     original_filename=item.original_filename, storage_key=upload(item.file, item.category, item.original_filename, item.mime_type),
                     mime_type=item.mime_type, file_size=file.size, sha256=file.sha256, source_language=item.source_language, asset_status=item.asset_status, created_at=created))
-            for item in manifest.testcase_sets:
+            for position, item in enumerate(sorted(manifest.testcase_sets, key=lambda s: s.version), 1):
                 set_id = str(uuid4())
-                db.add(TestcaseSetRow(testcase_set_id=set_id, problem_id=pid, version=item.version, is_active=item.is_active))
+                db.add(TestcaseSetRow(testcase_set_id=set_id, problem_id=pid, version=version_base + position if update_context else item.version, is_active=item.is_active))
                 db.flush()
                 for case in item.testcases:
                     db.add(TestcaseRow(testcase_set_id=set_id, display_order=case.display_order,
@@ -468,15 +505,18 @@ def import_archive(source, contest_id: str, division_id: str, problem_code: str,
             # incomplete files, and a failed import cannot leave a queued job.
             if any(item.is_active for item in manifest.testcase_sets):
                 db.add(BundleWarmQueueItemRow(contest_id=contest_id, problem_id=pid))
-            ensure_unlocked()
+            if not update_context:
+                ensure_unlocked()
             if editor_context:
                 db.add(EditorImportRow(operation_key=editor_context["operation_key"], request_digest=editor_context["request_digest"], email=account.email, problem_id=pid))
                 if not editor_context.get("skip_audit"):
-                    db.add(OperationalAuditLogRow(scope="operator", action="Editor 문제 가져오기", method="POST",
-                        path=f"/api/editor/contests/{contest_id}/imports", status_code=200, actor_email=account.email,
+                    db.add(OperationalAuditLogRow(scope="operator", action="Editor 패키지 업데이트" if update_context else "Editor 문제 가져오기", method="POST",
+                        path=editor_context.get('path', f"/api/editor/contests/{contest_id}/problems/{pid}/package-updates" if update_context else f"/api/editor/contests/{contest_id}/imports"), status_code=200, actor_email=account.email,
                         actor_name=account.display_name, actor_role="마스터" if account.is_service_master else title_for_roles(account.contest_roles.get(contest_id, [])), contest_id=contest_id, request_id=editor_context["request_id"],
                         details=json.dumps({"problem_id": pid, "title": problem.title, "problem_code": code,
-                            "division_id": division_id, "testcase_count": sum(len(s.testcases) for s in manifest.testcase_sets)}, ensure_ascii=False)))
+                            "target": {"problem_title": problem.title, "problem_code": code},
+                            "division_id": division_id, "testcase_count": sum(len(s.testcases) for s in manifest.testcase_sets),
+                            **({"reason": update_context['reason'], "backup_key": backup_key, "previous_target_hash": update_context['target_hash'], "editor": editor_context.get('source', {})} if update_context else {})}, ensure_ascii=False)))
             db.commit()
             committed = True
             return Problem(**{field: getattr(problem, field) for field in Problem.model_fields}).model_dump(mode='json')

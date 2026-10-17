@@ -5323,7 +5323,14 @@ class DbStore:
                     if rejudging_item:
                         jobs.append(rejudging.claim_payload(db, row, submission, rejudging_item))
                         continue
-                    problem = db.get(ProblemRow, submission.problem_id)
+                    # Avoid mixing package versions or waiting for a parent
+                    # lock while holding submission/job locks.
+                    problem = db.scalar(select(ProblemRow).where(
+                        ProblemRow.problem_id == submission.problem_id).with_for_update(skip_locked=True))
+                    if problem is None and db.get(ProblemRow, submission.problem_id) is not None:
+                        row.status = JudgeJobStatus.PENDING.value
+                        row.assigned_node_id = row.lease_token = row.leased_at = None
+                        continue
                     active_set = db.scalar(
                         select(TestcaseSetRow).where(TestcaseSetRow.problem_id == submission.problem_id, TestcaseSetRow.is_active.is_(True))
                     )

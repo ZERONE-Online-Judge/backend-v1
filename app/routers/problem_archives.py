@@ -79,6 +79,56 @@ async def inspect_problem_archive(contest_id: str, request: Request):
     return ok(request, result)
 
 
+@router.get('/operator/contests/{contest_id}/problems/{problem_id}/package-backups/{operation_key}')
+def download_package_backup(contest_id: str, problem_id: str, operation_key: str, request: Request):
+    import re
+    from app.database import SessionLocal
+    from app.orm_models import EditorImportRow, ProblemRow
+    from app.services.storage import object_storage
+    require_contest_staff(request, contest_id, 'contest.problem.resource.view')
+    if not re.fullmatch(r'[a-f0-9]{64}', operation_key):
+        raise AppError(404, 'not_found', '백업을 찾을 수 없습니다.')
+    with SessionLocal() as db:
+        problem, receipt = db.get(ProblemRow, problem_id), db.get(EditorImportRow, operation_key)
+        if not problem or problem.contest_id != contest_id or not receipt or receipt.problem_id != problem_id:
+            raise AppError(404, 'not_found', '백업을 찾을 수 없습니다.')
+    key = f'contests/{contest_id}/problems/{problem_id}/package-backups/{operation_key}.zoj.zip'
+    def chunks():
+        with object_storage.open_reader(key) as source:
+            while chunk := source.read(CHUNK):
+                yield chunk
+    return StreamingResponse(chunks(), media_type='application/zip', headers={
+        'Content-Disposition': 'attachment; filename="before-update.zoj.zip"', 'Cache-Control': 'no-store'})
+
+
+@router.get('/operator/contests/{contest_id}/problems/{problem_id}/package-updates')
+def package_update_history(contest_id: str, problem_id: str, request: Request):
+    import json
+    from sqlalchemy import select
+    from app.database import SessionLocal
+    from app.orm_models import OperationalAuditLogRow, ProblemRow
+    require_contest_staff(request, contest_id, 'contest.problem.resource.view')
+    with SessionLocal() as db:
+        problem = db.get(ProblemRow, problem_id)
+        if not problem or problem.contest_id != contest_id:
+            raise AppError(404, 'not_found', '문제를 찾을 수 없습니다.')
+        rows = db.scalars(select(OperationalAuditLogRow).where(
+            OperationalAuditLogRow.contest_id == contest_id,
+            OperationalAuditLogRow.action == 'Editor 패키지 업데이트',
+            OperationalAuditLogRow.details.contains(problem_id)
+        ).order_by(OperationalAuditLogRow.created_at.desc()).limit(50))
+        result = []
+        for row in rows:
+            detail = json.loads(row.details)
+            if detail.get('problem_id') != problem_id or not detail.get('backup_key'):
+                continue
+            operation = detail['backup_key'].rsplit('/', 1)[-1].removesuffix('.zoj.zip')
+            result.append({'id': row.operational_audit_log_id, 'created_at': row.created_at,
+                'actor_name': row.actor_name, 'reason': detail.get('reason', ''),
+                'backup_url': f'/api/operator/contests/{contest_id}/problems/{problem_id}/package-backups/{operation}'})
+        return ok(request, result)
+
+
 @router.post('/operator/contests/{contest_id}/problem-archives:import')
 async def import_problem_archive(contest_id: str, request: Request,
                                  division_id: str = Query(min_length=1, max_length=36),
