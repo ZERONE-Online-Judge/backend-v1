@@ -16,7 +16,7 @@ PREVIEW_MAIL_TYPES = frozenset({
     "participant_invited", "contest_operator_assigned", "contest_question_created",
     "contest_question_answered", "contest_reminder_24h", "contest_reminder_1h",
     "contest_reminder_10m", "contact_inquiry_created", "contact_inquiry_answered",
-    "contest_settings_updated", "contest_notice_created",
+    "contest_settings_updated", "contest_notice_created", "editor_access",
 })
 
 

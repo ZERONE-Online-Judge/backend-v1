@@ -4892,8 +4892,19 @@ class DbStore:
         dedupe: bool = False,
         *,
         contest_id: str | None = None,
+        delivery_id: str | None = None,
     ) -> MailQueueItem:
         with self._session() as db:
+            def existing_delivery():
+                existing = db.get(MailQueueItemRow, delivery_id) if delivery_id else None
+                if existing and (existing.mail_type != mail_type or existing.recipient_email != recipient_email
+                                 or existing.subject != subject or existing.body_text != body_text):
+                    raise AppError(409, "mail_event_conflict", "이미 처리한 메일 요청과 내용이 다릅니다.")
+                return existing
+
+            existing = existing_delivery()
+            if existing:
+                return _mail(existing)
             internal_recipient = is_internal_mail_recipient(recipient_email)
             if dedupe and self._mail_exists(db, mail_type, recipient_email, subject, contest_id):
                 existing = db.scalar(
@@ -4910,6 +4921,7 @@ class DbStore:
                 )
                 return _mail(existing)
             row = MailQueueItemRow(
+                mail_queue_id=delivery_id or new_id(),
                 contest_id=contest_id,
                 mail_type=mail_type,
                 recipient_email=recipient_email,
@@ -4919,7 +4931,14 @@ class DbStore:
                 status="canceled" if internal_recipient else "pending",
             )
             db.add(row)
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                existing = existing_delivery()
+                if not existing:
+                    raise
+                return _mail(existing)
             db.refresh(row)
             return _mail(row)
 
